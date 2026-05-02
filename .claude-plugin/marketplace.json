@@ -1,0 +1,34 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "pact-marketplace",
+  "description": "pact — 계약 기반 AI 개발 운영 시스템 (Claude Code 플러그인)",
+  "owner": {
+    "name": "dongmin132",
+    "email": "m914@naver.com"
+  },
+  "plugins": [
+    {
+      "name": "pact",
+      "description": "Contract-based parallel agent orchestration with git worktree isolation, JSON Schema strict, TDD Guard, Codex cross-review. 매니저 4명(planner·architect·coordinator·reviewer) + 일회용 워커 + 한국어 UX.",
+      "category": "orchestration",
+      "author": {
+        "name": "dongmin132"
+      },
+      "source": {
+        "source": "url",
+        "url": "https://github.com/dongmin132/pact.git"
+      },
+      "version": "0.1.0",
+      "strict": true,
+      "homepage": "https://github.com/dongmin132/pact",
+      "keywords": [
+        "agent",
+        "orchestration",
+        "tdd",
+        "worktree",
+        "contract-driven",
+        "korean"
+      ]
+    }
+  ]
+}
