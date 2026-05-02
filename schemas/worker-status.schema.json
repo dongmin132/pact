@@ -1,0 +1,83 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Worker Status Report",
+  "description": "워커가 종료 직전 .pact/runs/<task_id>/status.json에 작성하는 보고서. 형식 위반 시 coordinator가 자동 blocked 처리.",
+  "type": "object",
+  "required": [
+    "task_id",
+    "status",
+    "files_changed",
+    "files_attempted_outside_scope",
+    "verify_results",
+    "tdd_evidence",
+    "completed_at"
+  ],
+  "properties": {
+    "task_id": {
+      "type": "string",
+      "pattern": "^[A-Z][A-Z0-9]*-[0-9]+$"
+    },
+    "status": {
+      "type": "string",
+      "enum": ["done", "failed", "blocked"]
+    },
+    "branch_name": {
+      "type": ["string", "null"]
+    },
+    "commits_made": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "clean_for_merge": {
+      "type": "boolean"
+    },
+    "files_changed": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "files_attempted_outside_scope": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "verify_results": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string",
+        "enum": ["pass", "fail", "skip"]
+      }
+    },
+    "tdd_evidence": {
+      "type": "object",
+      "required": ["red_observed", "green_observed"],
+      "properties": {
+        "red_observed": { "type": "boolean" },
+        "green_observed": { "type": "boolean" }
+      }
+    },
+    "decisions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["topic", "choice", "rationale"],
+        "properties": {
+          "topic": { "type": "string" },
+          "choice": { "type": "string" },
+          "rationale": { "type": "string" }
+        }
+      }
+    },
+    "blockers": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "tokens_used": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "completed_at": {
+      "type": "string",
+      "format": "date-time"
+    }
+  },
+  "additionalProperties": true
+}

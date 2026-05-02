@@ -1,0 +1,33 @@
+#!/usr/bin/env node
+'use strict';
+
+// pact CLI 진입점 (PACT-041, P2.6)
+// 결정적 작업: 배치 계획 / 머지 게이트 / 상태 표시.
+// LLM 안 거침 — 코드만.
+
+const cmd = process.argv[2];
+const args = process.argv.slice(3);
+
+const commands = {
+  batch: () => require('./cmds/batch.js')(args),
+  merge: () => require('./cmds/merge.js')(args),
+  status: () => require('./cmds/status.js')(args),
+};
+
+if (!cmd || !commands[cmd]) {
+  console.error('Usage: pact <command>\n');
+  console.error('Commands:');
+  console.error('  batch    TASKS.md → .pact/batch.json (배치 계획 생성)');
+  console.error('  merge    .pact/runs/*/status.json 기반 머지 게이트 실행');
+  console.error('  status   .pact/state.json + worktree 표시');
+  process.exit(cmd ? 1 : 0);
+}
+
+(async () => {
+  try {
+    await commands[cmd]();
+  } catch (e) {
+    console.error(`pact ${cmd} 실패:`, e.message);
+    process.exit(1);
+  }
+})();

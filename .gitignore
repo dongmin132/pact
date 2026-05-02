@@ -1,0 +1,5 @@
+node_modules/
+.pact/
+.claude/settings.local.json
+*.log
+.DS_Store

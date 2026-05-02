@@ -1,0 +1,89 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Task Definition",
+  "description": "TASKS.md의 각 task 블록 (planner 출력). parse-tasks.js가 검증.",
+  "type": "object",
+  "required": ["id", "title", "priority", "dependencies", "allowed_paths", "done_criteria", "tdd"],
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^[A-Z][A-Z0-9]*-[0-9]+$"
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1
+    },
+    "priority": {
+      "type": "string",
+      "enum": ["P0", "P1", "P2", "P1.5", "P2.5", "P2.6"]
+    },
+    "dependencies": {
+      "type": "array",
+      "items": {
+        "oneOf": [
+          { "type": "string" },
+          {
+            "type": "object",
+            "required": ["task_id", "kind"],
+            "properties": {
+              "task_id": { "type": "string" },
+              "kind": { "type": "string", "enum": ["complete", "contract_only"] }
+            }
+          }
+        ]
+      }
+    },
+    "allowed_paths": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string" }
+    },
+    "forbidden_paths": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "files": {
+      "type": "array",
+      "maxItems": 5,
+      "items": { "type": "string" }
+    },
+    "work": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "done_criteria": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string" }
+    },
+    "verify_commands": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "contracts": {
+      "type": "object"
+    },
+    "tdd": {
+      "type": "boolean"
+    },
+    "context_budget_tokens": {
+      "type": "integer",
+      "minimum": 1000
+    },
+    "prd_reference": {
+      "type": ["string", "null"]
+    },
+    "sourcing": {
+      "type": ["string", "null"]
+    },
+    "status": {
+      "type": "string",
+      "enum": ["todo", "in_progress", "done", "failed", "blocked"]
+    },
+    "retry_count": {
+      "type": "integer",
+      "minimum": 0
+    }
+  },
+  "additionalProperties": true
+}
