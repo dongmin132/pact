@@ -9,6 +9,8 @@ const {
   matchesGlob,
   checkPath,
   readOwnership,
+  detectWorktreeContext,
+  isInsideWorktree,
 } = require('../hooks/pre-tool-guard.js');
 
 test('matchesGlob — 정확 매칭', () => {
@@ -79,4 +81,27 @@ test('readOwnership — 파일 없으면 null (강제 X)', () => {
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
+});
+
+test('detectWorktreeContext — worktree 안에서 task_id 추출', () => {
+  const r = detectWorktreeContext('/repo/.pact/worktrees/PACT-042/src');
+  assert.equal(r.task_id, 'PACT-042');
+});
+
+test('detectWorktreeContext — worktree 밖이면 null', () => {
+  assert.equal(detectWorktreeContext('/repo/src'), null);
+});
+
+test('isInsideWorktree — worktree 안의 파일은 true', () => {
+  assert.equal(
+    isInsideWorktree('/repo/.pact/worktrees/PACT-042/src/foo.ts', '/repo/.pact/worktrees/PACT-042'),
+    true,
+  );
+});
+
+test('isInsideWorktree — worktree 밖의 파일은 false', () => {
+  assert.equal(
+    isInsideWorktree('/repo/src/foo.ts', '/repo/.pact/worktrees/PACT-042'),
+    false,
+  );
 });
