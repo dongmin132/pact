@@ -80,15 +80,30 @@ ls CLAUDE.md PROGRESS.md TASKS.md DECISIONS.md 2>/dev/null
 → `<예: TypeScript / Next.js / Postgres>` 치환.
 → 빈 답이면 placeholder 그대로 둠.
 
-### 질문 4 — yolo 모드 (ADR-002, 자동 감지 불가)
+### 질문 4 — yolo 모드 자동 감지 (ADR-011, 공식 hook payload 활용)
 
-```
-이 환경에서 Claude Code를 --dangerously-skip-permissions (yolo)로 실행하시나요?
-[y] 예 — 권한 자동 승인 환경
-[N] 아니오 — 매번 권한 묻기 (default)
+먼저 자동 감지 시도:
+
+```bash
+node ${CLAUDE_PLUGIN_ROOT}/scripts/detect-yolo.js
 ```
 
-답변을 CLAUDE.md `yolo_mode`에 박음 (true/false).
+stdout JSON의 `is_yolo`·`mode`·`source` 확인. 결과 분기:
+
+- `mode: 'bypassPermissions'` (= yolo) → CLAUDE.md `yolo_mode: true`, 사용자에게 알림:
+  ```
+  ⚠️ yolo 모드(bypassPermissions) 감지됨 — 권한 자동 승인 환경.
+  cross-review·destructive 동작 자동 진행됨.
+  ```
+- `mode: 'default'` 등 일반 → `yolo_mode: false`
+- `mode: 'unknown'` (감지 실패) → 사용자에게 묻기:
+  ```
+  yolo 모드 자동 감지 실패. 직접 알려주세요:
+  [y] --dangerously-skip-permissions로 실행 중
+  [N] 일반 (default)
+  ```
+
+답변을 CLAUDE.md `yolo_mode`에 박음.
 
 ### 질문 5 — Codex 감지 + cross-review 설정
 

@@ -269,7 +269,7 @@ tools:                  # whitelist 패턴 — 명시한 것만 허용
 
 ## 4. Yolo 모드 (`--dangerously-skip-permissions`)
 
-### 4.1 ❌ 중대한 발견: 자동 감지 불가능
+### 4.1 [REVISED — ADR-011] permission_mode로 감지 가능
 
 **Hook이나 플러그인 코드에서 yolo 모드 활성화 여부를 감지하는 공식 메커니즘 없음**.
 

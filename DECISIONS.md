@@ -60,6 +60,40 @@ ARCHITECTURE.md §19.6 변경:
 
 ---
 
+## ADR-011 — Yolo 모드 감지 가능 (ADR-002 supersede)
+
+- **상태**: 채택 (ADR-002 폐기)
+- **날짜**: 2026-05-02
+- **출처**: 공식 hook 문서 — `permission_mode: "bypassPermissions"` 필드 확인
+- **관련**: ARCHITECTURE.md §19.6, ADR-002 (폐기)
+
+### 발견 / 배경
+
+PACT-000 시점엔 yolo 모드 자동 감지 불가능으로 판단(ADR-002) → 사용자 명시 정책 채택.
+이후 공식 Claude Code hook 문서에서 **hook payload에 `permission_mode` 필드** 명시 확인. 값이 `"bypassPermissions"`면 yolo 모드.
+
+### 결정
+
+자동 감지 활성화:
+
+1. `hooks/session-start.js` — SessionStart 시점에 `permission_mode` 캡처해 `.pact/state.json`에 기록
+2. `scripts/detect-yolo.js` — 우선순위 fallback 체인 (payload → state.json → settings.json)
+3. `/pact:init` 자동 감지 시도, 실패 시만 사용자에게 묻기
+
+### 트레이드오프
+
+- ❌ ADR-002 폐기 — 두 ADR 비교 필요 (학습용)
+- ✅ 더 정확한 yolo 인지 (사용자 거짓·깜빡 방지)
+- ✅ `bypassPermissions` 환경에서 SessionStart 즉시 사용자에게 위험 알림 (systemMessage)
+
+### ADR-002 (폐기) 요약
+
+> "yolo 자동 감지 불가, 사용자 명시"
+
+이 결정의 전제(=감지 불가)가 잘못됨. 공식 문서 확인이 부족했음. 학습: spec 변화·신규 필드는 정기 재확인 필요.
+
+---
+
 ## ADR-010 — 슬래시 명령 17개로 확장 (ARCHITECTURE §6의 16개에서)
 
 - **상태**: 채택
