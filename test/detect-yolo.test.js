@@ -66,7 +66,7 @@ test('아무것도 없으면 unknown', () => {
     // home settings에 모드 없을 때만 unknown — 안전하게 home 설정 무시
     const r = detectYolo({ cwd: d });
     // home에 yolo 박혀있을 수도 있음 → mode가 unknown 또는 다른 값
-    assert.ok(['unknown', 'default', 'bypassPermissions', 'plan', 'acceptEdits'].includes(r.mode));
+    assert.ok(['unknown', 'default', 'bypassPermissions', 'plan', 'acceptEdits', 'auto'].includes(r.mode));
   } finally {
     fs.rmSync(d, { recursive: true, force: true });
   }

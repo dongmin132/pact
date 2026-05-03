@@ -11,7 +11,18 @@ description: 워커 N개 동시 spawn (worktree 격리) → 머지 → PROGRESS 
 1. `CLAUDE.md` 존재 — 없으면 "/pact:init을 먼저 실행해주세요" 후 중단
 2. `TASKS.md` 또는 `tasks/*.md` 존재 — 없으면 "/pact:plan을 먼저 실행해주세요" 후 중단
 3. **TBD 마커 0개** — TBD 있으면 "/pact:contracts를 먼저 실행해주세요 (architect가 계약 정의)" 후 중단
-4. **머지 진행 중 X**:
+4. **컨텍스트 과다 주입 방지**:
+   ```bash
+   node ${CLAUDE_PLUGIN_ROOT}/bin/pact context-guard --parallel
+   ```
+   exit 7이면 즉시 중단하고 한국어로 안내:
+   ```
+   ⚠️ 긴 문서가 기본 컨텍스트로 들어갈 위험이 있습니다.
+
+   VS Code에서 긴 PRD/spec/TASKS/API/DB 문서를 선택한 상태라면 선택을 해제해주세요.
+   이후 docs/context-map.md, pact slice --headers, pact slice-prd --headers로 필요한 섹션만 읽고 다시 /pact:parallel을 실행해주세요.
+   ```
+5. **머지 진행 중 X**:
    ```bash
    git rev-parse -q --verify MERGE_HEAD
    ```
@@ -20,7 +31,7 @@ description: 워커 N개 동시 spawn (worktree 격리) → 머지 → PROGRESS 
    ⚠️ 이전 cycle의 머지 충돌이 미해결 상태입니다.
    /pact:resolve-conflict 또는 git merge --abort 후 다시 실행해주세요.
    ```
-5. **git 환경 검증**:
+6. **git 환경 검증**:
    ```bash
    node -e "
    const { checkEnvironment } = require('${CLAUDE_PLUGIN_ROOT}/scripts/worktree-manager.js');
@@ -125,7 +136,9 @@ echo '<JSON>' > .pact/runs/<task_id>/payload-input.json
 node ${CLAUDE_PLUGIN_ROOT}/scripts/spawn-worker.js .pact/runs/<task_id>/payload-input.json
 ```
 
-stdout JSON에서 각 task의 `prompt`, `context_path`, `status_path` 보관.
+stdout JSON에서 각 task의 `task_prompt`, `prompt_path`, `context_path`, `status_path` 보관.
+`prompt_path`는 전체 워커 지시문 파일이다. 메인 Claude는 이 파일 전문을 읽지 않는다.
+`task_prompt`는 Task tool에 넘길 짧은 지시문이다.
 `context_path`는 워커가 먼저 읽을 작은 context bundle이다.
 
 ## 단계 6: 다중 워커 동시 spawn (Task tool 병렬 호출)
@@ -135,8 +148,9 @@ stdout JSON에서 각 task의 `prompt`, `context_path`, `status_path` 보관.
 각 워커 호출:
 - `subagent_type`: `worker`
 - `description`: `<task_id>: <title>`
-- `prompt`: 단계 5에서 받은 prompt 그대로
+- `prompt`: 단계 5에서 받은 `task_prompt` 그대로
 - 워커는 자기 worktree 안에서만 작업해야 함 (시스템 프롬프트로 강제)
+- 워커가 직접 `.pact/runs/<task_id>/prompt.md`를 읽고 전체 지시를 확인함
 - 워커는 `.pact/runs/<task_id>/context.md`를 먼저 읽고, 긴 SOT 문서는 추가 필요 시에만 섹션 단위로 읽음
 
 여러 Task call이 한 메시지에 들어가야 병렬. 순차 호출은 직렬.

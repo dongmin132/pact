@@ -7,11 +7,14 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const { spawnSync } = require('child_process');
 const {
   prepareWorkerSpawn,
   validatePayload,
   renderPrompt,
 } = require('../scripts/spawn-worker.js');
+
+const SPAWN_WORKER = path.join(__dirname, '..', 'scripts', 'spawn-worker.js');
 
 const VALID = {
   task_id: 'PACT-001',
@@ -93,6 +96,8 @@ test('prepareWorkerSpawn — payload.json 작성·경로 반환', () => {
 
     assert.equal(result.ok, true);
     assert.match(result.prompt, /PACT-001/);
+    assert.ok(fs.existsSync(result.prompt_path));
+    assert.match(result.task_prompt, /prompt\.md/);
     assert.ok(fs.existsSync(result.payload_path));
 
     const written = JSON.parse(fs.readFileSync(result.payload_path, 'utf8'));
@@ -172,11 +177,35 @@ test('prepareWorkerSpawn — context_refs 기반 context.md 번들 생성', () =
 
     assert.equal(result.ok, true);
     assert.ok(fs.existsSync(result.context_path));
+    assert.ok(fs.existsSync(result.prompt_path));
     const ctx = fs.readFileSync(result.context_path, 'utf8');
     assert.match(ctx, /# Worker Context Bundle/);
     assert.match(ctx, /POST \/api\/auth\/login/);
     assert.doesNotMatch(ctx, /not relevant/);
     assert.match(result.prompt, /\.pact\/runs\/PACT-001\/context\.md/);
+  } finally {
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  }
+});
+
+test('spawn-worker CLI — stdout에 full prompt를 싣지 않음', () => {
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'pact-test-'));
+  try {
+    const payloadPath = path.join(tmpRoot, 'payload.json');
+    fs.writeFileSync(payloadPath, JSON.stringify(VALID, null, 2));
+
+    const r = spawnSync('node', [SPAWN_WORKER, payloadPath], {
+      cwd: tmpRoot,
+      encoding: 'utf8',
+    });
+
+    assert.equal(r.status, 0, r.stderr);
+    const out = JSON.parse(r.stdout);
+    assert.equal(out.ok, true);
+    assert.equal(Object.hasOwn(out, 'prompt'), false);
+    assert.match(out.task_prompt, /prompt\.md/);
+    assert.match(out.prompt_path, /\.pact\/runs\/PACT-001\/prompt\.md$/);
+    assert.ok(fs.existsSync(path.join(tmpRoot, out.prompt_path)));
   } finally {
     fs.rmSync(tmpRoot, { recursive: true, force: true });
   }

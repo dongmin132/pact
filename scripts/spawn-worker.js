@@ -6,9 +6,10 @@
 // 1. payload 검증
 // 2. 시스템 프롬프트 렌더 (placeholder 치환)
 // 3. .pact/runs/<task_id>/payload.json 작성 (재현용)
-// 4. Task tool에 넘길 prompt + 보고 경로 반환
+// 4. 전체 worker prompt는 파일로 저장
+// 5. Task tool에 넘길 compact prompt + 보고 경로 반환
 //
-// **메인 Claude는 반환된 prompt를 Task tool 호출 시 prompt 인자로 사용한다.**
+// **메인 Claude는 CLI stdout의 task_prompt만 Task tool 호출 시 prompt 인자로 사용한다.**
 // 워커는 자기 시스템 프롬프트의 지시대로 종료 직전 status.json + report.md 작성.
 
 const fs = require('fs');
@@ -99,6 +100,25 @@ function preparePayloadDir(payload, runsRoot) {
   return dir;
 }
 
+function writePromptFile(dir, prompt) {
+  const promptPath = path.join(dir, 'prompt.md');
+  fs.writeFileSync(promptPath, prompt);
+  return promptPath;
+}
+
+function makeTaskPrompt(payload, paths) {
+  return [
+    `Task ${payload.task_id}: ${payload.title || ''}`,
+    '',
+    `1. Read ${paths.prompt_path}.`,
+    `2. Read ${paths.context_path}.`,
+    `3. Work only inside ${payload.working_dir}.`,
+    `4. Write final status to ${paths.status_path} and report to ${paths.report_path}.`,
+    '',
+    'Do not read full legacy SOT documents unless prompt.md explicitly names a needed section.',
+  ].join('\n');
+}
+
 /**
  * 메인 Claude가 호출. payload → Task tool 호출 준비 결과 반환.
  * @param {object} payload — 워커 명세
@@ -128,15 +148,22 @@ function prepareWorkerSpawn(payload, opts = {}) {
   const contextPath = path.join(dir, 'context.md');
   const { writeContextBundle } = require('./context-bundle.js');
   writeContextBundle(payload, contextPath, { cwd: opts.cwd || process.cwd() });
+  const promptPath = writePromptFile(dir, prompt);
+
+  const paths = {
+    prompt_path: promptPath,
+    context_path: contextPath,
+    status_path: path.join(dir, 'status.json'),
+    report_path: path.join(dir, 'report.md'),
+  };
 
   return {
     ok: true,
     prompt,
+    task_prompt: makeTaskPrompt(payload, paths),
     runs_dir: dir,
     payload_path: path.join(dir, 'payload.json'),
-    context_path: contextPath,
-    status_path: path.join(dir, 'status.json'),
-    report_path: path.join(dir, 'report.md'),
+    ...paths,
   };
 }
 
@@ -144,6 +171,7 @@ module.exports = {
   prepareWorkerSpawn,
   validatePayload,
   renderPrompt,
+  makeTaskPrompt,
 };
 
 // CLI: node scripts/spawn-worker.js <payload.json>
@@ -162,6 +190,8 @@ if (require.main === module) {
     process.exit(1);
   }
   const result = prepareWorkerSpawn(payload);
-  process.stdout.write(JSON.stringify(result, null, 2) + '\n');
+  // CLI stdout는 메인 Claude 컨텍스트에 직접 들어오므로 full prompt를 절대 싣지 않는다.
+  const { prompt, ...compactResult } = result;
+  process.stdout.write(JSON.stringify(compactResult, null, 2) + '\n');
   process.exit(result.ok ? 0 : 2);
 }

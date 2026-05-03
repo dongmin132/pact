@@ -18,7 +18,7 @@
         "source": "url",
         "url": "https://github.com/dongmin132/pact.git"
       },
-      "version": "0.3.0",
+      "version": "0.3.1",
       "strict": true,
       "homepage": "https://github.com/dongmin132/pact",
       "keywords": [
