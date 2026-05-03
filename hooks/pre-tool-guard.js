@@ -2,8 +2,10 @@
 'use strict';
 
 // pact pre-tool-guard hook
-// 트리거: PreToolUse (Write/Edit/MultiEdit)
-// 동작: MODULE_OWNERSHIP.md의 owner_paths 외 파일 수정 시 차단
+// 트리거: PreToolUse (Read/Write/Edit/MultiEdit)
+// 동작:
+// - worker가 긴 legacy SOT 문서 원문을 Read하려 하면 차단
+// - MODULE_OWNERSHIP.md의 owner_paths 외 파일 수정 시 차단
 // MODULE_OWNERSHIP.md 없으면 allow (architect 미실행 단계)
 
 const fs = require('fs');
@@ -89,6 +91,57 @@ function isInsideWorktree(absFilePath, worktreeRoot) {
   return !rel.startsWith('..') && !path.isAbsolute(rel);
 }
 
+function normalizeRel(p) {
+  return p.split(path.sep).join('/');
+}
+
+function readPathFromPayload(payload) {
+  const input = payload.tool_input || {};
+  return input.file_path || input.path || input.file || null;
+}
+
+function isAllowedReadRel(rel) {
+  const p = normalizeRel(rel).replace(/^\.\//, '');
+  return p === 'docs/context-map.md'
+    || p.startsWith('.pact/runs/')
+    || /^tasks\/[^/]+\.md$/.test(p)
+    || /^contracts\/(api|db|modules)\/[^/]+\.md$/.test(p);
+}
+
+function isBlockedLongSotRel(rel) {
+  const p = normalizeRel(rel).replace(/^\.\//, '');
+  if (isAllowedReadRel(p)) return false;
+  if (['TASKS.md', 'API_CONTRACT.md', 'DB_CONTRACT.md', 'MODULE_OWNERSHIP.md'].includes(p)) {
+    return true;
+  }
+  return /^docs\/.*(prd|spec|requirements|product|dev).*\.md$/i.test(p);
+}
+
+function checkWorkerRead(filePath, cwd) {
+  const wt = detectWorktreeContext(cwd);
+  if (!wt) return { allowed: true };
+
+  const absFile = path.isAbsolute(filePath) ? filePath : path.join(cwd, filePath);
+  const idx = cwd.indexOf(`.pact/worktrees/${wt.task_id}`);
+  const repoRoot = cwd.slice(0, idx);
+  const relToWorktree = normalizeRel(path.relative(wt.worktreeRoot, absFile));
+  const relToRepo = normalizeRel(path.relative(repoRoot, absFile));
+
+  if (isBlockedLongSotRel(relToWorktree) || isBlockedLongSotRel(relToRepo)) {
+    return {
+      allowed: false,
+      task_id: wt.task_id,
+      file: normalizeRel(filePath),
+      reason:
+        `pact: 워커 ${wt.task_id}가 긴 SOT 원문 ${normalizeRel(filePath)} 전체 Read를 시도했습니다. ` +
+        `대신 .pact/runs/${wt.task_id}/context.md, docs/context-map.md, tasks/*.md, ` +
+        `contracts/api|db|modules/*.md 또는 pact slice / pact slice-prd로 필요한 섹션만 읽으세요.`,
+    };
+  }
+
+  return { allowed: true };
+}
+
 function main() {
   let payload;
   try {
@@ -98,14 +151,30 @@ function main() {
   }
 
   const tool = payload.tool_name;
-  if (!['Write', 'Edit', 'MultiEdit'].includes(tool)) {
+  if (!['Read', 'Write', 'Edit', 'MultiEdit'].includes(tool)) {
     process.exit(0);
   }
 
-  const filePath = payload.tool_input && payload.tool_input.file_path;
+  const cwd = payload.cwd || process.cwd();
+  const filePath = readPathFromPayload(payload);
   if (!filePath) process.exit(0);
 
-  const cwd = payload.cwd || process.cwd();
+  if (tool === 'Read') {
+    const r = checkWorkerRead(filePath, cwd);
+    if (!r.allowed) {
+      const out = {
+        hookSpecificOutput: {
+          hookEventName: 'PreToolUse',
+          permissionDecision: 'deny',
+          permissionDecisionReason: r.reason,
+        },
+      };
+      process.stdout.write(JSON.stringify(out));
+      process.exit(0);
+    }
+    process.exit(0);
+  }
+
   const absFile = path.isAbsolute(filePath) ? filePath : path.join(cwd, filePath);
 
   const wt = detectWorktreeContext(cwd);
@@ -181,6 +250,7 @@ function main() {
 module.exports = {
   matchesGlob, checkPath, readOwnership, globToRegex,
   detectWorktreeContext, isInsideWorktree,
+  isBlockedLongSotRel, isAllowedReadRel, checkWorkerRead,
 };
 
 if (require.main === module) main();

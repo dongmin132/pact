@@ -11,6 +11,8 @@ const {
   readOwnership,
   detectWorktreeContext,
   isInsideWorktree,
+  isBlockedLongSotRel,
+  checkWorkerRead,
 } = require('../hooks/pre-tool-guard.js');
 
 test('matchesGlob — 정확 매칭', () => {
@@ -158,4 +160,43 @@ test('isInsideWorktree — worktree 밖의 파일은 false', () => {
     isInsideWorktree('/repo/src/foo.ts', '/repo/.pact/worktrees/PACT-042'),
     false,
   );
+});
+
+test('isBlockedLongSotRel — legacy SOT와 긴 spec 원문 차단 대상', () => {
+  assert.equal(isBlockedLongSotRel('TASKS.md'), true);
+  assert.equal(isBlockedLongSotRel('API_CONTRACT.md'), true);
+  assert.equal(isBlockedLongSotRel('DB_CONTRACT.md'), true);
+  assert.equal(isBlockedLongSotRel('docs/coffeechat_dev_spec.md'), true);
+});
+
+test('isBlockedLongSotRel — shard/context-map/context bundle은 허용', () => {
+  assert.equal(isBlockedLongSotRel('tasks/meetup.md'), false);
+  assert.equal(isBlockedLongSotRel('contracts/api/meetup.md'), false);
+  assert.equal(isBlockedLongSotRel('contracts/db/meetup.md'), false);
+  assert.equal(isBlockedLongSotRel('contracts/modules/meetup.md'), false);
+  assert.equal(isBlockedLongSotRel('docs/context-map.md'), false);
+  assert.equal(isBlockedLongSotRel('.pact/runs/MEETUP-004/context.md'), false);
+});
+
+test('checkWorkerRead — 워커의 긴 SOT 원문 Read 차단', () => {
+  const r = checkWorkerRead(
+    'TASKS.md',
+    '/repo/.pact/worktrees/MEETUP-004',
+  );
+  assert.equal(r.allowed, false);
+  assert.match(r.reason, /긴 SOT 원문/);
+  assert.match(r.reason, /context\.md/);
+});
+
+test('checkWorkerRead — 워커의 shard Read 허용', () => {
+  const r = checkWorkerRead(
+    'tasks/meetup.md',
+    '/repo/.pact/worktrees/MEETUP-004',
+  );
+  assert.equal(r.allowed, true);
+});
+
+test('checkWorkerRead — 메인 worktree에서는 Read 차단하지 않음', () => {
+  const r = checkWorkerRead('TASKS.md', '/repo');
+  assert.equal(r.allowed, true);
 });

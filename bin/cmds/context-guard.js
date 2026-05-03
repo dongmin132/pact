@@ -1,8 +1,8 @@
 'use strict';
 
-// pact context-guard — /pact:parallel 진입 전 긴 문서가 기본 컨텍스트로 들어오는 사고를 막는다.
+// pact context-guard — /pact:parallel 진입 전 긴 문서 위험을 경고한다.
 //
-// 이 가드는 파일 시스템에서 확인 가능한 위험만 결정적으로 차단한다.
+// 이 가드는 파일 시스템에서 확인 가능한 위험을 알려준다.
 // VS Code 선택 영역 자체는 CLI가 볼 수 없으므로, 실패 메시지와 command 문서에서
 // "긴 문서 선택 해제"를 별도 사용자 액션으로 요구한다.
 
@@ -10,7 +10,6 @@ const fs = require('fs');
 const path = require('path');
 
 const DEFAULT_MAX_LINES = 1000;
-const EXIT_CONTEXT_RISK = 7;
 
 function parseArgs(args) {
   const opts = {
@@ -85,16 +84,16 @@ function collectLongDocs(maxLines) {
 }
 
 function printRisks(risks, opts) {
-  console.error('⚠️ context-guard: 긴 문서가 기본 컨텍스트로 들어갈 위험이 있습니다.');
-  console.error(`max_lines=${opts.maxLines}`);
+  console.log('⚠️ context-guard warning: 긴 문서가 기본 컨텍스트로 들어갈 위험이 있습니다.');
+  console.log(`max_lines=${opts.maxLines}`);
   for (const r of risks) {
     const state = r.sharded ? 'shard 있음, legacy 원문 선택 주의' : 'shard/section 필요';
-    console.error(`- ${r.file}: ${r.lines} lines (${state})`);
-    console.error(`  fix: ${r.fix}`);
+    console.log(`- ${r.file}: ${r.lines} lines (${state})`);
+    console.log(`  fix: ${r.fix}`);
   }
-  console.error('');
-  console.error('조치: 긴 문서를 VS Code에서 선택한 상태라면 선택을 해제하고, docs/context-map.md 또는 slice 명령으로 필요한 섹션만 읽으세요.');
-  console.error('정말 강행해야 하면 pact context-guard --parallel --allow-long-context 를 명시적으로 사용하세요.');
+  console.log('');
+  console.log('조치: 긴 문서를 VS Code에서 선택한 상태라면 선택을 해제하세요.');
+  console.log('워커의 긴 SOT 원문 Read는 PreToolUse hook이 실제 호출 순간 차단합니다.');
 }
 
 module.exports = function contextGuard(args) {
@@ -103,7 +102,7 @@ module.exports = function contextGuard(args) {
 
   if (risks.length > 0 && opts.parallel && !opts.allowLongContext) {
     printRisks(risks, opts);
-    process.exit(EXIT_CONTEXT_RISK);
+    return;
   }
 
   if (risks.length === 0) {

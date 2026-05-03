@@ -11,16 +11,17 @@ description: 워커 N개 동시 spawn (worktree 격리) → 머지 → PROGRESS 
 1. `CLAUDE.md` 존재 — 없으면 "/pact:init을 먼저 실행해주세요" 후 중단
 2. `TASKS.md` 또는 `tasks/*.md` 존재 — 없으면 "/pact:plan을 먼저 실행해주세요" 후 중단
 3. **TBD 마커 0개** — TBD 있으면 "/pact:contracts를 먼저 실행해주세요 (architect가 계약 정의)" 후 중단
-4. **컨텍스트 과다 주입 방지**:
+4. **컨텍스트 과다 주입 경고**:
    ```bash
    node ${CLAUDE_PLUGIN_ROOT}/bin/pact context-guard --parallel
    ```
-   exit 7이면 즉시 중단하고 한국어로 안내:
+   이 검사는 긴 SOT/spec 문서 존재를 경고만 한다. 실패로 중단하지 않는다.
+   긴 문서를 VS Code에서 선택한 상태라면 한국어로 안내:
    ```
-   ⚠️ 긴 문서가 기본 컨텍스트로 들어갈 위험이 있습니다.
+   ⚠️ 긴 문서가 기본 컨텍스트로 들어갈 수 있습니다.
 
    VS Code에서 긴 PRD/spec/TASKS/API/DB 문서를 선택한 상태라면 선택을 해제해주세요.
-   이후 docs/context-map.md, pact slice --headers, pact slice-prd --headers로 필요한 섹션만 읽고 다시 /pact:parallel을 실행해주세요.
+   워커가 긴 SOT 원문을 Read하려는 순간은 PreToolUse hook이 차단합니다.
    ```
 5. **머지 진행 중 X**:
    ```bash

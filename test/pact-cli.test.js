@@ -360,16 +360,16 @@ test('pact context-map sync — Domains 표를 현재 shard 상태로 갱신', (
   } finally { cleanupRepo(repo); }
 });
 
-test('pact context-guard --parallel — 긴 docs spec 문서 차단', () => {
+test('pact context-guard --parallel — 긴 docs spec 문서 경고만 출력', () => {
   const repo = makeRepo();
   try {
     fs.mkdirSync(path.join(repo, 'docs'), { recursive: true });
     fs.writeFileSync(path.join(repo, 'docs', 'coffeechat_dev_spec.md'), Array.from({ length: 12 }, (_, i) => `line ${i}`).join('\n'));
 
     const r = runPact(['context-guard', '--parallel', '--max-lines', '10'], repo);
-    assert.equal(r.status, 7);
-    assert.match(r.stderr, /coffeechat_dev_spec\.md/);
-    assert.match(r.stderr, /선택/);
+    assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+    assert.match(r.stdout, /coffeechat_dev_spec\.md/);
+    assert.match(r.stdout, /PreToolUse hook/);
   } finally { cleanupRepo(repo); }
 });
 
