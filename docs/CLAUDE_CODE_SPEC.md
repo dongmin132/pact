@@ -271,19 +271,28 @@ tools:                  # whitelist 패턴 — 명시한 것만 허용
 
 ### 4.1 [REVISED — ADR-011] permission_mode로 감지 가능
 
-**Hook이나 플러그인 코드에서 yolo 모드 활성화 여부를 감지하는 공식 메커니즘 없음**.
+**Hook payload에 `permission_mode` 필드 존재** (공식 hook 문서 확인). 값:
 
-알려진 정보:
-- CLI 플래그: `--dangerously-skip-permissions` 또는 `--permission-mode bypassPermissions`
-- 설정: `.claude/settings.json`의 `defaultMode: "bypassPermissions"`
-- 환경 변수로 노출 X
-- Hook payload에서도 감지 X
+| 값 | 의미 |
+|---|---|
+| `default` | 일반 — 매번 권한 묻기 |
+| `bypassPermissions` | yolo — `--dangerously-skip-permissions` |
+| `acceptEdits` | 파일 수정 자동 승인 |
+| `plan` | plan 모드 |
 
-### 4.2 v1.0 대응
+### 4.2 v1.0 구현 (ADR-011)
 
-→ ARCHITECTURE.md §19.6의 "yolo 모드 감지 후 한 번만 묻기" 정책은 **자동 감지 불가**라는 사실을 받아들이고 변경:
+자동 감지 활성화:
 
-**대안 A** (권장): 사용자가 `/pact:init` 시점에 본인 환경이 yolo인지 명시
+1. **`hooks/session-start.js`** — SessionStart hook이 payload의 `permission_mode` 캡처해 `.pact/state.json`에 기록
+2. **`scripts/detect-yolo.js`** — 우선순위 fallback chain
+   - hook payload (가장 정확)
+   - `.pact/state.json` (SessionStart에서 박힌 값)
+   - `.claude/settings.json` `defaultMode` (정적)
+3. **`/pact:init`** — 자동 감지 우선, 실패 시만 사용자에게 묻기
+4. **`bypassPermissions` 감지 시** — SessionStart 즉시 systemMessage로 위험 알림
+
+PACT-000 시점 결정(ADR-002 "감지 불가, 사용자 명시")은 폐기됨. 학습: spec 신규 필드는 정기 재확인.
 ```yaml
 # CLAUDE.md
 yolo_mode: true | false  # 사용자 본인이 명시
