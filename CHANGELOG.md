@@ -1,5 +1,34 @@
 # Changelog
 
+## v0.2.0 — 2026-05-02
+
+v0.1.0 출시 후 즉시 보강. zero-dependency + 핵심 보안 fix + agent 분할.
+
+### 추가 (5개 ADR)
+- **ADR-011**: yolo 모드 자동 감지 (`permission_mode` 필드 활용, ADR-002 폐기)
+- **ADR-012**: 워커 자기 보고 신뢰 X — 실제 git diff vs payload.allowed_paths 대조
+- **ADR-013**: zero-dependency 전환 (js-yaml·ajv 제거, hand-written 대체)
+- **ADR-014**: reviewer 4 분할 (reviewer-code/task/arch/ui) + 8 agent gstack 패턴 polish
+
+### 보안·견고성
+- `pact merge`가 status.json 신뢰 X, 실제 diff와 allowed_paths 대조
+- `pre-tool-guard` hook이 워커 worktree 경계 + per-task allowed_paths 사전 차단
+- yolo 모드 자동 감지 + SessionStart 즉시 위험 알림
+- worker status.json schema strict 강제
+
+### 배포 친화
+- npm install 불필요 (zero deps)
+- 마켓플레이스 캐시에서 즉시 작동
+
+### Breaking Changes
+- `subagent_type`: `reviewer` → `reviewer-code | reviewer-task | reviewer-arch | reviewer-ui` (4개 분할)
+- 기존 `agents/reviewer.md` 삭제됨
+
+### 테스트
+- 133/133 통과 (yaml-mini 11개 + detect-yolo 6개 + ADR-012 시나리오 1개 신규)
+
+---
+
 ## v0.1.0 — 2026-05-02
 
 첫 공개 릴리스.
