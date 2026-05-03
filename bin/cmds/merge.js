@@ -3,9 +3,14 @@
 // pact merge — .pact/runs/*/status.json 기반 머지 게이트
 // 결정적 검증 후 통과한 워커만 git merge 시도.
 // 충돌 시 즉시 멈춤, abort 안 함 (사용자가 /pact:resolve-conflict).
+//
+// 강화 (ADR-012): status.json 신뢰 X. 실제 git diff와 payload.allowed_paths 대조:
+//   1. 실제 변경 파일이 allowed_paths 외 → 거부 (ownership/계약 위반)
+//   2. status.files_changed ≠ 실제 git diff → 거부 (워커 보고 거짓)
 
 const fs = require('fs');
 const path = require('path');
+const { spawnSync } = require('child_process');
 
 module.exports = function merge(args) {
   const runsRoot = '.pact/runs';
@@ -16,6 +21,14 @@ module.exports = function merge(args) {
 
   const { validateStatus } = require(path.join(__dirname, '..', '..', 'scripts', 'validate-status.js'));
   const { mergeAll } = require(path.join(__dirname, '..', '..', 'scripts', 'merge-coordinator.js'));
+  const { matchesGlob } = require(path.join(__dirname, '..', '..', 'hooks', 'pre-tool-guard.js'));
+
+  /** git diff --name-only base...branch */
+  function actualDiff(baseBranch, branchName) {
+    const r = spawnSync('git', ['diff', '--name-only', `${baseBranch}...${branchName}`], { encoding: 'utf8' });
+    if (r.status !== 0) return null;
+    return r.stdout.trim().split('\n').filter(Boolean);
+  }
 
   const taskDirs = fs.readdirSync(runsRoot).filter(d => {
     const full = path.join(runsRoot, d);
@@ -55,7 +68,7 @@ module.exports = function merge(args) {
       continue;
     }
     if (status.files_attempted_outside_scope && status.files_attempted_outside_scope.length > 0) {
-      rejected.push({ task_id: taskId, reason: 'ownership 위반: ' + status.files_attempted_outside_scope.join(', ') });
+      rejected.push({ task_id: taskId, reason: 'ownership 위반(자기 보고): ' + status.files_attempted_outside_scope.join(', ') });
       continue;
     }
 
@@ -65,6 +78,50 @@ module.exports = function merge(args) {
       .map(([k]) => k);
     if (failed.length > 0) {
       rejected.push({ task_id: taskId, reason: `verify fail: ${failed.join(', ')}` });
+      continue;
+    }
+
+    // [ADR-012] payload.allowed_paths vs 실제 git diff 대조
+    const payloadPath = path.join(runsRoot, taskId, 'payload.json');
+    if (!fs.existsSync(payloadPath)) {
+      rejected.push({ task_id: taskId, reason: 'payload.json missing — allowed_paths 검증 불가' });
+      continue;
+    }
+    let payload;
+    try {
+      payload = JSON.parse(fs.readFileSync(payloadPath, 'utf8'));
+    } catch (e) {
+      rejected.push({ task_id: taskId, reason: `payload.json parse: ${e.message}` });
+      continue;
+    }
+    const allowedPaths = payload.allowed_paths || [];
+    const baseBranch = payload.base_branch || 'main';
+    const branchName = `pact/${taskId}`;
+
+    const diff = actualDiff(baseBranch, branchName);
+    if (diff === null) {
+      rejected.push({ task_id: taskId, reason: `git diff 실패 (${baseBranch}...${branchName})` });
+      continue;
+    }
+
+    // 실제 변경 파일이 allowed_paths 외에 있나
+    const outsideScope = diff.filter(f => !allowedPaths.some(g => matchesGlob(f, g)));
+    if (outsideScope.length > 0) {
+      rejected.push({
+        task_id: taskId,
+        reason: `git diff에 allowed_paths 외 파일: ${outsideScope.join(', ')} (워커 자기 보고와 무관)`,
+      });
+      continue;
+    }
+
+    // status.files_changed ≠ 실제 diff (워커 거짓 보고 감지)
+    const reported = (status.files_changed || []).slice().sort();
+    const actual = diff.slice().sort();
+    if (JSON.stringify(reported) !== JSON.stringify(actual)) {
+      rejected.push({
+        task_id: taskId,
+        reason: `files_changed 보고(${reported.join(',') || '(빈)'}) ≠ 실제 diff(${actual.join(',') || '(빈)'})`,
+      });
       continue;
     }
 

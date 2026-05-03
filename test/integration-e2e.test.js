@@ -88,8 +88,8 @@ function simulatePlan(dir, tasks) {
   fs.writeFileSync(path.join(dir, 'TASKS.md'), md.join('\n'));
 }
 
-/** 워커 시뮬 — worktree 생성 + 파일 변경 + commit + status.json 작성 */
-function simulateWorker(dir, taskId, fileName, content, status = 'done') {
+/** 워커 시뮬 — worktree 생성 + 파일 변경 + commit + payload.json + status.json 작성 */
+function simulateWorker(dir, taskId, fileName, content, status = 'done', allowedPaths = null) {
   const { createWorktree } = require(path.join(ROOT, 'scripts/worktree-manager.js'));
   const r = createWorktree(taskId, 'main', { cwd: dir });
   if (!r.ok) throw new Error(`worktree fail: ${r.error}`);
@@ -100,10 +100,24 @@ function simulateWorker(dir, taskId, fileName, content, status = 'done') {
   fs.writeFileSync(filePath, content);
   sh(`git add . && git commit -m "${taskId} work"`, { cwd: wtAbs });
 
+  const runDir = path.join(dir, '.pact/runs', taskId);
+  fs.mkdirSync(runDir, { recursive: true });
+
+  // payload.json (allowed_paths 검증용 — ADR-012)
+  fs.writeFileSync(path.join(runDir, 'payload.json'), JSON.stringify({
+    task_id: taskId,
+    title: taskId,
+    allowed_paths: allowedPaths || [fileName],
+    base_branch: 'main',
+    branch_name: `pact/${taskId}`,
+    working_dir: `.pact/worktrees/${taskId}`,
+    done_criteria: ['done'],
+    verify_commands: [],
+    tdd: false,
+  }, null, 2));
+
   // status.json (schema 호환)
-  const statusDir = path.join(dir, '.pact/runs', taskId);
-  fs.mkdirSync(statusDir, { recursive: true });
-  fs.writeFileSync(path.join(statusDir, 'status.json'), JSON.stringify({
+  fs.writeFileSync(path.join(runDir, 'status.json'), JSON.stringify({
     task_id: taskId,
     status,
     branch_name: `pact/${taskId}`,
@@ -181,6 +195,53 @@ test('E2E — 충돌 시나리오 (한 워커가 conflict 야기)', () => {
 
     // abort로 정리
     sh('git merge --abort', { cwd: dir });
+  } finally { cleanupProject(dir); }
+});
+
+test('E2E [ADR-012] — 실제 diff가 allowed_paths 외이면 거부', () => {
+  const dir = makeProject();
+  try {
+    simulateInit(dir);
+    simulatePlan(dir, [
+      { id: 'PROJ-001', title: 'a', allowed_paths: ['src/a.ts'] },
+    ]);
+
+    // worktree 만들고 allowed_paths 외 파일 commit
+    const { createWorktree } = require(path.join(ROOT, 'scripts/worktree-manager.js'));
+    const r = createWorktree('PROJ-001', 'main', { cwd: dir });
+    fs.writeFileSync(path.join(r.abs_path, 'unauthorized.ts'), 'leak');
+    sh('git add . && git commit -m sneaky', { cwd: r.abs_path });
+
+    // payload + status (둘 다 거짓)
+    fs.mkdirSync(path.join(dir, '.pact/runs/PROJ-001'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.pact/runs/PROJ-001/payload.json'), JSON.stringify({
+      task_id: 'PROJ-001',
+      title: 'a',
+      allowed_paths: ['src/a.ts'],
+      base_branch: 'main',
+      branch_name: 'pact/PROJ-001',
+      done_criteria: ['x'],
+      verify_commands: [],
+      working_dir: '.pact/worktrees/PROJ-001',
+    }, null, 2));
+    fs.writeFileSync(path.join(dir, '.pact/runs/PROJ-001/status.json'), JSON.stringify({
+      task_id: 'PROJ-001',
+      status: 'done',
+      branch_name: 'pact/PROJ-001',
+      commits_made: 1,
+      clean_for_merge: true,
+      files_changed: ['src/a.ts'],            // 거짓
+      files_attempted_outside_scope: [],       // 거짓
+      verify_results: { lint:'pass',typecheck:'pass',test:'pass',build:'pass' },
+      tdd_evidence: { red_observed: false, green_observed: false },
+      completed_at: new Date().toISOString(),
+    }, null, 2));
+
+    runPact(['merge'], dir);
+    const result = JSON.parse(fs.readFileSync(path.join(dir, '.pact/merge-result.json'), 'utf8'));
+    const r1 = result.rejected.find(r => r.task_id === 'PROJ-001');
+    assert.ok(r1, 'allowed_paths 외 파일 → rejected');
+    assert.match(r1.reason, /allowed_paths 외|files_changed/);
   } finally { cleanupProject(dir); }
 });
 

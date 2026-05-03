@@ -60,6 +60,52 @@ ARCHITECTURE.md §19.6 변경:
 
 ---
 
+## ADR-012 — 워커 자기 보고 신뢰 X, 실제 git diff 대조 강제
+
+- **상태**: 채택
+- **날짜**: 2026-05-02
+- **출처**: 사용자 지적 (핵심 약속 빈틈)
+- **관련**: ARCHITECTURE.md §15 #13, 5가지 철학 #2·#3
+
+### 발견 / 배경
+
+1. `pact merge`가 워커 status.json의 `files_attempted_outside_scope`만 체크 — 워커 자기 보고에 의존
+2. `pre-tool-guard`는 MODULE_OWNERSHIP 전체 영역만 검사 — task별 `allowed_paths` 미강제
+
+→ "계약 없이 병렬화하지 않는다 / 검증 없이 병합하지 않는다" 약속에 직접 닿는 구멍.
+워커가 거짓말하거나 실수로 다른 task의 파일을 수정해도 통과 가능했음.
+
+### 결정
+
+#### `pact merge` 강화 (bin/cmds/merge.js)
+1. payload.json의 `allowed_paths` 읽기
+2. `git diff --name-only <base_branch>...pact/<task_id>` 로 **실제 변경 파일** 산출
+3. 실제 변경이 `allowed_paths` 외 → 거부 (워커 보고와 무관)
+4. `status.files_changed` ≠ 실제 diff → 거부 (보고 거짓 감지)
+
+#### `pre-tool-guard` 강화 (hooks/pre-tool-guard.js)
+워커 컨텍스트(.pact/worktrees/<id>) 안에서:
+1. payload.json의 `allowed_paths` 읽기
+2. 수정 시도 파일이 task별 `allowed_paths` 외이면 즉시 deny (PreToolUse)
+3. `allowed_paths` 매칭되면 통과 (MODULE_OWNERSHIP 검사 스킵 — 더 정확한 contract)
+
+### 트레이드오프
+
+- ❌ payload.json 의존성 — 없으면 검증 불가 → 이 경우도 거부
+- ❌ git diff 실패 시(브랜치 누락 등) 거부 — 안전 기본값
+- ✅ 워커 거짓 보고 사전·사후 둘 다 차단
+- ✅ 5가지 철학(계약·검증) 약속 회복
+
+### 테스트
+
+`test/integration-e2e.test.js`에 새 시나리오 추가:
+- 워커가 `unauthorized.ts` commit + status.json은 거짓 보고
+- → `pact merge` rejected에 박힘 (`allowed_paths 외|files_changed`)
+
+122/122 통과.
+
+---
+
 ## ADR-011 — Yolo 모드 감지 가능 (ADR-002 supersede)
 
 - **상태**: 채택 (ADR-002 폐기)

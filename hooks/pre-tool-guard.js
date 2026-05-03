@@ -98,8 +98,9 @@ function main() {
   const cwd = payload.cwd || process.cwd();
   const absFile = path.isAbsolute(filePath) ? filePath : path.join(cwd, filePath);
 
-  // 1) 워커 worktree 경계 검사 (spec §3.4 post-hoc → pre-block 강화)
   const wt = detectWorktreeContext(cwd);
+
+  // 1) 워커 worktree 경계 검사 (spec §3.4 post-hoc → pre-block 강화)
   if (wt && !isInsideWorktree(absFile, wt.worktreeRoot)) {
     const out = {
       hookSpecificOutput: {
@@ -114,7 +115,39 @@ function main() {
     process.exit(0);
   }
 
-  // 2) MODULE_OWNERSHIP 검사 (메인 또는 워커 worktree 내부에서)
+  // 2) [ADR-012] 워커 컨텍스트 — payload.allowed_paths 강제 (per-task)
+  if (wt) {
+    const idx = cwd.indexOf(`.pact/worktrees/${wt.task_id}`);
+    const repoRoot = cwd.slice(0, idx);
+    const payloadPath = path.join(repoRoot, '.pact', 'runs', wt.task_id, 'payload.json');
+    if (fs.existsSync(payloadPath)) {
+      try {
+        const wp = JSON.parse(fs.readFileSync(payloadPath, 'utf8'));
+        const allowed = Array.isArray(wp.allowed_paths) ? wp.allowed_paths : null;
+        if (allowed && allowed.length > 0) {
+          const relInWt = path.relative(wt.worktreeRoot, absFile);
+          const matched = allowed.some(g => matchesGlob(relInWt, g));
+          if (!matched) {
+            const out = {
+              hookSpecificOutput: {
+                hookEventName: 'PreToolUse',
+                permissionDecision: 'deny',
+                permissionDecisionReason:
+                  `pact: 워커 ${wt.task_id}의 allowed_paths에 ${relInWt} 미포함. ` +
+                  `허용: ${allowed.join(', ')}`,
+              },
+            };
+            process.stdout.write(JSON.stringify(out));
+            process.exit(0);
+          }
+          // allowed_paths가 더 정확하니 ownership 검사 스킵하고 통과
+          process.exit(0);
+        }
+      } catch { /* payload 깨짐 — fallback to ownership */ }
+    }
+  }
+
+  // 3) MODULE_OWNERSHIP 검사 (메인 또는 payload 미존재 시 fallback)
   const owners = readOwnership(cwd);
   if (!owners) process.exit(0);  // ownership 미정의 → 통과
 
