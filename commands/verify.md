@@ -31,11 +31,10 @@ LOG=.pact/verify-$TIMESTAMP.log
 ## 단계 3: reviewer 서브에이전트 호출 (code-review 모드, 4축)
 
 Task tool:
-- `subagent_type`: `reviewer`
+- `subagent_type`: `reviewer-code`
 - `description`: "4축 검증 — 머지 후 또는 명시 호출"
 - `prompt`:
   ```
-  모드: code-review
   
   4축 모두 검증:
   

@@ -19,11 +19,10 @@ description: reviewer 호출 — UI/UX 디자인 검토 (gstack /plan-design-rev
 ## 단계 2: reviewer 서브에이전트 호출 (plan-ui-review 모드)
 
 Task tool:
-- `subagent_type`: `reviewer`
+- `subagent_type`: `reviewer-ui`
 - `description`: "Plan UI/UX review"
 - `prompt`:
   ```
-  모드: plan-ui-review
   
   UI 관련 task만 디자이너 시각으로 검토.
   

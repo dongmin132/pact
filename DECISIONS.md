@@ -60,6 +60,62 @@ ARCHITECTURE.md §19.6 변경:
 
 ---
 
+## ADR-014 — Reviewer 4 분할 + 8 agent 일괄 polish (gstack 영감)
+
+- **상태**: 채택
+- **날짜**: 2026-05-02
+- **출처**: 사용자 토론 (review마다 다른 agent / gstack 패턴 흡수)
+- **관련**: ADR-008 (reviewer 3 모드), gstack /plan-eng-review·/plan-design-review
+
+### 발견 / 배경
+
+기존: `agents/reviewer.md` 단일 파일 4 모드 (250줄). 한 파일에 code-review·plan-task·plan-arch·plan-ui 모두.
+
+문제:
+- 매 호출마다 4 모드 prompt 전부 컨텍스트에 로드 (낭비)
+- 모드별 tools·model·maxTurns 차등 불가
+- subagent_type=reviewer + prompt에 mode 박는 우회 패턴
+
+### 결정
+
+**4개 별도 agent로 분할**:
+- `agents/reviewer-code.md` — 머지 후 4축 검증
+- `agents/reviewer-task.md` — task 분해 품질 (메타)
+- `agents/reviewer-arch.md` — 아키텍처 + 계약 정합성 (gstack 영감, WebSearch tool 추가)
+- `agents/reviewer-ui.md` — UI 디자인 차원 (gstack 영감)
+
+**전체 8 agent gstack 패턴 polish**:
+- planner, architect, coordinator, worker도 동일 구조로 재정리
+- 각 agent: 정체성·호출시점·입력·출력·동작 단계·출력예시·금지·의문시·토큰 예산
+- Severity·Confidence·Finding 형식 통일
+- gstack cognitive pattern (reviewer-arch에 흡수)
+- gstack UX 3법칙·Goodwill reservoir (reviewer-ui)
+- gstack Step 0 Scope Challenge (reviewer-task·reviewer-arch)
+- 명령마다 명확한 subagent_type (`reviewer-arch` 등)
+
+### 트레이드오프
+
+- ❌ agent 파일 수 증가 (5 → 8)
+- ❌ 일부 prose 중복 ("절대 안 하는 것" 등)
+- ✅ 모드별 컨텍스트 효율 (호출마다 자기 prompt만 로드)
+- ✅ tools 차등 가능 (reviewer-arch만 WebSearch)
+- ✅ 명확한 subagent_type — Task tool 호출 의도 명시
+- ✅ gstack 성숙한 패턴 흡수
+- ✅ 8 agent 일관 구조
+
+### 명령 갱신
+
+| 명령 | 새 subagent_type |
+|---|---|
+| `/pact:verify` | `reviewer-code` |
+| `/pact:plan-task-review` | `reviewer-task` |
+| `/pact:plan-arch-review` | `reviewer-arch` |
+| `/pact:plan-ui-review` | `reviewer-ui` |
+
+테스트 회귀: 133/133 (영향 없음 — agent definition 변경, 코드 인터페이스 동일).
+
+---
+
 ## ADR-013 — Zero-dependency 전환 (마켓플레이스 캐시 친화)
 
 - **상태**: 채택

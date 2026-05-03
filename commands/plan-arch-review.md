@@ -14,11 +14,10 @@ description: reviewer 호출 — 아키텍처 견고성 + 계약 정합성 (gsta
 ## 단계 2: reviewer 서브에이전트 호출 (plan-arch-review 모드)
 
 Task tool:
-- `subagent_type`: `reviewer`
+- `subagent_type`: `reviewer-arch`
 - `description`: "Plan architecture review"
 - `prompt`:
   ```
-  모드: plan-arch-review
   
   엔지니어 매니저 시각으로 plan 검토. 다음 7가지 cognitive pattern 적용:
   1. Boring by default — 새 인프라/패턴은 innovation token 가치 있나
