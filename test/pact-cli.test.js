@@ -101,6 +101,31 @@ test('pact batch — TASKS.md → .pact/batch.json', () => {
   } finally { cleanupRepo(repo); }
 });
 
+test('pact batch — tasks/*.md shard를 기본 task source로 사용', () => {
+  const repo = makeRepo();
+  try {
+    fs.mkdirSync(path.join(repo, 'tasks'));
+    fs.writeFileSync(path.join(repo, 'tasks', 'auth.md'), SAMPLE_TASKS_MD);
+    const r = runPact(['batch'], repo);
+    assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+    const out = JSON.parse(fs.readFileSync(path.join(repo, '.pact/batch.json'), 'utf8'));
+    assert.deepEqual(out.task_sources, ['tasks/auth.md']);
+    assert.equal(out.total_tasks, 2);
+  } finally { cleanupRepo(repo); }
+});
+
+test('pact slice --headers — tasks/*.md shard TOC 출력', () => {
+  const repo = makeRepo();
+  try {
+    fs.mkdirSync(path.join(repo, 'tasks'));
+    fs.writeFileSync(path.join(repo, 'tasks', 'auth.md'), SAMPLE_TASKS_MD);
+    const r = runPact(['slice', '--headers'], repo);
+    assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+    assert.match(r.stdout, /sources: tasks\/auth\.md/);
+    assert.match(r.stdout, /TASK-001/);
+  } finally { cleanupRepo(repo); }
+});
+
 test('pact batch — TASKS.md 없으면 exit 2', () => {
   const repo = makeRepo();
   try {
@@ -146,5 +171,191 @@ test('pact merge — runs/ 없으면 exit 2', () => {
   try {
     const r = runPact(['merge'], repo);
     assert.equal(r.status, 2);
+  } finally { cleanupRepo(repo); }
+});
+
+test('pact split-docs — legacy TASKS/API/DB를 domain shard로 분리', () => {
+  const repo = makeRepo();
+  try {
+    fs.writeFileSync(path.join(repo, 'TASKS.md'), `# TASKS
+
+## AUTH-001  login
+
+\`\`\`yaml
+priority: P0
+dependencies: []
+allowed_paths:
+  - src/auth/login.ts
+files:
+  - src/auth/login.ts
+work:
+  - login
+done_criteria:
+  - works
+tdd: true
+\`\`\`
+
+## MEETUP-001  create meetup
+
+\`\`\`yaml
+priority: P0
+dependencies: []
+allowed_paths:
+  - src/meetup/create.ts
+files:
+  - src/meetup/create.ts
+work:
+  - create
+done_criteria:
+  - works
+tdd: true
+\`\`\`
+`);
+    fs.writeFileSync(path.join(repo, 'API_CONTRACT.md'), `# API
+
+## POST /api/auth/login
+
+\`\`\`yaml
+method: POST
+path: /api/auth/login
+\`\`\`
+
+## POST /api/meetups
+
+\`\`\`yaml
+method: POST
+path: /api/meetups
+\`\`\`
+`);
+    fs.writeFileSync(path.join(repo, 'DB_CONTRACT.md'), `# DB
+
+## users table
+
+\`\`\`yaml
+table: users
+\`\`\`
+
+## meetups table
+
+\`\`\`yaml
+table: meetups
+\`\`\`
+`);
+
+    const r = runPact(['split-docs'], repo);
+    assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+    assert.ok(fs.existsSync(path.join(repo, 'tasks/auth.md')));
+    assert.ok(fs.existsSync(path.join(repo, 'tasks/meetup.md')));
+    assert.ok(fs.existsSync(path.join(repo, 'contracts/api/auth.md')));
+    assert.ok(fs.existsSync(path.join(repo, 'contracts/api/meetups.md')));
+    assert.ok(fs.existsSync(path.join(repo, 'contracts/db/user.md')));
+    assert.ok(fs.existsSync(path.join(repo, 'contracts/db/meetup.md')));
+    assert.ok(fs.existsSync(path.join(repo, 'contracts/manifest.md')));
+    assert.ok(fs.existsSync(path.join(repo, 'docs/context-map.md')));
+
+    const authTasks = fs.readFileSync(path.join(repo, 'tasks/auth.md'), 'utf8');
+    assert.match(authTasks, /AUTH-001/);
+    assert.doesNotMatch(authTasks, /MEETUP-001/);
+
+    const contextMap = fs.readFileSync(path.join(repo, 'docs/context-map.md'), 'utf8');
+    assert.match(contextMap, /tasks\/auth\.md/);
+    assert.match(contextMap, /contracts\/api\/auth\.md/);
+  } finally { cleanupRepo(repo); }
+});
+
+test('pact split-docs — task에 context_refs 자동 주입', () => {
+  const repo = makeRepo();
+  try {
+    fs.writeFileSync(path.join(repo, 'TASKS.md'), `# TASKS
+
+## AUTH-001  login
+
+\`\`\`yaml
+priority: P0
+dependencies: []
+allowed_paths:
+  - src/auth/login.ts
+files:
+  - src/auth/login.ts
+work:
+  - login
+done_criteria:
+  - works
+contracts:
+  api_endpoints:
+    - POST /api/auth/login
+  db_tables:
+    - users
+tdd: true
+\`\`\`
+`);
+
+    const r = runPact(['split-docs'], repo);
+    assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+    const authShard = fs.readFileSync(path.join(repo, 'tasks/auth.md'), 'utf8');
+    assert.match(authShard, /context_refs:/);
+    assert.match(authShard, /contracts\/api\/auth\.md/);
+    assert.match(authShard, /contracts\/db\/user\.md/);
+    assert.match(authShard, /contracts\/modules\/auth\.md/);
+  } finally { cleanupRepo(repo); }
+});
+
+test('pact split-docs — MODULE_OWNERSHIP을 contracts/modules shard로 분리', () => {
+  const repo = makeRepo();
+  try {
+    fs.writeFileSync(path.join(repo, 'MODULE_OWNERSHIP.md'), `# Modules
+
+## auth 모듈
+
+\`\`\`yaml
+module: auth
+owner_paths:
+  - src/auth/**
+shared_with: []
+related_tasks: [AUTH-001]
+\`\`\`
+
+## meetup 모듈
+
+\`\`\`yaml
+module: meetup
+owner_paths:
+  - src/meetup/**
+shared_with: []
+related_tasks: [MEETUP-001]
+\`\`\`
+`);
+    const r = runPact(['split-docs'], repo);
+    assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+    assert.ok(fs.existsSync(path.join(repo, 'contracts/modules/auth.md')));
+    assert.ok(fs.existsSync(path.join(repo, 'contracts/modules/meetup.md')));
+    const manifest = fs.readFileSync(path.join(repo, 'contracts/manifest.md'), 'utf8');
+    assert.match(manifest, /## Modules/);
+    assert.match(manifest, /contracts\/modules\/auth\.md/);
+  } finally { cleanupRepo(repo); }
+});
+
+test('pact context-map sync — Domains 표를 현재 shard 상태로 갱신', () => {
+  const repo = makeRepo();
+  try {
+    fs.mkdirSync(path.join(repo, 'tasks'), { recursive: true });
+    fs.mkdirSync(path.join(repo, 'contracts/api'), { recursive: true });
+    fs.mkdirSync(path.join(repo, 'contracts/modules'), { recursive: true });
+    fs.writeFileSync(path.join(repo, 'tasks/auth.md'), '# auth tasks\n');
+    fs.writeFileSync(path.join(repo, 'contracts/api/auth.md'), '# auth api\n');
+    fs.writeFileSync(path.join(repo, 'contracts/modules/auth.md'), '# auth module\n');
+
+    const r = runPact(['context-map', 'sync'], repo);
+    assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+    const ctx = fs.readFileSync(path.join(repo, 'docs/context-map.md'), 'utf8');
+    assert.match(ctx, /pact:context-map:domains:start/);
+    assert.match(ctx, /\| auth \|/);
+    assert.match(ctx, /tasks\/auth\.md/);
+    assert.match(ctx, /contracts\/modules\/auth\.md/);
+
+    // idempotent: 두 번째 실행은 변경 없음
+    const r2 = runPact(['context-map', 'sync'], repo);
+    assert.equal(r2.status, 0);
+    assert.match(r2.stdout, /변경 없음/);
   } finally { cleanupRepo(repo); }
 });

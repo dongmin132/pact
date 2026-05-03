@@ -8,7 +8,7 @@ description: 외부 도구(Codex)에게 plan 검토 요청 — 의견만, 차단
 
 ## 단계 1: 사전 검사
 
-- `TASKS.md` 존재 — 없으면 "/pact:plan 먼저"
+- `TASKS.md` 또는 `tasks/*.md` 존재 — 없으면 "/pact:plan 먼저"
 - CLAUDE.md `cross_review.adapter` 확인:
   - `null` → "Codex 미감지. /pact:init에서 활성화하거나 codex CLI 설치 후 다시 시도" 후 종료
   - `codex` → 진행
@@ -27,8 +27,8 @@ const adapter = createCodexAdapter();
   }
   const findings = await adapter.call_review({
     target: 'plan',
-    artifacts: ['TASKS.md', 'API_CONTRACT.md', 'MODULE_OWNERSHIP.md'].filter(f => require('fs').existsSync(f)),
-    context: '사용자 요구사항·CLAUDE.md 발췌',
+    artifacts: ['docs/context-map.md', 'contracts/manifest.md', 'MODULE_OWNERSHIP.md'].filter(f => require('fs').existsSync(f)),
+    context: 'pact slice --headers와 선택 task/context_refs만 사용. 전체 task/contract corpus read 금지.',
   });
   console.log(JSON.stringify({findings}, null, 2));
 })();

@@ -39,7 +39,7 @@ pact slice --ids UI-001,SCREEN-001,...
 grep -B1 "frontend\|components\|pages\|ui/" TASKS.md
 ```
 
-⚠️ `Read('TASKS.md')` 통째 호출 금지.
+⚠️ `Read('TASKS.md')`/`Read('tasks/*.md')` 통째 호출 금지.
 
 `TASKS.md`에서 UI 관련 task 식별:
 - `allowed_paths`에 다음 중 하나 포함: `frontend/`, `components/`, `views/`, `pages/`, `ui/`, `app/`, `templates/`

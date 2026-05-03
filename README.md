@@ -177,10 +177,37 @@ myproject/
 `pact` 바이너리 — 결정적 작업용:
 
 ```bash
-pact batch    # TASKS.md → .pact/batch.json
+pact batch    # TASKS.md 또는 tasks/*.md → .pact/batch.json
 pact merge    # status.json 검증 + 머지 게이트
 pact status   # state.json + worktree 표시
+pact slice    # task corpus를 섹션 단위로 읽기 (--headers, --ids, --tbd)
+pact split-docs  # legacy 긴 TASKS/API/DB 문서를 shard로 분리
 ```
+
+## Context-light SOT
+
+긴 문서는 SOT로 보관하되 기본 컨텍스트에는 올리지 않는다.
+
+```text
+docs/context-map.md          # 명령별 read profile
+tasks/<domain>.md            # task shard
+contracts/manifest.md        # contract shard index
+contracts/api/<domain>.md    # API contract shard
+contracts/db/<domain>.md     # DB contract shard
+```
+
+`/pact:contracts`와 review 계열 명령은 `docs/context-map.md` → `pact slice --headers` → 선택 task의 `context_refs` 순서로 읽는다.
+
+워커 spawn 시에는 `.pact/runs/<task_id>/context.md`가 생성된다. 워커는 이 작은 bundle을 먼저 읽고, 긴 SOT 문서는 추가 확인이 필요할 때만 섹션 단위로 연다.
+
+기존 프로젝트에 이미 긴 `TASKS.md`, `API_CONTRACT.md`, `DB_CONTRACT.md`가 있다면:
+
+```bash
+pact split-docs --dry-run
+pact split-docs
+```
+
+원본 legacy 파일은 삭제하지 않고 shard 파일만 생성한다.
 
 ## Hooks (7개)
 
@@ -228,8 +255,8 @@ pact/
 ├── prompts/                       # 워커 시스템 프롬프트 템플릿
 ├── templates/                     # /pact:init이 사용자 프로젝트로 복사
 ├── bin/                           # pact CLI 진입점
-├── docs/                          # CLAUDE_CODE_SPEC, WORKTREE_POLICY
-├── test/                          # node:test 단위 테스트 (103개)
+├── docs/                          # CLAUDE_CODE_SPEC, WORKTREE_POLICY, context-map
+├── test/                          # node:test 단위 테스트
 ├── ARCHITECTURE.md                # 18개 결정 매트릭스
 ├── DECISIONS.md                   # ADR 누적
 ├── TASKS.md                       # 빌드 task (v1.0 완료)

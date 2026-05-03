@@ -1,5 +1,33 @@
 # Changelog
 
+## v0.3.0 — 2026-05-03
+
+Context-light SOT 시스템 안정화 + 자기 review 라운드 수정.
+
+### 추가 (4 ADR)
+- **ADR-015~017** (앞 커밋에서): tasks/contracts shard, worker context bundle, split-docs 마이그레이션
+- **ADR-018**: `MODULE_OWNERSHIP.md` → `contracts/modules/<domain>.md` shard (API/DB와 일관)
+- **`pact context-map sync`** CLI — Domains 표만 현재 shard 상태로 재생성 (idempotent, prose 보존)
+
+### 변경
+- `task-sources.js` frontmatter — silent overwrite → 첫 번째만 채택, 충돌은 error로 보고
+- `pact split-docs`가 task 메타데이터(`contracts.api_endpoints`, `contracts.db_tables`, allowed_paths)에서 `context_refs` 자동 주입
+- `pact split-docs`가 `MODULE_OWNERSHIP.md`도 분할 (`contracts/modules/<domain>.md`)
+- `contracts/manifest.md`에 Modules 표 추가
+- `pre-tool-guard` hook이 legacy `MODULE_OWNERSHIP.md` + `contracts/modules/*.md` 합집합으로 검증
+- architect prompt에 Step 5 (`pact context-map sync` 호출) 명시
+- `/pact:contracts`가 새 `contracts/modules/` 디렉토리도 mkdir
+- ADR-017에 PRD 자동 분할은 v1.1+ scope임을 명시
+
+### 호환성
+- legacy 단일 파일 (`MODULE_OWNERSHIP.md`, `API_CONTRACT.md`, `DB_CONTRACT.md`, `TASKS.md`) 그대로 인식
+- 기존 frontmatter 구조 동일 (충돌 시 첫 shard만 채택은 새 동작)
+
+### 테스트
+- 145/145 통과 (137 → +8: split-docs context_refs, modules 분리, context-map sync idempotent, task-sources frontmatter conflict, ownership shard 합집합)
+
+---
+
 ## v0.2.1 — 2026-05-03
 
 긴급 patch — 큰 PRD/TASKS 컨텍스트 폭발 fix.

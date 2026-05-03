@@ -139,3 +139,45 @@ test('prepareWorkerSpawn — 결과에 status_path/report_path 포함', () => {
     fs.rmSync(tmpRoot, { recursive: true, force: true });
   }
 });
+
+test('prepareWorkerSpawn — context_refs 기반 context.md 번들 생성', () => {
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'pact-test-'));
+  try {
+    const tmpl = path.join(tmpRoot, 'tmpl.md');
+    fs.writeFileSync(tmpl, '{{context_bundle_path}}');
+    fs.mkdirSync(path.join(tmpRoot, 'contracts/api'), { recursive: true });
+    fs.writeFileSync(path.join(tmpRoot, 'contracts/api/auth.md'), [
+      '# Auth API',
+      '',
+      '## POST /api/auth/login',
+      '',
+      '```yaml',
+      'method: POST',
+      'path: /api/auth/login',
+      '```',
+      '',
+      '## POST /api/auth/logout',
+      'not relevant',
+      '',
+    ].join('\n'));
+
+    const result = prepareWorkerSpawn({
+      ...VALID,
+      context_refs: ['contracts/api/auth.md#POST /api/auth/login'],
+    }, {
+      templatePath: tmpl,
+      runsRoot: path.join(tmpRoot, '.pact/runs'),
+      cwd: tmpRoot,
+    });
+
+    assert.equal(result.ok, true);
+    assert.ok(fs.existsSync(result.context_path));
+    const ctx = fs.readFileSync(result.context_path, 'utf8');
+    assert.match(ctx, /# Worker Context Bundle/);
+    assert.match(ctx, /POST \/api\/auth\/login/);
+    assert.doesNotMatch(ctx, /not relevant/);
+    assert.match(result.prompt, /\.pact\/runs\/PACT-001\/context\.md/);
+  } finally {
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  }
+});

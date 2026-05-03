@@ -6,7 +6,7 @@ description: pact 프로젝트 초기 셋업 — 빈 디렉토리에 4개 문서
 # init — pact 프로젝트 초기화 스킬
 
 > `/pact:init` 명령에서 호출됨.
-> 빈 프로젝트에 pact 시스템을 셋업하고 4개 핵심 문서를 생성한다.
+> 빈 프로젝트에 pact 시스템을 셋업하고 핵심 문서 + context-light shard 구조를 생성한다.
 > **신규 프로젝트 전용**. 기존 코드 분석(brownfield)은 v1.1+ 영역.
 
 ## 입력
@@ -15,11 +15,16 @@ description: pact 프로젝트 초기 셋업 — 빈 디렉토리에 4개 문서
 
 ## 출력
 
-현재 디렉토리에 다음 4개 파일 생성:
+현재 디렉토리에 다음 파일/디렉토리 생성:
 - `CLAUDE.md`
 - `PROGRESS.md`
 - `TASKS.md`
 - `DECISIONS.md`
+- `docs/context-map.md`
+- `tasks/example.md`
+- `contracts/manifest.md`
+- `contracts/api/`
+- `contracts/db/`
 
 ---
 
@@ -186,7 +191,7 @@ stdout JSON에서:
 
 ## 단계 3: 파일 복사·치환
 
-`${CLAUDE_PLUGIN_ROOT}/templates/` 4개 파일을 현재 디렉토리로 복사하면서 placeholder를 사용자 답변으로 치환합니다.
+`${CLAUDE_PLUGIN_ROOT}/templates/` 파일을 현재 디렉토리로 복사하면서 placeholder를 사용자 답변으로 치환합니다.
 
 ### 복사 매핑
 
@@ -196,6 +201,9 @@ stdout JSON에서:
 | `${CLAUDE_PLUGIN_ROOT}/templates/PROGRESS.md` | `./PROGRESS.md` |
 | `${CLAUDE_PLUGIN_ROOT}/templates/TASKS.md` | `./TASKS.md` |
 | `${CLAUDE_PLUGIN_ROOT}/templates/DECISIONS.md` | `./DECISIONS.md` |
+| `${CLAUDE_PLUGIN_ROOT}/templates/context-map.md` | `./docs/context-map.md` |
+| `${CLAUDE_PLUGIN_ROOT}/templates/tasks-example.md` | `./tasks/example.md` |
+| `${CLAUDE_PLUGIN_ROOT}/templates/contracts-manifest.md` | `./contracts/manifest.md` |
 
 ### Placeholder 치환 (모든 파일에 일괄)
 
@@ -220,7 +228,7 @@ stdout JSON에서:
 ## 단계 3.5: `.pact/` SOT 폴더 생성 (PACT-040, P2.6)
 
 ```bash
-mkdir -p .pact/runs .pact/worktrees .pact/archive
+mkdir -p .pact/runs .pact/worktrees .pact/archive tasks contracts/api contracts/db docs
 echo $'*\n!.gitignore' > .pact/.gitignore
 echo '{"version": 1, "current_cycle": 0, "active_workers": []}' > .pact/state.json
 ```
@@ -239,6 +247,9 @@ echo '{"version": 1, "current_cycle": 0, "active_workers": []}' > .pact/state.js
 - PROGRESS.md
 - TASKS.md
 - DECISIONS.md
+- docs/context-map.md
+- tasks/example.md
+- contracts/manifest.md
 
 기본 설정 (CLAUDE.md에서 확인·수정 가능):
 - yolo_mode: false

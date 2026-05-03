@@ -1,14 +1,14 @@
 # API 계약 — <project-name>
 
-> architect가 `/pact:contracts`에서 생성·갱신.
-> task의 `contracts.api_endpoints`에서 참조됨.
-> 형식: prose + yaml 블록 (파서 친화).
+> Legacy manifest. 새 endpoint 상세 SOT는 `contracts/api/<domain>.md`.
+> architect가 `/pact:contracts`에서 domain shard를 생성·갱신.
+> task의 `contracts.api_endpoints`와 `context_refs`에서 참조됨.
 
 ---
 
 ## 사용 가이드
 
-각 endpoint는 다음 yaml 블록 형식으로:
+각 endpoint는 `contracts/api/<domain>.md`에 다음 yaml 블록 형식으로:
 
 ```yaml
 method: GET | POST | PUT | DELETE | PATCH

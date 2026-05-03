@@ -78,18 +78,19 @@ Task tool로 `planner` 서브에이전트를 호출. prompt에 다음을 명시:
 
 - 사용자 요구사항 (인자 또는 추가 질문 답변)
 - educational_mode 값
-- 출력 위치: 현재 디렉토리의 `TASKS.md`
-- TASKS.md frontmatter에 `educational_mode` 박을 것
+- 출력 위치: 기본은 `tasks/<domain>.md`
+- `TASKS.md`는 legacy/index 용도로만 사용
+- task yaml에 `context_refs` 박을 것
 
 planner가 알아서:
 - CLAUDE.md, ARCHITECTURE.md(있으면) read
 - 요구사항을 task 단위로 분해
-- TASKS.md 생성 또는 갱신
+- `tasks/<domain>.md` 생성 또는 갱신
 - TBD 마커는 architect 해소 영역으로 둠
 
 ## 단계 4: 결과 보고 (한국어)
 
-planner 종료 후 TASKS.md 읽어 요약 출력:
+planner 종료 후 `pact slice --headers`로 요약 출력:
 
 ```
 ✅ 계획 완료
@@ -119,5 +120,5 @@ TBD 마커: <개수>개 (architect가 /pact:contracts에서 해소)
 ## 의문 시
 
 - 인자가 모호: 사용자에게 명확화 질문
-- 기존 TASKS.md 존재: 사용자에게 "덮어쓸까요 / 추가할까요" 묻기
+- 기존 task shard 존재: 사용자에게 "어느 domain shard에 추가할까요 / 새 shard를 만들까요" 묻기
 - planner가 토큰 예산 초과 위험: 사용자에게 알림 후 진행 의사 확인

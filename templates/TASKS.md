@@ -1,7 +1,8 @@
-# TASKS — <project-name>
+# TASKS — <project-name> legacy index
 
-> planner가 매 사이클 갱신. task당 yaml 블록 형식.
-> 파서는 yaml 코드블록만 추출하므로 prose는 자유롭게 작성 가능.
+> 새 프로젝트는 task SOT를 `tasks/<domain>.md`에 둔다.
+> 이 파일은 legacy 호환/사람용 index로만 사용한다.
+> `pact slice`와 `pact batch`는 `tasks/*.md`가 있으면 그 shard를 기본으로 읽는다.
 
 ---
 
@@ -16,7 +17,7 @@ prd_source: null          # PRD 입력 시 docs/PRD-*.md 경로
 
 ## Task 작성 가이드
 
-각 task는 다음 yaml 블록을 포함:
+각 task shard(`tasks/<domain>.md`)는 다음 yaml 블록을 포함:
 
 ```yaml
 priority: P0 | P1 | P2
@@ -38,6 +39,9 @@ verify_commands:
 contracts:
   api_endpoints: []
   db_tables: []
+context_refs:
+  - contracts/api/<domain>.md
+  - contracts/db/<domain>.md
 tdd: true | false
 context_budget_tokens: 20000
 prd_reference: <docs/PRD.md §X.X>   # PRD 기반일 때만
@@ -52,5 +56,5 @@ sourcing: <ARCHITECTURE.md §X 또는 PRD §Y>
 
 ---
 
-> planner가 `/pact:plan` 실행 시 이 아래에 task들을 추가합니다.
+> planner가 `/pact:plan` 실행 시 `tasks/<domain>.md`에 task를 추가합니다.
 > task heading 형식: `## <PREFIX>-<번호>  <한 줄 제목>` (대문자 prefix + 숫자, 예: `## AUTH-001  로그인 API`).

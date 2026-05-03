@@ -9,7 +9,7 @@ description: 워커 N개 동시 spawn (worktree 격리) → 머지 → PROGRESS 
 다음 모두 통과해야 진행:
 
 1. `CLAUDE.md` 존재 — 없으면 "/pact:init을 먼저 실행해주세요" 후 중단
-2. `TASKS.md` 존재 — 없으면 "/pact:plan을 먼저 실행해주세요" 후 중단
+2. `TASKS.md` 또는 `tasks/*.md` 존재 — 없으면 "/pact:plan을 먼저 실행해주세요" 후 중단
 3. **TBD 마커 0개** — TBD 있으면 "/pact:contracts를 먼저 실행해주세요 (architect가 계약 정의)" 후 중단
 4. **머지 진행 중 X**:
    ```bash
@@ -54,7 +54,7 @@ node ${CLAUDE_PLUGIN_ROOT}/bin/pact batch
 
 exit code:
 - 0: 성공
-- 2: TASKS.md 없음 → "/pact:plan 먼저"
+- 2: task source 없음 → "/pact:plan 먼저"
 - 3: 파싱 에러
 - 4: TBD 잔존 → "/pact:contracts 먼저"
 - 5: 배치 생성 실패 (cycle 등)
@@ -107,6 +107,7 @@ console.log(JSON.stringify(r));
   "done_criteria": [...],
   "verify_commands": [...],
   "contracts": {...},
+  "context_refs": [...],
   "tdd": <bool>,
   "educational_mode": <frontmatter.educational_mode>,
   "working_dir": "<from createWorktree>",
@@ -124,7 +125,8 @@ echo '<JSON>' > .pact/runs/<task_id>/payload-input.json
 node ${CLAUDE_PLUGIN_ROOT}/scripts/spawn-worker.js .pact/runs/<task_id>/payload-input.json
 ```
 
-stdout JSON에서 각 task의 `prompt`, `status_path` 보관.
+stdout JSON에서 각 task의 `prompt`, `context_path`, `status_path` 보관.
+`context_path`는 워커가 먼저 읽을 작은 context bundle이다.
 
 ## 단계 6: 다중 워커 동시 spawn (Task tool 병렬 호출)
 
@@ -135,6 +137,7 @@ stdout JSON에서 각 task의 `prompt`, `status_path` 보관.
 - `description`: `<task_id>: <title>`
 - `prompt`: 단계 5에서 받은 prompt 그대로
 - 워커는 자기 worktree 안에서만 작업해야 함 (시스템 프롬프트로 강제)
+- 워커는 `.pact/runs/<task_id>/context.md`를 먼저 읽고, 긴 SOT 문서는 추가 필요 시에만 섹션 단위로 읽음
 
 여러 Task call이 한 메시지에 들어가야 병렬. 순차 호출은 직렬.
 
@@ -214,6 +217,7 @@ Task tool로 `coordinator` 호출:
   방금 종료한 워커: <task_id 목록>
   머지 결과: 성공 <merged>, 충돌 <conflicted ? 'yes' : 'no'>
   
+  docs/context-map.md를 먼저 읽고 필요한 status/merge 파일만 확인하세요.
   .pact/runs/<id>/status.json 들을 읽고 PROGRESS.md를 갱신해주세요.
   - Recently Done: 머지 성공한 task들
   - Blocked / Waiting: 실패·blocked·충돌 task들 (사유 + status.json 경로)

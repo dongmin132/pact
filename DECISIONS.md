@@ -6,6 +6,145 @@
 
 ---
 
+## ADR-015 — Context-light SOT: 문서는 shard로 보관하고 필요한 섹션만 읽는다
+
+- **상태**: 채택
+- **날짜**: 2026-05-03
+- **출처**: 실제 dogfooding 중 `/pact:contracts`, `/pact:plan-*-review`가 20분 이상 걸리는 병목
+- **관련**: 토큰 효율 4원칙 #2, #3
+
+### 발견 / 배경
+
+긴 `TASKS.md`, `API_CONTRACT.md`, `DB_CONTRACT.md`, PRD를 manager/reviewer가 통째로 읽으면 한 명령이 20분 이상 걸린다. 기존 `pact slice`가 있어도 SOT 구조와 명령 지침이 단일 긴 파일 중심이면 agent가 전체 문서를 읽는 경향이 남는다.
+
+### 결정
+
+문서는 SOT로 보관하되 기본 컨텍스트에서 제외한다.
+
+1. `docs/context-map.md`를 read profile index로 둔다.
+2. task SOT는 `tasks/<domain>.md` shard로 나눈다. `TASKS.md`는 legacy/index다.
+3. API contract SOT는 `contracts/api/<domain>.md`, DB contract SOT는 `contracts/db/<domain>.md` shard로 둔다.
+4. `contracts/manifest.md`는 domain → shard 경로만 기록한다.
+5. task yaml에 `context_refs`를 넣어 architect/reviewer/worker가 읽을 shard를 직접 가리킨다.
+6. `pact batch`와 `pact slice`는 `tasks/*.md`가 있으면 이를 기본 task source로 사용한다.
+
+### 트레이드오프
+
+- ❌ 파일 수 증가, domain 이름 관리 필요
+- ❌ 기존 단일 파일 mental model보다 초기 학습 비용 있음
+- ✅ `/pact:contracts`와 review 계열이 전체 SOT 대신 관련 task/contract shard만 읽음
+- ✅ worker payload가 `context_refs`로 더 작아짐
+- ✅ 긴 문서는 보존하되 컨텍스트 비용을 명령별로 통제 가능
+
+### 후속
+
+- `.pact/runs/<task_id>/context.md` bundle 생성은 ADR-016에서 채택.
+- Read hook으로 긴 파일 전체 read 경고를 추가할 수 있음.
+
+---
+
+## ADR-016 — Worker context bundle 생성
+
+- **상태**: 채택
+- **날짜**: 2026-05-03
+- **출처**: ADR-015 후속. worker/reviewer가 context_refs를 다시 찾아 읽는 비용 제거
+- **관련**: ADR-015, prompts/worker-system.md, scripts/spawn-worker.js
+
+### 발견 / 배경
+
+`docs/context-map.md`와 `context_refs`만으로도 전체 문서 read는 줄지만, 워커는 여전히 참조 파일을 열고 섹션을 찾는 작업을 반복한다. 병렬 worker가 많아질수록 같은 shard 검색 비용이 중복된다.
+
+### 결정
+
+`prepareWorkerSpawn` 시점에 `.pact/runs/<task_id>/context.md`를 생성한다.
+
+포함 내용:
+
+1. task payload 핵심 필드
+2. `context_refs` 목록
+3. 각 context ref의 anchor section slice
+
+워커 prompt는 긴 SOT 대신 이 `context.md`를 먼저 읽도록 한다.
+
+### 트레이드오프
+
+- ❌ context bundle이 생성 시점 snapshot이라 contract shard가 이후 바뀌면 stale 가능
+- ❌ anchor naming이 부정확하면 해당 slice가 누락될 수 있음
+- ✅ worker가 긴 문서와 contract shard를 직접 찾는 비용 감소
+- ✅ `.pact/runs/<task_id>/`에 재현 가능한 task context가 남음
+- ✅ 실패 분석 시 payload/status/report/context가 한 폴더에 모임
+
+### 테스트
+
+`test/spawn-worker.test.js`에 context_refs 기반 `context.md` 생성 테스트 추가.
+
+---
+
+## ADR-017 — Legacy long docs split migration
+
+- **상태**: 채택
+- **날짜**: 2026-05-03
+- **출처**: 기존 프로젝트의 `TASKS.md`, `API_CONTRACT.md`, `DB_CONTRACT.md`가 각각 1,000~2,000줄 이상으로 커지는 문제
+- **관련**: ADR-015
+
+### 결정
+
+`pact split-docs` CLI를 추가한다.
+
+동작:
+
+1. `TASKS.md`를 task section 단위로 읽고 domain을 추정해 `tasks/<domain>.md`로 분리
+2. `API_CONTRACT.md`를 endpoint section 단위로 읽고 `contracts/api/<domain>.md`로 분리
+3. `DB_CONTRACT.md`를 table section 단위로 읽고 `contracts/db/<domain>.md`로 분리
+4. `contracts/manifest.md`와 `docs/context-map.md`를 생성/갱신
+5. 원본 legacy 파일은 삭제하지 않는다
+
+### 안전 정책
+
+- 기존 shard 파일은 기본적으로 덮어쓰지 않는다.
+- `--force`를 명시한 경우에만 overwrite한다.
+- `--dry-run`으로 생성 대상만 확인할 수 있다.
+
+### 트레이드오프
+
+- ❌ domain 추정은 완벽하지 않음. path/endpoint/table 이름 기반 보수적 추정
+- ❌ split 후 `context_refs` 세밀화는 architect가 보정해야 함
+- ✅ 기존 8,000줄급 SOT를 shard 구조로 이전하는 첫 마이그레이션 경로 제공
+- ✅ 원본 삭제가 없어 되돌리기 쉬움
+
+### Out of scope (v1.x)
+
+- **PRD 자동 분할** — `split-docs`는 TASKS/API/DB/MODULE_OWNERSHIP만. PRD는 `pact slice-prd` 섹션 lazy-load만 지원하고 자동 shard 분할은 v1.1+. 이유: PRD는 사용자 작성 문서라 자동 도메인 추정의 risk가 계약 문서보다 높음. 도메인별 사전 분할은 사용자 책임.
+
+---
+
+## ADR-018 — MODULE_OWNERSHIP shard화 (계약 일관성)
+
+- **상태**: 채택
+- **날짜**: 2026-05-03
+- **출처**: ADR-015~017 검토 중 발견. API/DB는 shard로 분리됐는데 ownership만 단일 파일로 남아 일관성 깨짐
+- **관련**: ADR-015, ADR-017
+
+### 결정
+
+`MODULE_OWNERSHIP.md`를 `contracts/modules/<domain>.md`로 shard화한다.
+
+1. 각 모듈 yaml block은 자기 domain shard로 이동
+2. `contracts/manifest.md`에 Modules 표 추가 (domain → shard 경로)
+3. legacy `MODULE_OWNERSHIP.md`는 유지 (호환성). 있으면 우선 read
+4. `pact split-docs`가 legacy 파일을 자동으로 shard로 이전
+5. `pre-tool-guard` hook과 reviewer는 두 위치 모두 인식 (legacy + shard 합집합)
+
+### 트레이드오프
+
+- ❌ 또 하나의 shard 디렉토리 (`contracts/modules/`)
+- ❌ legacy + shard 양쪽 동시 read 로직 필요 (loadAllOwnership 헬퍼)
+- ✅ API/DB와 동일 패턴 — 멘탈 모델 일관
+- ✅ 큰 프로젝트에서 ownership 한 파일 1000줄+ 방지
+- ✅ 도메인 단독 작업 시 ownership shard 하나만 read
+
+---
+
 ## ADR-001 — Task tool은 working_dir 강제 불가, post-hoc 검증으로 간다
 
 - **상태**: 채택

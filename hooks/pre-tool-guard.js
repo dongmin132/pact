@@ -38,20 +38,30 @@ function matchesGlob(filePath, glob) {
 }
 
 function readOwnership(cwd) {
-  const f = path.join(cwd, 'MODULE_OWNERSHIP.md');
-  if (!fs.existsSync(f)) return null;
-
-  const content = fs.readFileSync(f, 'utf8');
-  const blocks = [...content.matchAll(/```yaml\s*\n([\s\S]*?)\n```/g)];
+  // ADR-018: legacy MODULE_OWNERSHIP.md + contracts/modules/*.md shard 합집합.
+  const sources = [];
+  const legacy = path.join(cwd, 'MODULE_OWNERSHIP.md');
+  if (fs.existsSync(legacy)) sources.push(legacy);
+  const shardDir = path.join(cwd, 'contracts', 'modules');
+  if (fs.existsSync(shardDir) && fs.statSync(shardDir).isDirectory()) {
+    for (const f of fs.readdirSync(shardDir)) {
+      if (f.endsWith('.md')) sources.push(path.join(shardDir, f));
+    }
+  }
+  if (sources.length === 0) return null;
 
   const owners = [];
-  for (const m of blocks) {
-    try {
-      const parsed = yaml.load(m[1]);
-      if (parsed && Array.isArray(parsed.owner_paths)) {
-        owners.push(...parsed.owner_paths);
-      }
-    } catch { /* skip bad yaml */ }
+  for (const src of sources) {
+    const content = fs.readFileSync(src, 'utf8');
+    const blocks = [...content.matchAll(/```yaml\s*\n([\s\S]*?)\n```/g)];
+    for (const m of blocks) {
+      try {
+        const parsed = yaml.load(m[1]);
+        if (parsed && Array.isArray(parsed.owner_paths)) {
+          owners.push(...parsed.owner_paths);
+        }
+      } catch { /* skip bad yaml */ }
+    }
   }
   return owners;
 }

@@ -70,6 +70,8 @@ function renderPrompt(payload, template) {
     done_criteria: listOrEmpty(payload.done_criteria),
     verify_commands: listOrEmpty(payload.verify_commands),
     contracts: jsonOrEmpty(payload.contracts),
+    context_refs: listOrEmpty(payload.context_refs),
+    context_bundle_path: `.pact/runs/${payload.task_id}/context.md`,
     tdd_mode: payload.tdd ? 'ON (RED → GREEN → REFACTOR 강제)' : 'OFF',
     educational_mode: payload.educational_mode ? 'ON (학습 노트 동시 생성)' : 'OFF',
     prd_reference: payload.prd_reference || '(없음)',
@@ -123,12 +125,16 @@ function prepareWorkerSpawn(payload, opts = {}) {
 
   const prompt = renderPrompt(payload, template);
   const dir = preparePayloadDir(payload, runsRoot);
+  const contextPath = path.join(dir, 'context.md');
+  const { writeContextBundle } = require('./context-bundle.js');
+  writeContextBundle(payload, contextPath, { cwd: opts.cwd || process.cwd() });
 
   return {
     ok: true,
     prompt,
     runs_dir: dir,
     payload_path: path.join(dir, 'payload.json'),
+    context_path: contextPath,
     status_path: path.join(dir, 'status.json'),
     report_path: path.join(dir, 'report.md'),
   };

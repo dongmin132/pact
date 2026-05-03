@@ -7,23 +7,23 @@ const fs = require('fs');
 const path = require('path');
 
 module.exports = function batch(args) {
-  const tasksPath = args[0] || 'TASKS.md';
+  const tasksPath = args[0] && !args[0].startsWith('--') ? args[0] : null;
   const outputPath = '.pact/batch.json';
 
-  if (!fs.existsSync(tasksPath)) {
-    console.error(`${tasksPath} not found. /pact:plan을 먼저 실행하세요.`);
+  const { discoverTaskFiles, parseTaskFiles } = require(path.join(__dirname, '..', '..', 'scripts', 'task-sources.js'));
+  const taskFiles = discoverTaskFiles({ file: tasksPath });
+  if (taskFiles.length === 0) {
+    console.error(`${tasksPath || 'TASKS.md 또는 tasks/*.md'} not found. /pact:plan을 먼저 실행하세요.`);
     process.exit(2);
   }
 
-  const { parseTasks } = require(path.join(__dirname, '..', '..', 'scripts', 'parse-tasks.js'));
   const { buildBatches } = require(path.join(__dirname, '..', '..', 'batch-builder.js'));
 
-  const md = fs.readFileSync(tasksPath, 'utf8');
-  const parsed = parseTasks(md);
+  const parsed = parseTaskFiles(taskFiles);
 
   if (parsed.errors.length > 0) {
-    console.error('TASKS.md 파싱 에러:');
-    parsed.errors.forEach(e => console.error(`  ${e.taskId}: ${e.error}`));
+    console.error('task 파싱 에러:');
+    parsed.errors.forEach(e => console.error(`  ${e.file || '?'} ${e.taskId || '-'}: ${e.error}`));
     process.exit(3);
   }
 
@@ -44,6 +44,7 @@ module.exports = function batch(args) {
   fs.mkdirSync(path.dirname(outputPath), { recursive: true });
   const output = {
     generated_at: new Date().toISOString(),
+    task_sources: taskFiles,
     total_tasks: parsed.tasks.length,
     batches: plan.batches.map((b, i) => ({
       index: i,
@@ -54,5 +55,6 @@ module.exports = function batch(args) {
   fs.writeFileSync(outputPath, JSON.stringify(output, null, 2) + '\n');
 
   console.log(`✓ ${outputPath}`);
+  console.log(`  source ${taskFiles.join(', ')}`);
   console.log(`  배치 ${plan.batches.length}개, 총 ${parsed.tasks.length}개 task, skipped ${plan.skipped.length}개`);
 };

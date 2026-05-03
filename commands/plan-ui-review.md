@@ -8,7 +8,7 @@ description: reviewer 호출 — UI/UX 디자인 검토 (gstack /plan-design-rev
 
 ## 단계 1: 사전 검사
 
-- `TASKS.md` 존재 — 없으면 "/pact:plan 먼저"
+- `TASKS.md` 또는 `tasks/*.md` 존재 — 없으면 "/pact:plan 먼저"
 - UI task 후보 식별 (allowed_paths에 frontend·components·views·ui 등 포함)
 - UI task 0개면:
   ```
@@ -23,6 +23,9 @@ Task tool:
 - `description`: "Plan UI/UX review"
 - `prompt`:
   ```
+  
+  docs/context-map.md를 먼저 보고, pact slice --headers로 UI 후보를 식별한 뒤 UI task만 pact slice --ids로 읽으세요.
+  TASKS.md/tasks/*.md 전체 read 금지.
   
   UI 관련 task만 디자이너 시각으로 검토.
   

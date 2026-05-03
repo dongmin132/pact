@@ -29,13 +29,15 @@ task 분해 품질은 reviewer-task, UI는 reviewer-ui 영역.
 ## 입력 (큰 파일 통째 read 금지)
 
 - `CLAUDE.md` (작음, 필수)
-- **TASKS.md** — `pact slice --status todo,in_progress` 또는 `--ids` 로 슬라이스만
+- `docs/context-map.md` — 먼저 read
+- **task corpus** — `pact slice --status todo,in_progress` 또는 `--ids` 로 슬라이스만
 - **PRD** — `pact slice-prd <file> --refs-from TASKS.md` 로 task 관련 섹션만
 - `ARCHITECTURE.md` — grep + sed로 섹션 슬라이스 (전체 X)
-- `API_CONTRACT.md`, `MODULE_OWNERSHIP.md`, `DB_CONTRACT.md` — 변경 task 관련 endpoint/module만 grep
+- `contracts/manifest.md`, `MODULE_OWNERSHIP.md` — 먼저 index만
+- `contracts/api/<domain>.md`, `contracts/db/<domain>.md` — 선택 task의 `context_refs`만
 - WebSearch — best practice 확인
 
-⚠️ `Read('TASKS.md')` 또는 `Read('docs/PRD.md')` 통째 호출 금지.
+⚠️ `Read('TASKS.md')`, `Read('tasks/*.md')`, `Read('docs/PRD.md')`, `Read('contracts/api/**')` 통째 호출 금지.
 
 ## Step 0: Scope Challenge
 
@@ -93,8 +95,8 @@ E2E 권장 조건:
 
 ### Section 4: Pact 계약 정합성 (계약 파일 있을 때만)
 
-- 각 task의 `contracts.api_endpoints` 참조가 실제 `API_CONTRACT.md` endpoint와 일치
-- task의 `contracts.db_tables` 참조가 `DB_CONTRACT.md`에 존재
+- 각 task의 `contracts.api_endpoints`/`context_refs` 참조가 실제 `contracts/api/<domain>.md` endpoint와 일치
+- task의 `contracts.db_tables` 참조가 `contracts/db/<domain>.md`에 존재
 - `allowed_paths`가 `MODULE_OWNERSHIP.md` 모듈 안
 - 인증·rate limit·migration·rollback 빠진 endpoint
 - cross-cutting glob 처리 적절

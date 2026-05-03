@@ -3,7 +3,7 @@
 // pact slice — TASKS.md에서 슬라이스 추출 (큰 파일 통째 read 회피)
 //
 // 사용:
-//   pact slice                           → 모든 task (= cat 같은 효과)
+//   pact slice                           → 기본 task source(TASKS.md or tasks/*.md)
 //   pact slice --status todo             → status=todo 만
 //   pact slice --status todo,in_progress → 여러 status
 //   pact slice --priority P0             → priority=P0 만
@@ -15,7 +15,7 @@ const fs = require('fs');
 const path = require('path');
 
 function parseArgs(args) {
-  const opts = { status: null, priority: null, ids: null, tbd: false, headers: false, file: 'TASKS.md' };
+  const opts = { status: null, priority: null, ids: null, tbd: false, headers: false, file: null };
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (a === '--status') opts.status = args[++i].split(',');
@@ -31,18 +31,21 @@ function parseArgs(args) {
 module.exports = function slice(args) {
   const opts = parseArgs(args);
 
-  if (!fs.existsSync(opts.file)) {
-    console.error(`${opts.file} not found`);
+  const { discoverTaskFiles, parseTaskFiles } = require(path.join(__dirname, '..', '..', 'scripts', 'task-sources.js'));
+  const taskFiles = discoverTaskFiles({ file: opts.file });
+  if (taskFiles.length === 0) {
+    console.error(`${opts.file || 'TASKS.md 또는 tasks/*.md'} not found`);
     process.exit(2);
   }
 
   const { parseTasks } = require(path.join(__dirname, '..', '..', 'scripts', 'parse-tasks.js'));
-  const md = fs.readFileSync(opts.file, 'utf8');
-  const parsed = parseTasks(md);
+  const parsed = parseTaskFiles(taskFiles);
 
   // headers 모드 — TOC만
   if (opts.headers) {
     console.log(`# TASKS — ${parsed.tasks.length} task (TOC)`);
+    console.log();
+    console.log(`sources: ${taskFiles.join(', ')}`);
     console.log();
     if (parsed.frontmatter) {
       console.log('## frontmatter');
@@ -56,7 +59,7 @@ module.exports = function slice(args) {
     for (const t of parsed.tasks) {
       const prio = t.priority || '?';
       const status = t.status || 'todo';
-      console.log(`- ${t.id}  [${prio}/${status}]  ${t.title}`);
+      console.log(`- ${t.id}  [${prio}/${status}]  ${t.title}  (${t.source_file})`);
     }
     return;
   }
@@ -71,39 +74,44 @@ module.exports = function slice(args) {
     filtered = filtered.filter(t => tbdIds.has(t.id));
   }
 
-  // 원본 마크다운에서 해당 task 섹션만 추출
   const filteredIds = new Set(filtered.map(t => t.id));
-  const lines = md.split('\n');
   const out = [];
-  let inTaskSection = false;
-  let currentTaskMatches = false;
-  let preTaskLines = [];
 
-  for (const line of lines) {
-    const taskHeader = line.match(/^#{2,3} ([A-Z][A-Z0-9]*-\d+)\s+(.+)$/);
-    if (taskHeader) {
-      inTaskSection = true;
-      currentTaskMatches = filteredIds.has(taskHeader[1]);
-      if (currentTaskMatches) {
-        // task heading 이전의 frontmatter·guide 한 번만 박기
-        if (preTaskLines.length > 0) {
-          out.push(...preTaskLines);
-          preTaskLines = [];
+  for (const file of taskFiles) {
+    const md = fs.readFileSync(file, 'utf8');
+    const fileParsed = parseTasks(md);
+    const fileIds = new Set(fileParsed.tasks.map(t => t.id).filter(id => filteredIds.has(id)));
+    if (fileIds.size === 0) continue;
+
+    out.push(`\n<!-- source: ${file} -->`);
+    const lines = md.split('\n');
+    let inTaskSection = false;
+    let currentTaskMatches = false;
+    let preTaskLines = [];
+
+    for (const line of lines) {
+      const taskHeader = line.match(/^#{2,3} ([A-Z][A-Z0-9]*-\d+)\s+(.+)$/);
+      if (taskHeader) {
+        inTaskSection = true;
+        currentTaskMatches = fileIds.has(taskHeader[1]);
+        if (currentTaskMatches) {
+          if (preTaskLines.length > 0 && out.length <= 1) {
+            out.push(...preTaskLines);
+            preTaskLines = [];
+          }
+          out.push(line);
         }
-        out.push(line);
+        continue;
       }
-      continue;
-    }
-    if (inTaskSection && currentTaskMatches) {
-      out.push(line);
-    } else if (!inTaskSection) {
-      preTaskLines.push(line);
+      if (inTaskSection && currentTaskMatches) {
+        out.push(line);
+      } else if (!inTaskSection) {
+        preTaskLines.push(line);
+      }
     }
   }
 
-  // task 0개면 frontmatter만 출력
-  if (out.length === 0 && preTaskLines.length > 0) {
-    console.log(preTaskLines.join('\n'));
+  if (out.length === 0) {
     console.error(`(필터 통과 task 0개. 전체 ${parsed.tasks.length}개 중)`);
     return;
   }

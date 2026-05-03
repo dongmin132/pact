@@ -25,10 +25,11 @@ tools:
 ## 입력 (큰 파일 통째 read 금지)
 
 - `CLAUDE.md` (필수, 작음)
-- **TASKS.md** — `pact slice --headers` 먼저 (TOC), 의심 task만 `pact slice --ids X,Y` 또는 `pact slice --status todo`로 슬라이스
+- `docs/context-map.md` — command read profile 확인
+- **task corpus** — `pact slice --headers` 먼저 (TOC), 의심 task만 `pact slice --ids X,Y` 또는 `pact slice --status todo`로 슬라이스
 - `ARCHITECTURE.md` — sourcing 추적용. grep으로 § 찾고 sed로 슬라이스만
 
-⚠️ `Read('TASKS.md')` 통째 호출 금지.
+⚠️ `Read('TASKS.md')`/`Read('tasks/*.md')` 통째 호출 금지.
 
 ## Step 0: Scope Challenge (gstack 영감)
 
@@ -67,7 +68,7 @@ review 시작 전 한 번 훑고 답하기:
 
 ### 5. 교육 모드 일관성
 
-- TASKS.md frontmatter `educational_mode` 박힘 (없으면 → FAIL)
+- task shard 또는 task yaml에 `educational_mode`/`context_refs` 박힘 (없으면 WARN)
 - 일부 task만 학습 노트 생성하면 어색 → 전체 통일 권장
 
 ## 출력 형식
@@ -101,7 +102,7 @@ Step 0 Scope Challenge:
 
 - ❌ 코드 직접 보거나 평가 X (메타 수준만)
 - ❌ 아키텍처·계약 정합성 X (reviewer-arch 영역)
-- ❌ TASKS.md 직접 수정 X (제안만)
+- ❌ task shard 직접 수정 X (제안만)
 - ❌ vague 보고 X — confidence·severity 명시
 - ❌ 한 번에 batch dump 안 함, 발견마다 순차 표시
 
@@ -113,4 +114,4 @@ Step 0 Scope Challenge:
 
 ## 토큰 예산
 
-~15k (TASKS.md만 read, 코드 X). 큰 PRD-driven plan도 ~25k.
+~8k-15k (`pact slice`만 read, 코드 X). 큰 PRD-driven plan도 필요한 task만.

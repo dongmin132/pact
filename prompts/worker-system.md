@@ -67,6 +67,21 @@
 
 이 영역의 endpoint/table만 다룬다. 다른 계약은 위반.
 
+## Context refs
+
+먼저 생성된 context bundle을 읽는다:
+
+`{{context_bundle_path}}`
+
+긴 문서 전체를 읽지 말고 아래 참조만 lazy-load한다:
+
+{{context_refs}}
+
+규칙:
+- 먼저 `docs/context-map.md`가 있으면 읽고, 참조된 shard/섹션만 연다.
+- `TASKS.md`, `tasks/*.md`, `contracts/api/**`, `contracts/db/**` 전체 read 금지.
+- 필요한 섹션은 `rg`로 찾은 뒤 해당 부분만 읽는다.
+
 ---
 
 ## TDD 규칙 (tdd_mode가 ON일 때)

@@ -83,6 +83,60 @@ test('readOwnership — 파일 없으면 null (강제 X)', () => {
   }
 });
 
+test('readOwnership — contracts/modules/*.md shard와 legacy 합집합 (ADR-018)', () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pact-hook-'));
+  try {
+    fs.writeFileSync(path.join(tmpDir, 'MODULE_OWNERSHIP.md'), `## legacy
+\`\`\`yaml
+module: legacy
+owner_paths:
+  - src/legacy/**
+\`\`\`
+`);
+    fs.mkdirSync(path.join(tmpDir, 'contracts/modules'), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, 'contracts/modules/auth.md'), `## auth
+\`\`\`yaml
+module: auth
+owner_paths:
+  - src/auth/**
+\`\`\`
+`);
+    fs.writeFileSync(path.join(tmpDir, 'contracts/modules/meetup.md'), `## meetup
+\`\`\`yaml
+module: meetup
+owner_paths:
+  - src/meetup/**
+\`\`\`
+`);
+
+    const r = readOwnership(tmpDir);
+    assert.deepEqual(r.sort(), [
+      'src/auth/**',
+      'src/legacy/**',
+      'src/meetup/**',
+    ]);
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('readOwnership — shard만 있고 legacy 없어도 동작', () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pact-hook-'));
+  try {
+    fs.mkdirSync(path.join(tmpDir, 'contracts/modules'), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, 'contracts/modules/auth.md'), `\`\`\`yaml
+module: auth
+owner_paths:
+  - src/auth/**
+\`\`\`
+`);
+    const r = readOwnership(tmpDir);
+    assert.deepEqual(r, ['src/auth/**']);
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
 test('detectWorktreeContext — worktree 안에서 task_id 추출', () => {
   const r = detectWorktreeContext('/repo/.pact/worktrees/PACT-042/src');
   assert.equal(r.task_id, 'PACT-042');

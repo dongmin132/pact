@@ -8,8 +8,8 @@ description: reviewer 호출 — 아키텍처 견고성 + 계약 정합성 (gsta
 
 ## 단계 1: 사전 검사
 
-- `TASKS.md` 존재 — 없으면 "/pact:plan 먼저"
-- `API_CONTRACT.md` / `MODULE_OWNERSHIP.md` 있으면 정합성도 검증, 없으면 아키텍처만
+- `TASKS.md` 또는 `tasks/*.md` 존재 — 없으면 "/pact:plan 먼저"
+- `contracts/manifest.md` / `MODULE_OWNERSHIP.md` 있으면 정합성도 검증, 없으면 아키텍처만
 
 ## 단계 2: reviewer 서브에이전트 호출 (plan-arch-review 모드)
 
@@ -18,6 +18,9 @@ Task tool:
 - `description`: "Plan architecture review"
 - `prompt`:
   ```
+  
+  docs/context-map.md를 먼저 읽고, pact slice --headers로 task TOC만 본 뒤 필요한 task/context_refs만 읽으세요.
+  contracts/api/**, contracts/db/** 전체 read 금지. contracts/manifest.md와 선택 task의 context_refs만 사용.
   
   엔지니어 매니저 시각으로 plan 검토. 다음 7가지 cognitive pattern 적용:
   1. Boring by default — 새 인프라/패턴은 innovation token 가치 있나
@@ -47,7 +50,7 @@ Task tool:
   - 큰 입력에 대한 지수적 복잡도
   
   ### Section 4: Pact 계약 정합성 (있으면)
-  - task의 contracts 참조가 API_CONTRACT.md endpoint와 일치
+  - task의 contracts/context_refs 참조가 contracts/api/<domain>.md endpoint와 일치
   - allowed_paths가 MODULE_OWNERSHIP.md 모듈 안
   - 인증·rate limit·migration 같은 엣지 케이스
   - cross-cutting glob 처리

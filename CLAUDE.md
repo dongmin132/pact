@@ -24,6 +24,14 @@
 3. 상태 압축 — PROGRESS.md가 single source of truth
 4. 매니저↔워커 통신은 구조화 페이로드 (긴 자연어 X)
 
+## 컨텍스트 로딩 규칙 (긴 문서 SOT)
+
+- 긴 문서 전체를 기본 컨텍스트에 올리지 않는다.
+- 먼저 `docs/context-map.md`를 보고 어떤 shard/섹션을 읽을지 정한다.
+- `TASKS.md`, `ARCHITECTURE.md`, `API_CONTRACT.md`, `DB_CONTRACT.md`, PRD는 통째 read 금지. `rg`, `sed`, `pact slice`, `pact slice-prd`로 필요한 섹션만 읽는다.
+- 새 task SOT는 `tasks/*.md`, 새 API/DB contract SOT는 `contracts/api/*.md`, `contracts/db/*.md`다.
+- 각 task에는 `context_refs`를 넣어 워커와 reviewer가 읽을 문서를 명시한다.
+
 ## 빌드 시작 전 필수 확인 (추측 금지)
 
 다음 항목은 `docs.claude.com` 또는 해당 공식 문서 직접 확인 후 진행:

@@ -24,7 +24,7 @@ tools:
 - ❌ task 품질 평가 (reviewer-task 영역)
 - ❌ 사용자 요구사항 자체 변경 (분해만, 재해석 X)
 
-산출물은 **오직 `TASKS.md`**.
+산출물은 **task shard**다. 새 프로젝트는 `tasks/<domain>.md`를 쓰고, `TASKS.md`는 legacy/index로만 둔다.
 
 ## 호출 시점
 
@@ -40,7 +40,8 @@ tools:
 ## 입력 (큰 파일 신중하게)
 
 - `CLAUDE.md` (필수, 작음)
-- `ARCHITECTURE.md` (있으면, 큰 파일이면 섹션 슬라이스)
+- `docs/context-map.md` (있으면, 먼저 read)
+- `ARCHITECTURE.md` (있으면, 큰 파일이면 `rg`로 섹션 슬라이스)
 - 사용자 요구사항 (자연어 또는 PRD)
 - **PRD가 큰 파일이면** (1000줄+):
   ```bash
@@ -48,13 +49,14 @@ tools:
   pact slice-prd <file> --section <num>        # 관련 섹션만
   ```
   전체 read는 PRD 작거나 처음 plan 시점만.
-- **기존 TASKS.md**:
+- **기존 task corpus**:
   - 누적 모드면 `pact slice --headers` 로 TOC만 (id 충돌 회피용)
-  - 덮어쓰기 모드면 read 안 함
+  - shard 선택은 `docs/context-map.md`의 Domains 표를 우선
+  - 새 domain이면 `tasks/<domain>.md` 생성
 
 ## 출력
 
-`TASKS.md` — frontmatter + task당 yaml 블록.
+`tasks/<domain>.md` — domain별 task yaml 블록.
 
 ## 호출 시 첫 동작 (필수)
 
@@ -68,7 +70,7 @@ tools:
 (CLAUDE.md educational_mode default)
 ```
 
-답을 TASKS.md frontmatter `educational_mode` 박음.
+답을 새/수정 task shard의 frontmatter 또는 task yaml에 박음.
 
 ### Step 2: PRD 분기 (--from 인자 있을 때)
 
@@ -107,6 +109,9 @@ verify_commands:
 contracts:                     # architect가 채울 자리 (TBD)
   api_endpoints: TBD
   db_tables: TBD
+context_refs:                  # architect가 shard 포인터로 갱신
+  - contracts/api/<domain>.md
+  - contracts/db/<domain>.md
 tdd: true | false
 context_budget_tokens: 20000   # 기본
 prd_reference: <docs/PRD.md §X>  # PRD 기반일 때만
@@ -154,7 +159,7 @@ PRD 전체는 너만 한 번 read. architect·워커는 슬라이스 lazy-load.
 
 ## 절대 안 하는 것
 
-- ❌ **PRD·TASKS.md를 Read 도구로 통째 read** (1000줄+ 시) — slice 사용
+- ❌ **PRD·TASKS.md·tasks/*.md를 Read 도구로 통째 read** — `docs/context-map.md`, `pact slice`, `pact slice-prd` 사용
 - ❌ "백엔드 구현" 같은 거대 task — 반드시 분해
 - ❌ "잘 작동" 같은 vague done_criteria
 - ❌ 구현 디테일 결정 (변수명·라이브러리 선택 등 — 워커 영역)

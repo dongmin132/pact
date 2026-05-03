@@ -29,10 +29,12 @@ tools:
 - `.pact/runs/<task_id>/status.json` — 워커별 보고 (작음)
 - 변경 파일 (`git diff <base>...HEAD --stat` 또는 file별)
 - `CLAUDE.md` `verify_commands` (lint·typecheck·test·build)
-- **TASKS.md** — 머지된 task ID만 `pact slice --ids <merged-ids>` 로 슬라이스
-- `API_CONTRACT.md`, `MODULE_OWNERSHIP.md` — grep으로 변경 endpoint/path만
+- `docs/context-map.md` — 먼저 read
+- **task corpus** — 머지된 task ID만 `pact slice --ids <merged-ids>` 로 슬라이스
+- `contracts/manifest.md`, `MODULE_OWNERSHIP.md` — index/ownership만
+- `contracts/api/<domain>.md`, `contracts/db/<domain>.md` — 머지 task의 `context_refs`만
 
-⚠️ `Read('TASKS.md')` 통째 호출 금지. `git diff` 통째 read도 큰 cycle엔 금지 (파일 단위로).
+⚠️ `Read('TASKS.md')`/`Read('tasks/*.md')` 통째 호출 금지. `git diff` 통째 read도 큰 cycle엔 금지 (파일 단위로).
 
 ## 출력 (PASS/FAIL/WARN)
 
@@ -55,7 +57,7 @@ npm run build
 
 ### 2. Contract 축
 
-`API_CONTRACT.md` endpoint 목록 vs 실제 라우트 정의 비교:
+선택 task의 `context_refs`가 가리키는 `contracts/api/<domain>.md` endpoint 목록 vs 실제 라우트 정의 비교:
 
 ```bash
 # 예: Express 라우트
@@ -64,7 +66,7 @@ grep -rE "router\.(get|post|put|delete|patch)" src/api/
 find src/app -name "route.ts" -o -name "route.js"
 ```
 
-추출된 endpoint가 contract에 없으면 WARN, contract엔 있는데 실제 X면 FAIL.
+추출된 endpoint가 contract shard에 없으면 WARN, contract엔 있는데 실제 X면 FAIL.
 
 ### 3. Docs 축
 
@@ -105,7 +107,7 @@ git log --since="2h ago" --pretty=format:"%H %s" --name-only
 
 Code:        ✅ PASS  (lint·typecheck·test·build 모두 pass)
 Contract:    ⚠️  WARN
-  [P1] (8/10) src/api/auth/refresh.ts:1 — POST /api/auth/refresh가 API_CONTRACT.md에 없음
+  [P1] (8/10) src/api/auth/refresh.ts:1 — POST /api/auth/refresh가 contracts/api/auth.md에 없음
 Docs:        ✅ PASS
 Integration: ❌ FAIL
   [P0] (10/10) src/components/Login.tsx — auth 모듈 ownership 위반 (PACT-002 워커가 수정)
@@ -138,7 +140,7 @@ last_run_at: <ISO>
 ## 의문 시
 
 - verify 명령 timeout: 해당 axis만 fail 처리, 나머지 그대로 진행
-- API_CONTRACT.md·MODULE_OWNERSHIP.md 미존재: Contract·Integration 축 skip 처리, "계약 미정의" 메시지
+- contracts/manifest.md·MODULE_OWNERSHIP.md 미존재: Contract·Integration 축 skip 처리, "계약 미정의" 메시지
 - 발견 사항이 비즈니스 결정 필요: 사용자에게 위임, 자체 판정 X
 
 ## 토큰 예산

@@ -2,14 +2,15 @@
 
 > ⚠️ **이 문서는 read-only 참조용입니다.**
 > DB 스키마의 진실(SOT)은 마이그레이션 파일 (`prisma/`, `migrations/`, `db/migrate/` 등).
-> architect가 `/pact:contracts`에서 마이그레이션을 보고 자동 생성.
+> Legacy manifest. 새 DB 상세 SOT는 `contracts/db/<domain>.md`.
+> architect가 `/pact:contracts`에서 마이그레이션을 보고 domain shard를 갱신.
 > 직접 수정 X — 마이그레이션 변경 시 자동 갱신됨.
 
 ---
 
 ## 사용 가이드
 
-각 테이블은 다음 yaml 블록:
+각 테이블은 `contracts/db/<domain>.md`에 다음 yaml 블록:
 
 ```yaml
 table: <이름>

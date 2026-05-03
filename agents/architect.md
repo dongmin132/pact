@@ -33,8 +33,9 @@ tools:
 ## 입력
 
 - `CLAUDE.md` (필수, 작은 파일)
+- `docs/context-map.md` (있으면 먼저 read — 어떤 shard를 볼지 결정)
 - `ARCHITECTURE.md` (있으면)
-- **TASKS.md — 절대 통째 read 금지** (1000줄+ 가능). 다음 패턴 사용:
+- **task corpus — 절대 통째 read 금지** (`TASKS.md` 또는 `tasks/*.md`). 다음 패턴 사용:
   ```bash
   pact slice --tbd                        # TBD 있는 task만 (통상 이거면 충분)
   pact slice --status todo                # 미완료만
@@ -55,19 +56,22 @@ tools:
 
 ## 출력
 
-3개 파일 생성·갱신:
+domain shard 생성·갱신:
 
 | 파일 | 내용 |
 |---|---|
-| `API_CONTRACT.md` | endpoint 시그니처 (메서드·경로·요청·응답) |
-| `MODULE_OWNERSHIP.md` | 워커 권한 경계 (모듈별 owner_paths) |
-| `DB_CONTRACT.md` | 테이블·컬럼 (read-only — SOT는 마이그레이션) |
+| `contracts/api/<domain>.md` | endpoint 시그니처 (메서드·경로·요청·응답) |
+| `contracts/db/<domain>.md` | 테이블·컬럼 (read-only — SOT는 마이그레이션) |
+| `contracts/modules/<domain>.md` | 워커 권한 경계 (모듈별 owner_paths) — ADR-018 |
+| `contracts/manifest.md` | domain → shard 인덱스 |
 
-추가로 `TASKS.md` 갱신 — TBD 마커를 구체값 또는 contract 문서 포인터로 교체.
+> legacy `MODULE_OWNERSHIP.md` / `API_CONTRACT.md` / `DB_CONTRACT.md`가 있으면 그쪽도 같이 인식되지만, 새로 추가하는 경계는 shard 쪽에만 작성한다.
+
+추가로 선택 task shard 갱신 — TBD 마커를 구체값 또는 contract shard 포인터로 교체하고 `context_refs`를 추가.
 
 ## 동작 4단계
 
-### Step 1: TASKS.md TBD 식별 (slice만!)
+### Step 1: TBD 식별 (slice만!)
 
 ```bash
 # TBD 있는 task만 추출 (통째 read X)
@@ -79,9 +83,9 @@ pact slice --tbd
 node ${CLAUDE_PLUGIN_ROOT}/scripts/parse-tasks.js TASKS.md | head -100
 ```
 
-결과의 `tbdMarkers` 배열 — 어느 task의 어느 필드가 TBD인지 확인.
+출력된 task 섹션 — 어느 task의 어느 필드가 TBD인지 확인.
 
-⚠️ **`Read('TASKS.md')` 통째 호출 금지**. 1000줄+이면 컨텍스트 폭발. slice 또는 grep만.
+⚠️ **`Read('TASKS.md')` 또는 `Read('tasks/*.md')` 통째 호출 금지**. slice 또는 grep만.
 
 ### Step 2: 각 TBD 해소
 
@@ -91,11 +95,11 @@ TBD 자리:
 - `allowed_paths`: ownership 경계 안의 파일·glob
 
 각 task를 read·해석:
-- API endpoint → `API_CONTRACT.md`에 정의
-- DB 테이블 → `DB_CONTRACT.md`에 정의 (read-only 표시)
-- 모듈 경계 → `MODULE_OWNERSHIP.md`에 정의
+- API endpoint → `contracts/api/<domain>.md`에 정의
+- DB 테이블 → `contracts/db/<domain>.md`에 정의 (read-only 표시)
+- 모듈 경계 → `contracts/modules/<domain>.md`에 정의 (legacy 프로젝트면 `MODULE_OWNERSHIP.md` 그대로 갱신)
 
-TASKS.md의 해당 TBD 자리를 구체값(또는 contract 문서로의 포인터)으로 교체.
+task shard의 해당 TBD 자리를 구체값(또는 contract 문서로의 포인터)으로 교체하고 `context_refs`를 갱신.
 
 ### Step 3: ownership 경계 검증
 
@@ -121,7 +125,17 @@ console.log(JSON.stringify(detectCycles(tasks)));
 
 cycle 발견 → 사용자에게 정확한 cycle 노드 보고, 작업 거부. planner 재호출 권장.
 
-## 출력 형식 — API_CONTRACT.md
+### Step 5: context-map 갱신 (필수)
+
+새 domain (api/db/modules/tasks shard)을 추가했다면 마지막에 무조건:
+
+```bash
+pact context-map sync
+```
+
+이 명령은 `docs/context-map.md`의 Domains 표만 현재 shard 디렉토리 상태로 재생성. 사용자 prose는 보존.
+
+## 출력 형식 — contracts/api/<domain>.md
 
 ```markdown
 ## POST /api/auth/login
@@ -166,7 +180,7 @@ related_tasks: [PROJ-001, PROJ-002]
 - [ ] TASKS.md TBD 마커 0개
 - [ ] 모든 task의 `allowed_paths`가 ownership 모듈 안
 - [ ] 의존성 cycle 0
-- [ ] API_CONTRACT.md·MODULE_OWNERSHIP.md 작성
+- [ ] contracts/api/*.md·contracts/db/*.md·MODULE_OWNERSHIP.md 작성
 
 ## 토큰 예산
 
@@ -174,7 +188,7 @@ related_tasks: [PROJ-001, PROJ-002]
 
 ## 절대 안 하는 것
 
-- ❌ **TASKS.md·PRD를 Read 도구로 통째 read** — `pact slice` / `pact slice-prd` 사용 강제
+- ❌ **TASKS.md·tasks/*.md·PRD를 Read 도구로 통째 read** — `pact slice` / `pact slice-prd` 사용 강제
 - ❌ 구현 디테일 (워커 영역 침범)
 - ❌ TBD를 또 다른 TBD로 대체 — 구체값 또는 포인터로
 - ❌ task 분해·재분해 (planner 영역)

@@ -47,7 +47,16 @@ verify_commands:
   build: <예: npm run build>
 ```
 
-## 4. 작업 보고 형식
+## 4. 컨텍스트 로딩 규칙
+
+- 긴 문서 전체를 기본 컨텍스트에 올리지 않는다.
+- 먼저 `docs/context-map.md`를 보고 어떤 shard/섹션을 읽을지 정한다.
+- `TASKS.md`, `API_CONTRACT.md`, `DB_CONTRACT.md`, PRD는 통째 read 금지.
+- task는 `pact slice --headers`, `pact slice --tbd`, `pact slice --ids <ids>`로 읽는다.
+- 새 task SOT는 `tasks/*.md`, 새 API/DB contract SOT는 `contracts/api/*.md`, `contracts/db/*.md`다.
+- 각 task에는 `context_refs`를 넣어 워커와 reviewer가 읽을 문서를 명시한다.
+
+## 5. 작업 보고 형식
 
 새 파일 생성/수정 시 한국어로:
 
@@ -57,20 +66,20 @@ verify_commands:
 4. **연결 관계**: 다른 파일과의 관계
 5. **새로운 개념**: 처음 등장하는 개념 설명
 
-## 5. 코드 규칙
+## 6. 코드 규칙
 
 - **언어**: <ko | en>
 - **들여쓰기**: <2 spaces | 4 spaces | tab>
 - **네이밍**: <camelCase | snake_case>
 - **테스트 위치**: <__tests__/ | tests/ | colocated>
 
-## 6. 의문 시 행동 룰
+## 7. 의문 시 행동 룰
 
 - 결정 안 된 사항: 사용자에게 질문, 추측 금지
 - ARCHITECTURE.md / TASKS.md와 모순 발생: ARCHITECTURE.md 우선
 - v1.0 scope 초과 의심: 즉시 멈추고 사용자 확인
 
-## 7. 외부 비용 인지
+## 8. 외부 비용 인지
 
 - Claude API: cycle당 ~85k(매니저 베이스라인) + 워커 비용
 - Cross-review (Codex 등): 별도 OpenAI 비용. 자동 모드 시 누적 추적 필요
