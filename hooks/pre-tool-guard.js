@@ -8,7 +8,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const yaml = require('js-yaml');
+const yaml = require('../scripts/lib/yaml-mini.js');
 
 function globToRegex(glob) {
   let re = '';

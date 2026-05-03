@@ -13,7 +13,7 @@
 // 4. 잘못된 yaml은 errors 배열에 기록, tasks에는 누락
 
 const fs = require('fs');
-const yaml = require('js-yaml');
+const yaml = require('./lib/yaml-mini.js');
 
 const TASK_HEADING_RE = /^## ([A-Z][A-Z0-9]*-\d+)\s+(.+)$/gm;
 const FRONTMATTER_HEADING_RE = /^## frontmatter\s*$/m;
@@ -122,31 +122,17 @@ function parseTasks(markdown) {
   return { tasks, tbdMarkers, frontmatter, errors };
 }
 
-/** ajv로 task 검증. 옵션: { strict: true }면 schema 위반을 errors에 추가. */
+/** task 검증 (hand-written, dep-free). */
 function validateTasksAgainstSchema(tasks) {
-  let Ajv;
-  try {
-    Ajv = require('ajv');
-  } catch {
-    return { ok: true, errors: [] };  // ajv 없으면 통과 (최소 의존)
-  }
-  const ajv = new Ajv({ allErrors: true, strict: false });
-  const schemaPath = require('path').join(__dirname, '..', 'schemas', 'task.schema.json');
-  let schema;
-  try {
-    schema = JSON.parse(fs.readFileSync(schemaPath, 'utf8'));
-  } catch {
-    return { ok: true, errors: [] };
-  }
-  const validate = ajv.compile(schema);
-
+  const { validateTask } = require('./lib/validate-mini.js');
   const errors = [];
   for (const t of tasks) {
-    if (!validate(t)) {
-      for (const e of (validate.errors || [])) {
+    const v = validateTask(t);
+    if (!v.ok) {
+      for (const e of v.errors) {
         errors.push({
           task_id: t.id,
-          path: e.instancePath || '/',
+          path: e.path,
           message: e.message,
           keyword: e.keyword,
         });

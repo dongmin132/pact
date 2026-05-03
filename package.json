@@ -8,10 +8,5 @@
   },
   "scripts": {
     "test": "node --test test/"
-  },
-  "dependencies": {
-    "ajv": "^8.20.0",
-    "ajv-formats": "^3.0.1",
-    "js-yaml": "^4.1.0"
   }
 }

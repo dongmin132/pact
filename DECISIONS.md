@@ -60,6 +60,48 @@ ARCHITECTURE.md §19.6 변경:
 
 ---
 
+## ADR-013 — Zero-dependency 전환 (마켓플레이스 캐시 친화)
+
+- **상태**: 채택
+- **날짜**: 2026-05-02
+- **출처**: 사용자 지적 (배포형 캐시 설치 시 npm install 불가)
+- **관련**: ARCHITECTURE.md §16, README
+
+### 발견 / 배경
+
+마켓플레이스에서 설치 시 Claude Code는 plugin을 `~/.claude/plugins/cache/<marketplace>/<plugin>/<version>/`에 clone. 이 디렉토리는:
+- 사용자가 자연스럽게 `npm install` 실행하지 않음
+- 권한 / 네트워크 / npm 가용성 가정 위험
+- `${CLAUDE_PLUGIN_DATA}`도 자동 npm install엔 부적합
+
+기존 deps (`js-yaml`, `ajv`, `ajv-formats`)는 README가 `npm install` 전제로 함 → 분포에 약점.
+
+### 결정
+
+**외부 의존성 0** 전환:
+
+1. `scripts/lib/yaml-mini.js` — 우리 yaml subset에 한정된 파서 (`load`, `parseScalar`)
+2. `scripts/lib/validate-mini.js` — `validateStatus`·`validateTask` hand-written
+3. `package.json` `dependencies` 모두 제거
+4. `node_modules` 제거 (3.4M → 0)
+
+### 트레이드오프
+
+- ❌ yaml-mini 우리 subset만 (anchors·multi-doc·복잡 flow 미지원) — 우리 형식 강제하면 OK
+- ❌ validate-mini 하드코딩 (schema 변경 시 코드 수정) — schema 자체가 stable
+- ✅ 캐시 설치 zero-friction (`git clone` 후 즉시 작동)
+- ✅ npm install·네트워크 불필요
+- ✅ 3.4M → 0 (cache 디스크 절약)
+- ✅ Node.js 자체만 있으면 됨
+
+### 테스트
+
+133/133 통과 (yaml-mini 11개·validate-status 7개·task-schema 7개 + 기존 회귀 포함).
+
+`schemas/*.json`은 reference·문서로 유지 (사람이 읽기용).
+
+---
+
 ## ADR-012 — 워커 자기 보고 신뢰 X, 실제 git diff 대조 강제
 
 - **상태**: 채택

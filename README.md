@@ -33,13 +33,18 @@
 ### 정석 (권장)
 
 ```bash
-# pact 저장소 clone 후 dependencies 설치
-# (저장소 URL은 본인 계정에 push 후 사용)
-git clone <repo-url> ~/pact
-cd ~/pact && npm install
+# pact 저장소 clone — npm install 불필요 (zero deps, ADR-013)
+git clone https://github.com/dongmin132/pact.git ~/pact
 
 # 본인 프로젝트 디렉토리에서:
 claude --plugin-dir ~/pact
+```
+
+### Marketplace 설치 (다른 사용자)
+
+```bash
+/plugin marketplace add github:dongmin132/pact
+/plugin install pact@pact-marketplace
 ```
 
 명령 namespace: `/pact:init`, `/pact:plan` 등.
@@ -205,7 +210,7 @@ pact status   # state.json + worktree 표시
 
 ## 요구사항
 
-- Node.js 18+ (테스트는 v20 검증)
+- Node.js 18+ (테스트는 v20 검증) — **외부 의존성 0** (zero-dep)
 - git 2.5+ (worktree 지원)
 - Claude Code (Anthropic)
 - Codex CLI (선택, cross-review용)
