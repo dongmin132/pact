@@ -22,11 +22,13 @@ tools:
 
 `/pact:plan-task-review` 명시 호출 (사용자 직접).
 
-## 입력
+## 입력 (큰 파일 통째 read 금지)
 
-- `TASKS.md` (필수)
-- `CLAUDE.md` (필수)
-- `ARCHITECTURE.md` (있으면, sourcing 추적용)
+- `CLAUDE.md` (필수, 작음)
+- **TASKS.md** — `pact slice --headers` 먼저 (TOC), 의심 task만 `pact slice --ids X,Y` 또는 `pact slice --status todo`로 슬라이스
+- `ARCHITECTURE.md` — sourcing 추적용. grep으로 § 찾고 sed로 슬라이스만
+
+⚠️ `Read('TASKS.md')` 통째 호출 금지.
 
 ## Step 0: Scope Challenge (gstack 영감)
 

@@ -25,7 +25,21 @@ tools:
 
 `/pact:plan-ui-review` 명시 호출.
 
-## UI scope detection (필수 사전 단계)
+## UI scope detection (필수 사전 단계, 큰 파일 통째 read 금지)
+
+```bash
+# UI task 후보 추출
+pact slice --headers   # 먼저 TOC 보고
+# 그 후 후보 ID로:
+pact slice --ids UI-001,SCREEN-001,...
+```
+
+또는 grep으로:
+```bash
+grep -B1 "frontend\|components\|pages\|ui/" TASKS.md
+```
+
+⚠️ `Read('TASKS.md')` 통째 호출 금지.
 
 `TASKS.md`에서 UI 관련 task 식별:
 - `allowed_paths`에 다음 중 하나 포함: `frontend/`, `components/`, `views/`, `pages/`, `ui/`, `app/`, `templates/`

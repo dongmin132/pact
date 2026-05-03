@@ -1,5 +1,26 @@
 # Changelog
 
+## v0.2.1 — 2026-05-03
+
+긴급 patch — 큰 PRD/TASKS 컨텍스트 폭발 fix.
+
+### 추가
+- **`pact slice` CLI** — TASKS.md 슬라이스 (`--status`, `--priority`, `--ids`, `--tbd`, `--headers`)
+- **`pact slice-prd` CLI** — PRD 섹션 추출 (`--section`, `--sections`, `--headers`, `--refs-from`)
+
+### 변경
+- 모든 매니저 agent prompt에 **"큰 파일 통째 read 금지"** 강제
+- planner·architect·reviewer-* 모두 slice/grep/sed 패턴 사용
+- parse-tasks.js: `### TASK-XXX` (3 hashes) 헤더도 인식 (양쪽 호환)
+
+### 효과
+- 큰 PRD (1500+줄) + 큰 TASKS (1000+줄) 환경에서 매니저 호출 가능해짐
+- review·plan 호출 시 컨텍스트 80%+ 절감
+
+### 호환성
+- 기존 사용자 영향 없음 (agent 행동만 변경, API 동일)
+
+
 ## v0.2.0 — 2026-05-02
 
 v0.1.0 출시 후 즉시 보강. zero-dependency + 핵심 보안 fix + agent 분할.

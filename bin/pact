@@ -12,14 +12,18 @@ const commands = {
   batch: () => require('./cmds/batch.js')(args),
   merge: () => require('./cmds/merge.js')(args),
   status: () => require('./cmds/status.js')(args),
+  slice: () => require('./cmds/slice.js')(args),
+  'slice-prd': () => require('./cmds/slice-prd.js')(args),
 };
 
 if (!cmd || !commands[cmd]) {
   console.error('Usage: pact <command>\n');
   console.error('Commands:');
-  console.error('  batch    TASKS.md → .pact/batch.json (배치 계획 생성)');
-  console.error('  merge    .pact/runs/*/status.json 기반 머지 게이트 실행');
-  console.error('  status   .pact/state.json + worktree 표시');
+  console.error('  batch       TASKS.md → .pact/batch.json (배치 계획 생성)');
+  console.error('  merge       .pact/runs/*/status.json 기반 머지 게이트');
+  console.error('  status      .pact/state.json + worktree 표시');
+  console.error('  slice       TASKS.md 슬라이스 (--status, --priority, --ids, --tbd, --headers)');
+  console.error('  slice-prd   PRD 섹션 추출 (--section, --sections, --headers, --refs-from)');
   process.exit(cmd ? 1 : 0);
 }
 

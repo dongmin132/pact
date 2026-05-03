@@ -32,11 +32,26 @@ tools:
 
 ## 입력
 
-- `CLAUDE.md` (필수)
+- `CLAUDE.md` (필수, 작은 파일)
 - `ARCHITECTURE.md` (있으면)
-- `TASKS.md` (필수, TBD 마커 포함)
-- `DECISIONS.md` (lazy-load — 비자명한 결정 참조)
-- task의 `prd_reference` 슬라이스 (필요 시 lazy-load — 전체 PRD 다시 read X)
+- **TASKS.md — 절대 통째 read 금지** (1000줄+ 가능). 다음 패턴 사용:
+  ```bash
+  pact slice --tbd                        # TBD 있는 task만 (통상 이거면 충분)
+  pact slice --status todo                # 미완료만
+  pact slice --priority P0                # P0만
+  pact slice --headers                    # TOC만 (먼저 보고 어느 task 볼지 결정)
+  ```
+- **PRD — 절대 통째 read 금지** (1500줄+ 가능). 다음 패턴:
+  ```bash
+  pact slice-prd docs/PRD.md --headers              # 섹션 TOC
+  pact slice-prd docs/PRD.md --section 12.1         # 특정 섹션
+  pact slice-prd docs/PRD.md --refs-from TASKS.md   # task의 prd_reference만
+  ```
+- `DECISIONS.md` — TOC만 grep으로 보고, 필요 ADR만 sed로 추출:
+  ```bash
+  grep "^## ADR-" DECISIONS.md
+  sed -n '/^## ADR-005/,/^## ADR-006/p' DECISIONS.md
+  ```
 
 ## 출력
 
@@ -52,13 +67,21 @@ tools:
 
 ## 동작 4단계
 
-### Step 1: TASKS.md TBD 식별
+### Step 1: TASKS.md TBD 식별 (slice만!)
 
 ```bash
-node ${CLAUDE_PLUGIN_ROOT}/scripts/parse-tasks.js TASKS.md
+# TBD 있는 task만 추출 (통째 read X)
+pact slice --tbd
+```
+
+또는 parse 결과만:
+```bash
+node ${CLAUDE_PLUGIN_ROOT}/scripts/parse-tasks.js TASKS.md | head -100
 ```
 
 결과의 `tbdMarkers` 배열 — 어느 task의 어느 필드가 TBD인지 확인.
+
+⚠️ **`Read('TASKS.md')` 통째 호출 금지**. 1000줄+이면 컨텍스트 폭발. slice 또는 grep만.
 
 ### Step 2: 각 TBD 해소
 
@@ -151,6 +174,7 @@ related_tasks: [PROJ-001, PROJ-002]
 
 ## 절대 안 하는 것
 
+- ❌ **TASKS.md·PRD를 Read 도구로 통째 read** — `pact slice` / `pact slice-prd` 사용 강제
 - ❌ 구현 디테일 (워커 영역 침범)
 - ❌ TBD를 또 다른 TBD로 대체 — 구체값 또는 포인터로
 - ❌ task 분해·재분해 (planner 영역)

@@ -15,7 +15,7 @@
 const fs = require('fs');
 const yaml = require('./lib/yaml-mini.js');
 
-const TASK_HEADING_RE = /^## ([A-Z][A-Z0-9]*-\d+)\s+(.+)$/gm;
+const TASK_HEADING_RE = /^#{2,3} ([A-Z][A-Z0-9]*-\d+)\s+(.+)$/gm;
 const FRONTMATTER_HEADING_RE = /^## frontmatter\s*$/m;
 const YAML_BLOCK_RE = /```yaml\s*\n([\s\S]*?)\n```/;
 

@@ -37,12 +37,20 @@ tools:
 /pact:plan --from docs/             # PRD 폴더 (.md 모두)
 ```
 
-## 입력
+## 입력 (큰 파일 신중하게)
 
-- `CLAUDE.md` (필수 — 프로젝트 컨텍스트)
-- `ARCHITECTURE.md` (있으면)
+- `CLAUDE.md` (필수, 작음)
+- `ARCHITECTURE.md` (있으면, 큰 파일이면 섹션 슬라이스)
 - 사용자 요구사항 (자연어 또는 PRD)
-- `TASKS.md` (기존 있으면 — 누적 vs 덮어쓰기 사용자에게 묻기)
+- **PRD가 큰 파일이면** (1000줄+):
+  ```bash
+  pact slice-prd <file> --headers              # TOC 먼저
+  pact slice-prd <file> --section <num>        # 관련 섹션만
+  ```
+  전체 read는 PRD 작거나 처음 plan 시점만.
+- **기존 TASKS.md**:
+  - 누적 모드면 `pact slice --headers` 로 TOC만 (id 충돌 회피용)
+  - 덮어쓰기 모드면 read 안 함
 
 ## 출력
 
@@ -146,6 +154,7 @@ PRD 전체는 너만 한 번 read. architect·워커는 슬라이스 lazy-load.
 
 ## 절대 안 하는 것
 
+- ❌ **PRD·TASKS.md를 Read 도구로 통째 read** (1000줄+ 시) — slice 사용
 - ❌ "백엔드 구현" 같은 거대 task — 반드시 분해
 - ❌ "잘 작동" 같은 vague done_criteria
 - ❌ 구현 디테일 결정 (변수명·라이브러리 선택 등 — 워커 영역)

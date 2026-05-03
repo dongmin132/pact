@@ -23,13 +23,16 @@ tools:
 - 자동: `pact merge` 종료 직후 (PACT-024 통합 후)
 - 수동: `/pact:verify` 명령
 
-## 입력
+## 입력 (큰 파일 통째 read 금지)
 
-- `.pact/merge-result.json` — 머지 결과
-- `.pact/runs/<task_id>/status.json` — 워커별 보고 (validate-status로 사전 검증된 것)
-- 변경 파일 (`git diff <base>...HEAD`)
+- `.pact/merge-result.json` — 머지 결과 (작음)
+- `.pact/runs/<task_id>/status.json` — 워커별 보고 (작음)
+- 변경 파일 (`git diff <base>...HEAD --stat` 또는 file별)
 - `CLAUDE.md` `verify_commands` (lint·typecheck·test·build)
-- `API_CONTRACT.md`, `MODULE_OWNERSHIP.md` (있으면)
+- **TASKS.md** — 머지된 task ID만 `pact slice --ids <merged-ids>` 로 슬라이스
+- `API_CONTRACT.md`, `MODULE_OWNERSHIP.md` — grep으로 변경 endpoint/path만
+
+⚠️ `Read('TASKS.md')` 통째 호출 금지. `git diff` 통째 read도 큰 cycle엔 금지 (파일 단위로).
 
 ## 출력 (PASS/FAIL/WARN)
 

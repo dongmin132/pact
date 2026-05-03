@@ -1,6 +1,6 @@
 {
   "name": "pact",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "pact — 계약 기반 AI 개발 운영 플러그인 (Claude Code)",
   "private": true,
   "bin": {

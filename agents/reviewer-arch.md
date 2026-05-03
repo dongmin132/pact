@@ -26,11 +26,16 @@ task 분해 품질은 reviewer-task, UI는 reviewer-ui 영역.
 
 `/pact:plan-arch-review` 명시 호출.
 
-## 입력
+## 입력 (큰 파일 통째 read 금지)
 
-- `TASKS.md`, `CLAUDE.md`, `ARCHITECTURE.md`
-- `API_CONTRACT.md`, `MODULE_OWNERSHIP.md`, `DB_CONTRACT.md` (있으면 정합성 검증)
-- 필요 시 WebSearch로 best practice 확인
+- `CLAUDE.md` (작음, 필수)
+- **TASKS.md** — `pact slice --status todo,in_progress` 또는 `--ids` 로 슬라이스만
+- **PRD** — `pact slice-prd <file> --refs-from TASKS.md` 로 task 관련 섹션만
+- `ARCHITECTURE.md` — grep + sed로 섹션 슬라이스 (전체 X)
+- `API_CONTRACT.md`, `MODULE_OWNERSHIP.md`, `DB_CONTRACT.md` — 변경 task 관련 endpoint/module만 grep
+- WebSearch — best practice 확인
+
+⚠️ `Read('TASKS.md')` 또는 `Read('docs/PRD.md')` 통째 호출 금지.
 
 ## Step 0: Scope Challenge
 
