@@ -9,6 +9,7 @@ const path = require('path');
 module.exports = function batch(args) {
   const tasksPath = args[0] && !args[0].startsWith('--') ? args[0] : null;
   const outputPath = '.pact/batch.json';
+  const nextOnly = args.includes('--next') || args.includes('-n');
 
   const { discoverTaskFiles, parseTaskFiles } = require(path.join(__dirname, '..', '..', 'scripts', 'task-sources.js'));
   const taskFiles = discoverTaskFiles({ file: tasksPath });
@@ -55,6 +56,11 @@ module.exports = function batch(args) {
   fs.writeFileSync(outputPath, JSON.stringify(output, null, 2) + '\n');
 
   console.log(`✓ ${outputPath}`);
-  console.log(`  source ${taskFiles.join(', ')}`);
-  console.log(`  배치 ${plan.batches.length}개, 총 ${parsed.tasks.length}개 task, skipped ${plan.skipped.length}개`);
+  if (nextOnly && plan.batches.length > 0) {
+    console.log(`  next batch[0]: ${plan.batches[0].map(t => t.id).join(', ')}`);
+    console.log(`  (총 batch ${plan.batches.length}개 — 전체 보려면 --next 빼고 재실행)`);
+  } else {
+    console.log(`  source ${taskFiles.join(', ')}`);
+    console.log(`  배치 ${plan.batches.length}개, 총 ${parsed.tasks.length}개 task, skipped ${plan.skipped.length}개`);
+  }
 };

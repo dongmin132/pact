@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.4.0 — 2026-05-04
+
+워커 truncation 한계 해소 + CLI 토큰 디시플린.
+
+### 워커-side 수정
+- **`agents/worker.md`**: `maxTurns: 30 → 60`. cycle 1 측정 결과 워커들이 RED+GREEN+verify+commit+status 한 번에 못 마치고 30~50 tool_use 부근에서 잘려 메인이 마무리하는 패턴 반복. 60으로 올려 정상 종료 가능하게.
+- **`hooks/pre-tool-guard.js`**: 프로젝트 루트 밖 경로(예: `/tmp/foo`, `~/.claude/plugins/...`) Edit/Write 시도 시 MODULE_OWNERSHIP에 없다고 차단하던 false positive 해소. 이제 cwd 기준 상대경로가 `..`로 시작하거나 절대경로면 ownership 검사 건너뜀.
+
+### CLI 토큰 디시플린 (메인 conversation context 절감)
+- **`pact merge --quiet` / `-q`**: rejected 리스트(보통 28~31건)를 stderr 1줄 요약으로 압축. stdout에는 머지 성공만. `merge-result.json`에는 그대로 풀버전 기록.
+- **`pact batch --next` / `-n`**: 전체 batch 19개 dump 대신 `batches[0]` 한 줄만. 잘못된 batch 선택 방지 + 출력 압축.
+- **`pact context-guard --quiet` / `-q`**: 8줄 경고 → 1줄 요약 (`context-guard ok` 또는 `context-guard warn: N long doc(s)`).
+
+### 측정 (사용자 환경)
+- batch 15 (룰 X) → batch 16 (CLAUDE.md §8 운영 룰 O): 1회 /pact:parallel 토큰 442k → 256k (-42%). 본 v0.4 CLI 패치로 추가 절감 기대.
+
 ## v0.3.0 — 2026-05-03
 
 Context-light SOT 시스템 안정화 + 자기 review 라운드 수정.

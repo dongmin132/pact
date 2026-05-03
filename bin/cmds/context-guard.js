@@ -15,6 +15,7 @@ function parseArgs(args) {
   const opts = {
     parallel: args.includes('--parallel'),
     allowLongContext: args.includes('--allow-long-context'),
+    quiet: args.includes('--quiet') || args.includes('-q'),
     maxLines: DEFAULT_MAX_LINES,
   };
 
@@ -99,6 +100,12 @@ function printRisks(risks, opts) {
 module.exports = function contextGuard(args) {
   const opts = parseArgs(args);
   const risks = collectLongDocs(opts.maxLines);
+
+  if (opts.quiet) {
+    if (risks.length === 0) console.log('context-guard ok');
+    else console.log(`context-guard warn: ${risks.length} long doc(s)`);
+    return;
+  }
 
   if (risks.length > 0 && opts.parallel && !opts.allowLongContext) {
     printRisks(risks, opts);

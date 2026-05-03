@@ -227,10 +227,12 @@ function main() {
   }
 
   // 3) MODULE_OWNERSHIP 검사 (메인 또는 payload 미존재 시 fallback)
+  const rel = path.relative(cwd, absFile);
+  // 프로젝트 루트 밖이면 ownership 검사 대상 X (메인이 /tmp, ~/.claude/plugins 등 만질 때)
+  if (rel.startsWith('..') || path.isAbsolute(rel)) process.exit(0);
   const owners = readOwnership(cwd);
   if (!owners) process.exit(0);  // ownership 미정의 → 통과
 
-  const rel = path.relative(cwd, absFile);
   const r = checkPath(rel, owners);
   if (r.allowed) process.exit(0);
 

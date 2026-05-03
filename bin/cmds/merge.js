@@ -13,6 +13,7 @@ const path = require('path');
 const { spawnSync } = require('child_process');
 
 module.exports = function merge(args) {
+  const quiet = args.includes('--quiet') || args.includes('-q');
   const runsRoot = '.pact/runs';
   if (!fs.existsSync(runsRoot)) {
     console.error('.pact/runs 없음. cycle 진행 전.');
@@ -129,7 +130,11 @@ module.exports = function merge(args) {
   }
 
   console.log(`머지 대상: ${eligible.length}개 (거부 ${rejected.length}개)`);
-  rejected.forEach(r => console.log(`  ✗ ${r.task_id}: ${r.reason}`));
+  if (!quiet) {
+    rejected.forEach(r => console.log(`  ✗ ${r.task_id}: ${r.reason}`));
+  } else if (rejected.length > 0) {
+    console.error(`(거부 상세 ${rejected.length}건은 .pact/merge-result.json.rejected 참고)`);
+  }
 
   const result = mergeAll(eligible);
 
@@ -143,13 +148,19 @@ module.exports = function merge(args) {
   };
   fs.writeFileSync('.pact/merge-result.json', JSON.stringify(out, null, 2) + '\n');
 
-  console.log(`\n✓ 머지: ${result.merged.length}개`);
-  result.merged.forEach(id => console.log(`  ✓ ${id}`));
+  if (quiet) {
+    console.log(`✓ 머지: ${result.merged.length}개${result.merged.length ? ' (' + result.merged.join(', ') + ')' : ''}`);
+  } else {
+    console.log(`\n✓ 머지: ${result.merged.length}개`);
+    result.merged.forEach(id => console.log(`  ✓ ${id}`));
+  }
   if (result.conflicted) {
     console.log(`\n✗ 충돌: ${result.conflicted.task_id}`);
-    console.log(`  files: ${result.conflicted.files.join(', ')}`);
-    console.log(`  → /pact:resolve-conflict 또는 git merge --abort`);
-    console.log(`  미시도: ${result.skipped.join(', ')}`);
+    if (!quiet) {
+      console.log(`  files: ${result.conflicted.files.join(', ')}`);
+      console.log(`  → /pact:resolve-conflict 또는 git merge --abort`);
+      console.log(`  미시도: ${result.skipped.join(', ')}`);
+    }
     process.exit(6);
   }
 };
