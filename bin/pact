@@ -17,6 +17,7 @@ const commands = {
   'split-docs': () => require('./cmds/split-docs.js')(args),
   'context-map': () => require('./cmds/context-map.js')(args),
   'context-guard': () => require('./cmds/context-guard.js')(args),
+  'run-cycle': () => require('./cmds/run-cycle.js')(args),
 };
 
 if (!cmd || !commands[cmd]) {
@@ -30,6 +31,7 @@ if (!cmd || !commands[cmd]) {
   console.error('  split-docs  긴 TASKS/API/DB 계약 문서를 domain shard로 분리');
   console.error('  context-map sync   docs/context-map.md Domains 표를 현재 shard 상태로 갱신');
   console.error('  context-guard      parallel 전 긴 문서/선택 컨텍스트 위험 검사');
+  console.error('  run-cycle <prepare|collect> [--max=N]  /pact:parallel 결정적 작업 통합 (메인 turn 압축)');
   process.exit(cmd ? 1 : 0);
 }
 
