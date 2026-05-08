@@ -2,172 +2,71 @@
 description: 워커 N개 동시 spawn (worktree 격리) → 머지 → PROGRESS 갱신
 ---
 
-사용자가 `/pact:parallel`을 실행했습니다.
+`/pact:parallel` 실행됨. 아래 단계 순서대로. 실패 안내는 모두 한국어.
 
-## 단계 1: 사전 검사
+## 단계 1: 사전 검사 (모두 통과해야 진행)
 
-다음 모두 통과해야 진행:
+1. `CLAUDE.md` 없음 → "/pact:init 먼저" 후 중단
+2. `TASKS.md` 또는 `tasks/*.md` 없음 → "/pact:plan 먼저"
+3. **TBD 잔존** → "/pact:contracts 먼저"
+4. 컨텍스트 가드: `node ${CLAUDE_PLUGIN_ROOT}/bin/pact context-guard --parallel` (실패는 경고만, 중단 X). 긴 PRD/spec을 VS Code에서 선택 중이면 한국어로 해제 안내.
+5. 머지 진행 중: `git rev-parse -q --verify MERGE_HEAD` exit 0이면 "/pact:resolve-conflict 또는 git merge --abort 후 재실행" 중단
+6. git 환경: `node -e "const{checkEnvironment}=require('${CLAUDE_PLUGIN_ROOT}/scripts/worktree-manager.js');const r=checkEnvironment();if(!r.ok){console.error(JSON.stringify(r.errors));process.exit(1)}"` 실패 시 한국어 안내 + 중단
 
-1. `CLAUDE.md` 존재 — 없으면 "/pact:init을 먼저 실행해주세요" 후 중단
-2. `TASKS.md` 또는 `tasks/*.md` 존재 — 없으면 "/pact:plan을 먼저 실행해주세요" 후 중단
-3. **TBD 마커 0개** — TBD 있으면 "/pact:contracts를 먼저 실행해주세요 (architect가 계약 정의)" 후 중단
-4. **컨텍스트 과다 주입 경고**:
-   ```bash
-   node ${CLAUDE_PLUGIN_ROOT}/bin/pact context-guard --parallel
-   ```
-   이 검사는 긴 SOT/spec 문서 존재를 경고만 한다. 실패로 중단하지 않는다.
-   긴 문서를 VS Code에서 선택한 상태라면 한국어로 안내:
-   ```
-   ⚠️ 긴 문서가 기본 컨텍스트로 들어갈 수 있습니다.
+## 단계 2: Review 확인 게이트
 
-   VS Code에서 긴 PRD/spec/TASKS/API/DB 문서를 선택한 상태라면 선택을 해제해주세요.
-   워커가 긴 SOT 원문을 Read하려는 순간은 PreToolUse hook이 차단합니다.
-   ```
-5. **머지 진행 중 X**:
-   ```bash
-   git rev-parse -q --verify MERGE_HEAD
-   ```
-   exit 0이면 이전 cycle 머지 충돌 미해결. 다음 메시지 후 중단:
-   ```
-   ⚠️ 이전 cycle의 머지 충돌이 미해결 상태입니다.
-   /pact:resolve-conflict 또는 git merge --abort 후 다시 실행해주세요.
-   ```
-6. **git 환경 검증**:
-   ```bash
-   node -e "
-   const { checkEnvironment } = require('${CLAUDE_PLUGIN_ROOT}/scripts/worktree-manager.js');
-   const r = checkEnvironment();
-   if (!r.ok) { console.error(JSON.stringify(r.errors)); process.exit(1); }
-   "
-   ```
-   실패 시 에러 메시지를 한국어로 사용자에게 표시 후 중단.
+한국어로 묻기: plan-task-review / plan-arch-review / plan-ui-review 중 어디까지 했는지. 답 [검토 없이] 시 PROGRESS.md에 `risk_acknowledged: true` + ts 박음.
 
-## 단계 2: Review 확인 게이트 (한국어)
-
-```
-이 plan에 대해 review를 진행하셨나요?
-
-  [1] /pact:plan-task-review 실행 완료 (분해 품질)
-  [2] /pact:plan-arch-review 실행 완료 (아키텍처 + 계약)
-  [3] /pact:plan-ui-review 실행 완료 (UI 디자인, 해당 시)
-  [4] 위 셋 다 실행 완료
-  [5] 검토 없이 진행 (위험 인수)
-```
-
-답변 5 → PROGRESS.md에 `risk_acknowledged: true` + timestamp 박음.
-
-## 단계 3: 배치 계획 (pact batch CLI)
+## 단계 3: 배치 계획
 
 ```bash
 node ${CLAUDE_PLUGIN_ROOT}/bin/pact batch
 ```
 
-성공 시 `.pact/batch.json` 생성. `batches[0]` (첫 번째 배치)이 이번 cycle 대상.
+`.pact/batch.json` 생성. exit: 0 ok / 2 task source 없음(→/pact:plan) / 3 파싱 / 4 TBD(→/pact:contracts) / 5 cycle.
 
-exit code:
-- 0: 성공
-- 2: task source 없음 → "/pact:plan 먼저"
-- 3: 파싱 에러
-- 4: TBD 잔존 → "/pact:contracts 먼저"
-- 5: 배치 생성 실패 (cycle 등)
+**3-A 스킵 게이트**: exit 0 + `batches[0].task_ids.length ≤ 2` + `skipped.length === 0` → coordinator review 스킵 (CLI가 이미 결정적 검증). 단계 4로.
 
-### 3-A: 스킵 게이트 (작은 배치)
+**3-B coordinator review** (위 조건 위반): Task tool, `subagent_type: coordinator`, prompt: "검토 모드. .pact/batch.json 의도·논리 점검 후 OK 또는 수정 사유". 수정 필요 시 사용자 위임.
 
-`pact batch` exit 0 + `batches[0].task_ids.length ≤ 2` + `skipped.length === 0` 이면 **coordinator 검토 모드 스킵**. 이유:
-- `pact batch` CLI가 이미 결정적으로 의존성·schema·TBD·cycle 검증
-- 1~2 task 배치는 LLM 점검 가치보다 spawn 비용(매니저 컨텍스트 ~5k)이 큼
-- 스킵해도 단계 6 워커 spawn 전 권한 검증은 pre-tool-guard가 보장
+동시 한도 5 (ARCHITECTURE.md §6). `--max=N`으로 더 줄임.
 
-스킵 조건 위반 — 배치가 3개 이상이거나 skipped가 있으면 3-B 진행.
+`batches[0]` 비어있으면 "실행 가능한 task 없음. /pact:status 또는 /pact:plan." 후 종료.
 
-### 3-B: coordinator 검토 모드 (큰 배치)
+## 단계 4: worktree 생성
 
-Task tool:
-- `subagent_type`: `coordinator`
-- prompt: "검토 모드. .pact/batch.json을 읽고 의도·논리 점검 후 OK 또는 수정 사유 반환"
-
-OK면 진행. 수정 필요하면 사용자에게 위임.
-
-**동시 한도** (ARCHITECTURE.md §6):
-- batch.json `batches[0]`이 default 5 이내 (`buildBatches({maxBatchSize: 5})`)
-- 사용자가 `--max=N` 인자 줘서 더 줄일 수 있음 (이번 cycle만 N개)
-- 5 초과 절대 X
-
-`batches[0]` 비어있으면:
-```
-실행 가능한 task 없음. /pact:status 또는 /pact:plan.
-```
-후 종료.
-
-## 단계 4: 각 task당 worktree 생성
-
-선택한 task ID 목록에 대해 순차적으로:
+각 task_id에 대해:
 
 ```bash
-node -e "
-const { createWorktree } = require('${CLAUDE_PLUGIN_ROOT}/scripts/worktree-manager.js');
-const r = createWorktree('<task_id>', 'main');
-console.log(JSON.stringify(r));
-"
+node -e "const{createWorktree}=require('${CLAUDE_PLUGIN_ROOT}/scripts/worktree-manager.js');console.log(JSON.stringify(createWorktree('<task_id>','main')))"
 ```
 
-각 결과의 `working_dir`/`branch_name`/`abs_path` 보관. 하나라도 실패하면:
-- 이미 생성한 worktree들 모두 removeWorktree로 롤백
-- 사용자에게 에러 보고 후 중단
+stdout JSON에서 `working_dir`/`branch_name`/`abs_path` 보관 (createWorktree가 main의 `node_modules` symlink도 자동 박음). 하나라도 실패 시 만들어진 worktree 모두 `removeWorktree`로 롤백 후 중단.
 
-## 단계 5: 각 워커 payload 구성 + prompt 준비
+## 단계 5: payload + prompt 렌더
 
-각 task에 대해:
+각 task별로 payload JSON 작성:
 
-```json
-{
-  "task_id": "<id>",
-  "title": "<title>",
-  "allowed_paths": [...],
-  "forbidden_paths": [...],
-  "done_criteria": [...],
-  "verify_commands": [...],
-  "contracts": {...},
-  "context_refs": [...],
-  "tdd": <bool>,
-  "educational_mode": <frontmatter.educational_mode>,
-  "working_dir": "<from createWorktree>",
-  "branch_name": "<from createWorktree>",
-  "base_branch": "main",
-  "context_budget_tokens": 20000
-}
-```
-
-저장 + prompt 렌더:
+필드: `task_id`, `title`, `allowed_paths`, `forbidden_paths`, `done_criteria`, `verify_commands`, `contracts`, `context_refs`, `tdd`, `educational_mode`, `working_dir`, `branch_name`, `base_branch`, `context_budget_tokens: 20000`.
 
 ```bash
-mkdir -p .pact/runs/<task_id>
-echo '<JSON>' > .pact/runs/<task_id>/payload-input.json
+mkdir -p .pact/runs/<task_id> && echo '<JSON>' > .pact/runs/<task_id>/payload-input.json
 node ${CLAUDE_PLUGIN_ROOT}/scripts/spawn-worker.js .pact/runs/<task_id>/payload-input.json
 ```
 
-stdout JSON에서 각 task의 `task_prompt`, `prompt_path`, `context_path`, `status_path` 보관.
-`prompt_path`는 전체 워커 지시문 파일이다. 메인 Claude는 이 파일 전문을 읽지 않는다.
-`task_prompt`는 Task tool에 넘길 짧은 지시문이다.
-`context_path`는 워커가 먼저 읽을 작은 context bundle이다.
+stdout JSON에서 `task_prompt`, `prompt_path`, `context_path`, `status_path` 보관. **`prompt_path`(전체 워커 지시) 메인은 read 금지** — `task_prompt`만 Task tool에 넘김.
 
-## 단계 6: 다중 워커 동시 spawn (Task tool 병렬 호출)
+## 단계 6: 병렬 spawn (Task tool ×N, **한 메시지에서**)
 
-**중요**: 메인 Claude가 **한 메시지에서 Task tool을 N번 동시 호출**한다. 이게 진짜 병렬 spawn (서브에이전트는 다른 서브에이전트 spawn 불가, ARCHITECTURE.md §14.2).
+서브에이전트 nesting 불가 (ARCHITECTURE.md §14.2) — 메인이 직접 동시 호출:
 
-각 워커 호출:
 - `subagent_type`: `worker`
 - `description`: `<task_id>: <title>`
-- `prompt`: 단계 5에서 받은 `task_prompt` 그대로
-- 워커는 자기 worktree 안에서만 작업해야 함 (시스템 프롬프트로 강제)
-- 워커가 직접 `.pact/runs/<task_id>/prompt.md`를 읽고 전체 지시를 확인함
-- 워커는 `.pact/runs/<task_id>/context.md`를 먼저 읽고, 긴 SOT 문서는 추가 필요 시에만 섹션 단위로 읽음
+- `prompt`: 단계 5의 `task_prompt`
 
-여러 Task call이 한 메시지에 들어가야 병렬. 순차 호출은 직렬.
+순차 호출은 직렬화. **반드시 한 메시지에 N개 Task call**.
 
-## 단계 7: 모든 워커 종료 대기 + status.json 수집
-
-워커들이 모두 종료한 후 각각의 status.json read:
+## 단계 7: 종료 대기 + status 수집
 
 ```bash
 for id in <task_ids>; do
@@ -175,126 +74,51 @@ for id in <task_ids>; do
 done
 ```
 
-수집한 결과를 메모리에 보관 (단계 8·10에서 사용).
-
-## 단계 8: 머지 게이트 (pact merge CLI)
+## 단계 8: 머지 게이트
 
 ```bash
 node ${CLAUDE_PLUGIN_ROOT}/bin/pact merge
 ```
 
-CLI가 결정적으로:
-1. 모든 `.pact/runs/*/status.json` schema 검증
-2. status=done + clean_for_merge=true + verify pass + ownership 위반 X 인 워커만 머지 대상
-3. mergeAll 호출
-4. 결과를 `.pact/merge-result.json`에 기록
+`.pact/merge-result.json` 생성. exit 0 ok / 6 충돌.
 
-exit code:
-- 0: 모두 성공 (또는 일부 거부 + 충돌 0)
-- 6: 충돌 발생 (worktree 보존, /pact:resolve-conflict 안내)
+**8-A (exit 0)**: `merged: [...]` 모두 성공 → 단계 9.
 
-stdout 결과 read 후 다음 분기:
+**8-B (exit 6)**: `conflicted = { task_id, files, error }` 있음. CLI는 abort 안 함 (보존). 한국어 안내:
+> ⚠️ 머지 충돌 — 성공: \<merged\>, 충돌: \<task_id\>(파일 \<files\>), 미시도: \<skipped\>. /pact:resolve-conflict 또는 git merge --abort.
 
-### 8-A: exit 0, conflicted=null
-- `.pact/merge-result.json`의 `merged: [...]` 모두 성공
-- 단계 9로
+cleanup은 성공한 것만, 단계 10으로.
 
-### 8-B: exit 6, conflicted 있음
-- `merge-result.json.conflicted = { task_id, files, error }`
-- **CLI는 abort 안 함** (사용자가 직접 해결하도록 보존)
-- 한국어 안내:
-  ```
-  ⚠️ 머지 충돌
-
-  성공: <merged>
-  충돌: <task_id> (파일: <files>)
-  미시도: <skipped>
-
-  /pact:resolve-conflict 또는 git merge --abort
-  ```
-- coordinator 통합 모드 호출 (단계 10). cleanup은 성공한 것만.
-
-## 단계 9: 성공한 worktree 정리
-
-`merged`에 들어간 task들의 worktree를 제거:
+## 단계 9: 성공 worktree 정리
 
 ```bash
-node -e "
-const { removeWorktree } = require('${CLAUDE_PLUGIN_ROOT}/scripts/worktree-manager.js');
-['<task_id1>', '<task_id2>'].forEach(id => {
-  const r = removeWorktree(id);
-  if (!r.ok) console.error(id, r.error);
-});
-"
+node -e "const{removeWorktree}=require('${CLAUDE_PLUGIN_ROOT}/scripts/worktree-manager.js');['<id1>','<id2>'].forEach(id=>{const r=removeWorktree(id);if(!r.ok)console.error(id,r.error)})"
 ```
 
-머지 성공한 것만 정리. 실패·블록·충돌은 **보존** (디버깅·재개용).
+머지 성공만 정리. 실패·blocked·충돌은 **보존** (디버깅·재개).
 
-## 단계 10: coordinator 통합 모드 호출
+## 단계 10: coordinator 통합 모드
 
-Task tool로 `coordinator` 호출:
-- `description`: "워커 결과 통합 — cycle <N>"
-- `prompt`:
-  ```
-  통합 모드.
-  
-  방금 종료한 워커: <task_id 목록>
-  머지 결과: 성공 <merged>, 충돌 <conflicted ? 'yes' : 'no'>
-  
-  docs/context-map.md를 먼저 읽고 필요한 status/merge 파일만 확인하세요.
-  .pact/runs/<id>/status.json 들을 읽고 PROGRESS.md를 갱신해주세요.
-  - Recently Done: 머지 성공한 task들
-  - Blocked / Waiting: 실패·blocked·충돌 task들 (사유 + status.json 경로)
-  - Verification Snapshot: verify_results 종합
-  - DECISIONS.md: status.json의 decisions 누적
-  ```
+Task tool, `subagent_type: coordinator`, prompt:
+
+```
+통합 모드.
+방금 종료 워커: <task_id 목록>
+머지 결과: 성공 <merged>, 충돌 <yes|no>
+
+먼저 docs/context-map.md를 읽고 .pact/runs/<id>/status.json들에서 PROGRESS.md 갱신:
+- Recently Done · Blocked / Waiting · Verification Snapshot · DECISIONS.md 누적
+```
 
 ## 단계 11: 결과 보고 (한국어)
 
-### 11-A: 모두 성공
-```
-✅ Cycle <N> 완료
+**모두 성공**: ✅ Cycle \<N\> 완료. 머지 \<N\>개. 검증 lint/tc/test/build 결과. PROGRESS·DECISIONS 갱신. 다음: /pact:status, /pact:parallel.
 
-머지: <merged 개수>개
-  ✓ <task_id1>  <title>
-  ✓ <task_id2>  <title>
-
-검증: lint:✅ typecheck:✅ test:✅ build:✅
-PROGRESS.md, DECISIONS.md 갱신됨.
-
-다음:
-  /pact:status           # 진행 확인
-  /pact:parallel         # 다음 task 실행
-```
-
-### 11-B: 일부 실패·충돌
-```
-⚠️ Cycle <N> 부분 완료
-
-성공 (<N>):
-  ✓ ...
-
-실패·blocked (<M>):
-  ✗ <id>  <사유 한 줄>
-
-충돌:
-  ✗ <id>  파일: <files>
-  → /pact:resolve-conflict
-
-worktree 보존됨 (디버깅·재개용):
-  .pact/worktrees/<id>
-```
-
-## v1.0에서 안 하는 것
-
-- ❌ `pact batch` CLI로 배치 계획 (P2.6, PACT-041) — 지금은 단순 ready 선택
-- ❌ 머지 전 reviewer 자동 호출 (P1, PACT-024)
-- ❌ Cross-review 자동 호출 (P2.5, PACT-035)
-- ❌ 회로 차단기 자동 재시도 (P1, PACT-021)
+**부분 실패/충돌**: ⚠️ Cycle \<N\> 부분 완료. 성공 (\<N\>): ✓ ids. 실패·blocked (\<M\>): ✗ id 사유. 충돌: ✗ id 파일 → /pact:resolve-conflict. worktree 보존: `.pact/worktrees/<id>`.
 
 ## 의문 시
 
-- 동시 `/pact:parallel` 두 번 시도: G12에 따라 거부, /pact:status·/pact:abort 안내
-- ready task 6개 이상: 5개만 선택, 사용자에게 알림 ("X개는 다음 cycle로")
-- 워커 timeout: 일단 대기, 사용자에게 진행 상황 보고
+- 동시 `/pact:parallel` 두 번: G12에 따라 거부, /pact:status·/pact:abort 안내
+- ready task 6+: 5개만, 사용자에게 알림
+- 워커 timeout: 대기 + 진행 보고
 - 부분 worktree 생성 후 실패: 모두 롤백 후 에러 보고
