@@ -1,5 +1,47 @@
 # Changelog
 
+## v0.4.1 — 2026-05-08
+
+메인 turn 압축 통합 CLI 도입 + 토큰 디시플린 6개 fix.
+
+batch15 실측 (11.3M cache_read / cycle) 분석 결과 누수 96%가 메인 prefix 누적이었음. 이번 릴리즈는 그 패턴을 구조적으로 차단.
+
+### 새 CLI: `pact run-cycle prepare/collect`
+- `/pact:parallel`의 결정적 작업(사전검사·worktree·payload·status수집·머지·cleanup)을 두 CLI에 응집. 메인 LLM 도구 호출 turn 수 95→5 압축.
+- `prepare`: preflight + buildBatches + worktree 생성 × N + payload·prompt 렌더 (atomic 롤백). stdout JSON으로 `task_prompts`·`coordinator_review_needed`·`context_warnings` 반환.
+- `collect`: planMerge → mergeAll → cleanup + `verification_summary`·`decisions_to_record` 요약.
+- `commands/parallel.md` 재작성 (291→101줄, -65%) — run-cycle 호출 + Task tool ×N spawn 흐름.
+
+### 토큰 디시플린 (메인 prefix 누적 차단)
+- **`commands/parallel.md` 1차 압축** (291→124, 1차) → 2차 재작성 (124→101). 이전 7.1k 토큰 본문이 매 turn cached read로 누적되던 단일 최대 누수원 차단.
+- **`agents/worker.md` ↔ `prompts/worker-system.md` 통합**: TDD 단계·status.json schema·anti-pattern을 양쪽에서 50%+ 중복 정의하던 것을 분리. 198→86줄(-57%) + 199→49줄(-75%) = 워커 spawn당 ~3.3k 절감.
+- **`pre-tool-guard` 차단 목록 확장**: `ARCHITECTURE.md`/`DECISIONS.md` 추가. 워커가 통째 read 시도 시 차단 + rg/sed 안내 (전체 7개 큰 SOT 차단).
+- **작은 batch coordinator review 스킵 게이트**: `batches[0].length ≤ 2 && skipped.length === 0`이면 LLM 검토 생략 (CLI가 이미 결정적 검증).
+- **`pact status --summary` / `-s`**: 단일 라인 요약 (`cycle:N active:N worktree:N merge:clean`). PROGRESS.md 통째 cat 대체.
+- **worktree 생성 시 `node_modules` symlink 자동**: 워커가 tsx/tsc 경로 디버깅하던 ~12 turn × 누적 prefix = ~150k 누수 원천 제거. `opts.linkNodeModules: false`로 opt-out.
+
+### Refactor
+- `bin/cmds/merge.js`: `planMerge(opts)` pure 함수 추출 (run-cycle이 직접 호출). 기존 CLI handler는 그대로 동작.
+- `bin/cmds/context-guard.js`: `collectLongDocs(maxLines, opts)` export + cwd 옵션 지원.
+
+### 효과 추정 (batch15 11.3M baseline 기준)
+- run-cycle (turn 수 95→5): cache_read **~94% 감소** (700k 추정). 단일 최대 lever.
+- parallel.md 압축 (1차+2차): cycle당 ~300k cache_read 감소.
+- node_modules symlink: 디버깅 cycle 자체 제거 = ~150k 감소.
+- 합계: 11.3M → ~700k-1M (~91~94% 감소).
+
+### 테스트
+- 161 → 170 통과 (+9: 6 run-cycle 시나리오 + 3 worktree symlink + 2 status --summary).
+
+### Breaking Changes
+- 없음. `commands/parallel.md` 흐름이 바뀌었지만 기존 모든 CLI/agent/hook 동작 무영향.
+
+### 호환성
+- `pact merge`/`pact batch` CLI는 기존과 동일 (run-cycle 내부에서 pure 함수로 호출).
+- `agents/worker.md`/`prompts/worker-system.md` placeholder 호환 (renderPrompt 인터페이스 동일).
+
+---
+
 ## v0.4.0 — 2026-05-04
 
 워커 truncation 한계 해소 + CLI 토큰 디시플린.
