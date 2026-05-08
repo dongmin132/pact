@@ -12,32 +12,42 @@ const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
 
-module.exports = function merge(args) {
-  const quiet = args.includes('--quiet') || args.includes('-q');
-  const runsRoot = '.pact/runs';
-  if (!fs.existsSync(runsRoot)) {
-    console.error('.pact/runs 없음. cycle 진행 전.');
-    process.exit(2);
-  }
+const { validateStatus } = require(path.join(__dirname, '..', '..', 'scripts', 'validate-status.js'));
+const { mergeAll } = require(path.join(__dirname, '..', '..', 'scripts', 'merge-coordinator.js'));
+const { matchesGlob } = require(path.join(__dirname, '..', '..', 'hooks', 'pre-tool-guard.js'));
 
-  const { validateStatus } = require(path.join(__dirname, '..', '..', 'scripts', 'validate-status.js'));
-  const { mergeAll } = require(path.join(__dirname, '..', '..', 'scripts', 'merge-coordinator.js'));
-  const { matchesGlob } = require(path.join(__dirname, '..', '..', 'hooks', 'pre-tool-guard.js'));
-
-  /** git diff --name-only base...branch */
-  function actualDiff(baseBranch, branchName) {
-    const r = spawnSync('git', ['diff', '--name-only', `${baseBranch}...${branchName}`], { encoding: 'utf8' });
-    if (r.status !== 0) return null;
-    return r.stdout.trim().split('\n').filter(Boolean);
-  }
-
-  const taskDirs = fs.readdirSync(runsRoot).filter(d => {
-    const full = path.join(runsRoot, d);
-    return fs.statSync(full).isDirectory();
+function actualDiff(baseBranch, branchName, opts = {}) {
+  const r = spawnSync('git', ['diff', '--name-only', `${baseBranch}...${branchName}`], {
+    encoding: 'utf8',
+    cwd: opts.cwd || process.cwd(),
   });
+  if (r.status !== 0) return null;
+  return r.stdout.trim().split('\n').filter(Boolean);
+}
+
+/**
+ * 머지 전 결정적 검증. 사이드이펙트 X.
+ * @param {object} [opts]
+ * @param {string[]} [opts.taskIds] — 검증 대상 task_id 목록 (없으면 .pact/runs/* 전체)
+ * @param {string} [opts.runsRoot]
+ * @param {string} [opts.cwd]
+ * @returns {{eligible: string[], rejected: {task_id, reason}[]}}
+ */
+function planMerge(opts = {}) {
+  const cwd = opts.cwd || process.cwd();
+  const runsRoot = opts.runsRoot || path.join(cwd, '.pact/runs');
 
   const eligible = [];
   const rejected = [];
+
+  if (!fs.existsSync(runsRoot)) {
+    return { eligible, rejected, missing: 'runs_dir' };
+  }
+
+  const taskDirs = opts.taskIds || fs.readdirSync(runsRoot).filter(d => {
+    const full = path.join(runsRoot, d);
+    return fs.statSync(full).isDirectory();
+  });
 
   for (const taskId of taskDirs) {
     const statusPath = path.join(runsRoot, taskId, 'status.json');
@@ -73,7 +83,6 @@ module.exports = function merge(args) {
       continue;
     }
 
-    // verify_results 체크: fail 0이어야 함
     const failed = Object.entries(status.verify_results || {})
       .filter(([_, v]) => v === 'fail')
       .map(([k]) => k);
@@ -82,7 +91,6 @@ module.exports = function merge(args) {
       continue;
     }
 
-    // [ADR-012] payload.allowed_paths vs 실제 git diff 대조
     const payloadPath = path.join(runsRoot, taskId, 'payload.json');
     if (!fs.existsSync(payloadPath)) {
       rejected.push({ task_id: taskId, reason: 'payload.json missing — allowed_paths 검증 불가' });
@@ -99,13 +107,12 @@ module.exports = function merge(args) {
     const baseBranch = payload.base_branch || 'main';
     const branchName = `pact/${taskId}`;
 
-    const diff = actualDiff(baseBranch, branchName);
+    const diff = actualDiff(baseBranch, branchName, { cwd });
     if (diff === null) {
       rejected.push({ task_id: taskId, reason: `git diff 실패 (${baseBranch}...${branchName})` });
       continue;
     }
 
-    // 실제 변경 파일이 allowed_paths 외에 있나
     const outsideScope = diff.filter(f => !allowedPaths.some(g => matchesGlob(f, g)));
     if (outsideScope.length > 0) {
       rejected.push({
@@ -115,7 +122,6 @@ module.exports = function merge(args) {
       continue;
     }
 
-    // status.files_changed ≠ 실제 diff (워커 거짓 보고 감지)
     const reported = (status.files_changed || []).slice().sort();
     const actual = diff.slice().sort();
     if (JSON.stringify(reported) !== JSON.stringify(actual)) {
@@ -128,6 +134,21 @@ module.exports = function merge(args) {
 
     eligible.push(taskId);
   }
+
+  return { eligible, rejected };
+}
+
+function executeMerge(args) {
+  const quiet = args.includes('--quiet') || args.includes('-q');
+  const cwd = process.cwd();
+  const plan = planMerge({ cwd });
+
+  if (plan.missing === 'runs_dir') {
+    console.error('.pact/runs 없음. cycle 진행 전.');
+    process.exit(2);
+  }
+
+  const { eligible, rejected } = plan;
 
   console.log(`머지 대상: ${eligible.length}개 (거부 ${rejected.length}개)`);
   if (!quiet) {
@@ -146,7 +167,7 @@ module.exports = function merge(args) {
     skipped: result.skipped,
     rejected,
   };
-  fs.writeFileSync('.pact/merge-result.json', JSON.stringify(out, null, 2) + '\n');
+  fs.writeFileSync(path.join(cwd, '.pact/merge-result.json'), JSON.stringify(out, null, 2) + '\n');
 
   if (quiet) {
     console.log(`✓ 머지: ${result.merged.length}개${result.merged.length ? ' (' + result.merged.join(', ') + ')' : ''}`);
@@ -163,4 +184,7 @@ module.exports = function merge(args) {
     }
     process.exit(6);
   }
-};
+}
+
+module.exports = executeMerge;
+module.exports.planMerge = planMerge;

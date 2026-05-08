@@ -51,18 +51,21 @@ function listDocsMarkdown(root) {
     .map(f => path.join(root, f));
 }
 
-function collectLongDocs(maxLines) {
+function collectLongDocs(maxLines, opts = {}) {
+  const cwd = opts.cwd || process.cwd();
+  const abs = (p) => path.isAbsolute(p) ? p : path.join(cwd, p);
+
   const candidates = [
-    { file: 'TASKS.md', replacementOk: () => hasMarkdownShards('tasks'), fix: 'tasks/*.md shard 사용 또는 pact split-docs 실행' },
-    { file: 'API_CONTRACT.md', replacementOk: () => hasMarkdownShards('contracts/api'), fix: 'contracts/api/*.md shard 사용 또는 pact split-docs 실행' },
-    { file: 'DB_CONTRACT.md', replacementOk: () => hasMarkdownShards('contracts/db'), fix: 'contracts/db/*.md shard 사용 또는 pact split-docs 실행' },
+    { file: 'TASKS.md', replacementOk: () => hasMarkdownShards(abs('tasks')), fix: 'tasks/*.md shard 사용 또는 pact split-docs 실행' },
+    { file: 'API_CONTRACT.md', replacementOk: () => hasMarkdownShards(abs('contracts/api')), fix: 'contracts/api/*.md shard 사용 또는 pact split-docs 실행' },
+    { file: 'DB_CONTRACT.md', replacementOk: () => hasMarkdownShards(abs('contracts/db')), fix: 'contracts/db/*.md shard 사용 또는 pact split-docs 실행' },
   ];
 
-  for (const file of listDocsMarkdown('docs')) {
+  for (const file of listDocsMarkdown(abs('docs'))) {
     const base = path.basename(file).toLowerCase();
     if (/(prd|spec|requirements|product|dev)/.test(base)) {
       candidates.push({
-        file,
+        file: path.relative(cwd, file),
         replacementOk: () => false,
         fix: '긴 docs 문서는 에디터 선택 해제 후 pact slice-prd --headers/--section으로 필요한 섹션만 읽기',
       });
@@ -71,8 +74,8 @@ function collectLongDocs(maxLines) {
 
   const risks = [];
   for (const c of candidates) {
-    if (!fileExists(c.file)) continue;
-    const lines = lineCount(c.file);
+    if (!fileExists(abs(c.file))) continue;
+    const lines = lineCount(abs(c.file));
     if (lines <= maxLines) continue;
     risks.push({
       file: c.file,
@@ -97,7 +100,11 @@ function printRisks(risks, opts) {
   console.log('워커의 긴 SOT 원문 Read는 PreToolUse hook이 실제 호출 순간 차단합니다.');
 }
 
-module.exports = function contextGuard(args) {
+module.exports = contextGuard;
+module.exports.collectLongDocs = collectLongDocs;
+module.exports.DEFAULT_MAX_LINES = DEFAULT_MAX_LINES;
+
+function contextGuard(args) {
   const opts = parseArgs(args);
   const risks = collectLongDocs(opts.maxLines);
 
