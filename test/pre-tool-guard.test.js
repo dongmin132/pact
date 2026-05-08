@@ -166,7 +166,26 @@ test('isBlockedLongSotRel — legacy SOT와 긴 spec 원문 차단 대상', () =
   assert.equal(isBlockedLongSotRel('TASKS.md'), true);
   assert.equal(isBlockedLongSotRel('API_CONTRACT.md'), true);
   assert.equal(isBlockedLongSotRel('DB_CONTRACT.md'), true);
+  assert.equal(isBlockedLongSotRel('ARCHITECTURE.md'), true);
+  assert.equal(isBlockedLongSotRel('DECISIONS.md'), true);
   assert.equal(isBlockedLongSotRel('docs/coffeechat_dev_spec.md'), true);
+});
+
+test('checkWorkerRead — ARCHITECTURE.md 통째 Read 차단 + rg/sed 안내', () => {
+  const r = checkWorkerRead(
+    'ARCHITECTURE.md',
+    '/repo/.pact/worktrees/MEETUP-004',
+  );
+  assert.equal(r.allowed, false);
+  assert.match(r.reason, /rg|sed|섹션/);
+});
+
+test('checkWorkerRead — DECISIONS.md 통째 Read 차단', () => {
+  const r = checkWorkerRead(
+    'DECISIONS.md',
+    '/repo/.pact/worktrees/MEETUP-004',
+  );
+  assert.equal(r.allowed, false);
 });
 
 test('isBlockedLongSotRel — shard/context-map/context bundle은 허용', () => {

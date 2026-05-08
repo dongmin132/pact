@@ -111,7 +111,14 @@ function isAllowedReadRel(rel) {
 function isBlockedLongSotRel(rel) {
   const p = normalizeRel(rel).replace(/^\.\//, '');
   if (isAllowedReadRel(p)) return false;
-  if (['TASKS.md', 'API_CONTRACT.md', 'DB_CONTRACT.md', 'MODULE_OWNERSHIP.md'].includes(p)) {
+  if ([
+    'TASKS.md',
+    'API_CONTRACT.md',
+    'DB_CONTRACT.md',
+    'MODULE_OWNERSHIP.md',
+    'ARCHITECTURE.md',
+    'DECISIONS.md',
+  ].includes(p)) {
     return true;
   }
   return /^docs\/.*(prd|spec|requirements|product|dev).*\.md$/i.test(p);
@@ -135,7 +142,9 @@ function checkWorkerRead(filePath, cwd) {
       reason:
         `pact: 워커 ${wt.task_id}가 긴 SOT 원문 ${normalizeRel(filePath)} 전체 Read를 시도했습니다. ` +
         `대신 .pact/runs/${wt.task_id}/context.md, docs/context-map.md, tasks/*.md, ` +
-        `contracts/api|db|modules/*.md 또는 pact slice / pact slice-prd로 필요한 섹션만 읽으세요.`,
+        `contracts/api|db|modules/*.md 또는 pact slice / pact slice-prd로 필요한 섹션만 읽으세요. ` +
+        `ARCHITECTURE.md / DECISIONS.md 처럼 슬라이서가 없는 SOT는 Bash로 rg/sed를 써서 섹션만 추출하세요. ` +
+        `예: rg "^## §9" ARCHITECTURE.md 또는 sed -n '/^## ADR-005/,/^## ADR-006/p' DECISIONS.md`,
     };
   }
 
