@@ -166,6 +166,32 @@ test('pact status — 빈 .pact/에서도 동작', () => {
   } finally { cleanupRepo(repo); }
 });
 
+test('pact status --summary — 한 줄 요약 (메인 prefix 절감용)', () => {
+  const repo = makeRepo();
+  try {
+    const r = runPact(['status', '--summary'], repo);
+    assert.equal(r.status, 0);
+    // 단일 라인, 키:값 공백구분
+    const lines = r.stdout.trim().split('\n').filter(l => l.length > 0);
+    assert.equal(lines.length, 1, `요약은 1줄, 실제: ${lines.length}\n${r.stdout}`);
+    assert.match(lines[0], /cycle:\d+/);
+    assert.match(lines[0], /active:\d+/);
+    assert.match(lines[0], /worktree:\d+/);
+    assert.match(lines[0], /merge:(clean|in-progress)/);
+    // 장식 X (이모지·여백·헤더 없음)
+    assert.doesNotMatch(lines[0], /📊|pact status|---/);
+  } finally { cleanupRepo(repo); }
+});
+
+test('pact status -s — --summary 단축 alias', () => {
+  const repo = makeRepo();
+  try {
+    const r = runPact(['status', '-s'], repo);
+    assert.equal(r.status, 0);
+    assert.match(r.stdout, /cycle:\d+ /);
+  } finally { cleanupRepo(repo); }
+});
+
 test('pact merge — runs/ 없으면 exit 2', () => {
   const repo = makeRepo();
   try {

@@ -24,7 +24,7 @@ if (!cmd || !commands[cmd]) {
   console.error('Commands:');
   console.error('  batch       TASKS.md → .pact/batch.json (배치 계획 생성)');
   console.error('  merge       .pact/runs/*/status.json 기반 머지 게이트');
-  console.error('  status      .pact/state.json + worktree 표시');
+  console.error('  status      .pact/state.json + worktree 표시 (--summary/-s 한 줄)');
   console.error('  slice       TASKS.md 슬라이스 (--status, --priority, --ids, --tbd, --headers)');
   console.error('  slice-prd   PRD 섹션 추출 (--section, --sections, --headers, --refs-from)');
   console.error('  split-docs  긴 TASKS/API/DB 계약 문서를 domain shard로 분리');
