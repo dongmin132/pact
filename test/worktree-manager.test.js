@@ -129,3 +129,57 @@ test('listWorktrees — main worktree는 제외', () => {
     assert.equal(r.active.length, 0);
   } finally { cleanup(repo); }
 });
+
+test('createWorktree — node_modules가 있으면 symlink 생성', () => {
+  const repo = makeRepo();
+  try {
+    fs.mkdirSync(path.join(repo, 'node_modules'));
+    fs.writeFileSync(path.join(repo, 'node_modules/.marker'), 'main');
+    const r = createWorktree('TEST-001', 'main', { cwd: repo });
+    assert.equal(r.ok, true, JSON.stringify(r));
+    const wtNm = path.join(repo, r.working_dir, 'node_modules');
+    const lst = fs.lstatSync(wtNm);
+    assert.equal(lst.isSymbolicLink(), true, 'node_modules는 symlink여야');
+    assert.equal(
+      fs.readFileSync(path.join(wtNm, '.marker'), 'utf8'),
+      'main',
+      'symlink을 통해 main의 .marker가 보여야',
+    );
+  } finally { cleanup(repo); }
+});
+
+test('createWorktree — node_modules 없으면 symlink 생성 안 함', () => {
+  const repo = makeRepo();
+  try {
+    const r = createWorktree('TEST-001', 'main', { cwd: repo });
+    assert.equal(r.ok, true);
+    assert.equal(
+      fs.existsSync(path.join(repo, r.working_dir, 'node_modules')),
+      false,
+    );
+  } finally { cleanup(repo); }
+});
+
+test('createWorktree — opts.linkNodeModules: false 시 skip', () => {
+  const repo = makeRepo();
+  try {
+    fs.mkdirSync(path.join(repo, 'node_modules'));
+    const r = createWorktree('TEST-001', 'main', { cwd: repo, linkNodeModules: false });
+    assert.equal(r.ok, true);
+    assert.equal(
+      fs.existsSync(path.join(repo, r.working_dir, 'node_modules')),
+      false,
+    );
+  } finally { cleanup(repo); }
+});
+
+test('removeWorktree — node_modules symlink이 있어도 정리 성공', () => {
+  const repo = makeRepo();
+  try {
+    fs.mkdirSync(path.join(repo, 'node_modules'));
+    createWorktree('TEST-001', 'main', { cwd: repo });
+    const r = removeWorktree('TEST-001', { cwd: repo });
+    assert.equal(r.ok, true, JSON.stringify(r));
+    assert.equal(fs.existsSync(path.join(repo, '.pact/worktrees/TEST-001')), false);
+  } finally { cleanup(repo); }
+});

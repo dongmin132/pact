@@ -95,6 +95,16 @@ function createWorktree(taskId, baseBranch, opts = {}) {
     return { ok: false, error: (r.stderr || '').trim() || 'git worktree add 실패' };
   }
 
+  // node_modules symlink (best-effort) — 워커가 tsx/tsc 경로 못 찾아 디버깅 cycle 발생하던
+  // 토큰 누수 막음. opts.linkNodeModules: false 로 opt-out 가능.
+  if (opts.linkNodeModules !== false) {
+    const srcNm = path.join(cwd, 'node_modules');
+    const dstNm = path.join(absPath, 'node_modules');
+    if (fs.existsSync(srcNm) && !fs.existsSync(dstNm)) {
+      try { fs.symlinkSync(srcNm, dstNm, 'dir'); } catch { /* best-effort */ }
+    }
+  }
+
   return {
     ok: true,
     working_dir: wtPath,
@@ -105,7 +115,17 @@ function createWorktree(taskId, baseBranch, opts = {}) {
 
 /** worktree 제거 + branch 삭제. opts.force 시 강제. */
 function removeWorktree(taskId, opts = {}) {
+  const cwd = opts.cwd || process.cwd();
   const wtPath = path.join(WORKTREE_BASE, taskId);
+  const absPath = path.join(cwd, wtPath);
+
+  // 우리가 만든 node_modules symlink는 git worktree remove 전에 unlink (untracked 거부 회피)
+  const dstNm = path.join(absPath, 'node_modules');
+  try {
+    const lst = fs.lstatSync(dstNm);
+    if (lst.isSymbolicLink()) fs.unlinkSync(dstNm);
+  } catch { /* not exist or not symlink */ }
+
   const args = ['worktree', 'remove'];
   if (opts.force) args.push('--force');
   args.push(wtPath);
