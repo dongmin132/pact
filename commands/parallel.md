@@ -71,7 +71,16 @@ exit code:
 - 4: TBD 잔존 → "/pact:contracts 먼저"
 - 5: 배치 생성 실패 (cycle 등)
 
-`coordinator` 호출하여 batch.json 검토 (LLM 판단 영역):
+### 3-A: 스킵 게이트 (작은 배치)
+
+`pact batch` exit 0 + `batches[0].task_ids.length ≤ 2` + `skipped.length === 0` 이면 **coordinator 검토 모드 스킵**. 이유:
+- `pact batch` CLI가 이미 결정적으로 의존성·schema·TBD·cycle 검증
+- 1~2 task 배치는 LLM 점검 가치보다 spawn 비용(매니저 컨텍스트 ~5k)이 큼
+- 스킵해도 단계 6 워커 spawn 전 권한 검증은 pre-tool-guard가 보장
+
+스킵 조건 위반 — 배치가 3개 이상이거나 skipped가 있으면 3-B 진행.
+
+### 3-B: coordinator 검토 모드 (큰 배치)
 
 Task tool:
 - `subagent_type`: `coordinator`
