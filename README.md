@@ -3,7 +3,7 @@
 > Claude Code 위에 얹는 **계약 기반 AI 개발 운영 시스템**.
 > 문서·계약·검증·worktree 격리 병렬 에이전트로 통제하는 플러그인.
 
-[![tests](https://img.shields.io/badge/tests-103%2F103-brightgreen)](./test) [![version](https://img.shields.io/badge/version-0.1.0-blue)](./.claude-plugin/plugin.json)
+[![tests](https://img.shields.io/badge/tests-170%2F170-brightgreen)](./test) [![version](https://img.shields.io/badge/version-0.4.1-blue)](./.claude-plugin/plugin.json)
 
 ---
 
@@ -16,7 +16,7 @@
 1. **Contract-first parallelization** — 계약 없이 병렬 X
 2. **Git worktree 격리** — 같은 파일도 안전한 동시 수정
 3. **Cross-tool second opinion** — Codex 의견 추가 (차단 X)
-4. **결정적 작업 = CLI, 판단 = LLM** — `pact batch`/`pact merge`로 분리
+4. **결정적 작업 = CLI, 판단 = LLM** — `pact run-cycle prepare/collect`으로 메인 turn 압축 (95→5), `pact merge`로 결정적 머지 게이트
 
 ## 5가지 철학 (절대 양보 X)
 
@@ -177,12 +177,19 @@ myproject/
 `pact` 바이너리 — 결정적 작업용:
 
 ```bash
-pact batch    # TASKS.md 또는 tasks/*.md → .pact/batch.json
-pact merge    # status.json 검증 + 머지 게이트
-pact status   # state.json + worktree 표시
-pact slice    # task corpus를 섹션 단위로 읽기 (--headers, --ids, --tbd)
-pact split-docs  # legacy 긴 TASKS/API/DB 문서를 shard로 분리
+pact run-cycle prepare    # /pact:parallel 사전검사+batch+worktree+payload 통합
+pact run-cycle collect    # 워커 종료 후 검증+머지+cleanup 통합
+pact batch                # TASKS.md 또는 tasks/*.md → .pact/batch.json
+pact merge                # status.json 검증 + 머지 게이트
+pact status [-s]          # state.json + worktree 표시 (--summary 한 줄)
+pact slice                # task corpus를 섹션 단위로 읽기 (--headers, --ids, --tbd)
+pact slice-prd            # PRD 섹션 추출 (--section, --headers)
+pact split-docs           # legacy 긴 TASKS/API/DB 문서를 shard로 분리
+pact context-map sync     # docs/context-map.md Domains 표 갱신
+pact context-guard        # parallel 전 긴 문서/선택 컨텍스트 위험 검사
 ```
+
+`/pact:parallel`은 `pact run-cycle prepare` → 메인이 워커 N개 동시 spawn → `pact run-cycle collect` 흐름. 결정적 작업이 두 CLI에 응집되어 메인 도구 호출 turn 수가 95→5로 압축됨 (batch15 측정 기준 cache_read ~94% 감소).
 
 ## Context-light SOT
 
@@ -209,15 +216,16 @@ pact split-docs
 
 원본 legacy 파일은 삭제하지 않고 shard 파일만 생성한다.
 
-## Hooks (7개)
+## Hooks (8개)
 
-- `pre-tool-guard` — MODULE_OWNERSHIP 위반 차단 (PreToolUse)
+- `pre-tool-guard` — MODULE_OWNERSHIP 위반 + 워커 worktree 경계 + 긴 SOT(`TASKS`/`ARCHITECTURE`/`DECISIONS`/`API_CONTRACT`/`DB_CONTRACT`/`MODULE_OWNERSHIP`) 통째 read 차단 (PreToolUse)
 - `tdd-guard` — TDD 위반 차단 (PreToolUse, TDD Guard 영감)
 - `post-edit-doc-sync` — 문서 갱신 알림 (async)
 - `stop-verify` — uncommitted 코드 변경 알림
 - `subagent-stop-review` — 워커 status.json 의심사항 감지
 - `teammate-idle` — stuck 워커 감지 (Agent Teams 영감, async)
 - `progress-check` — 세션 종료 시 PROGRESS 갱신 권장 (async)
+- `session-start` — yolo 모드 자동 감지 + `.pact/state.json` 캡처
 
 ---
 

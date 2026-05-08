@@ -39,6 +39,8 @@ planner → architect → coordinator → reviewer
 
 토큰 베이스라인 (1 사이클): ~85k (매니저 4명 합산) + 워커 비용 별도
 
+**v0.4.1 update**: `pact run-cycle prepare/collect` CLI 도입으로 메인 도구 호출 turn 95→5 압축 (§3.5). batch15 측정 baseline 11.3M cache_read → ~700k 추정 (-94%).
+
 ## 3. 매니저 명세
 
 ### 3.1 planner
@@ -148,6 +150,50 @@ planner → architect → coordinator → reviewer
 **plan-review 두 모드**:
 - `plan-eng-review`: task 분해 품질 (크기, criteria, cycle, TDD 가능성)
 - `plan-design-review`: 계약 정합성, 모듈 경계, 엣지 케이스
+
+## 3.5 결정적 작업 통합 CLI (v0.4.1)
+
+`/pact:parallel` 흐름에서 메인 LLM이 결정적 작업(사전검사·worktree·payload·status수집·머지·cleanup)을 별도 Bash 30+개로 호출하던 것을 두 CLI에 응집:
+
+```bash
+pact run-cycle prepare    # 워커 spawn 직전까지의 모든 결정적 작업
+pact run-cycle collect    # 워커 종료 후의 모든 결정적 작업
+```
+
+### prepare 책임 (atomic)
+1. preflight (CLAUDE.md / task source / TBD / MERGE_HEAD / git env)
+2. `buildBatches` → `batches[0]` 추출 + `coordinator_review_needed` 자동 판단
+3. worktree 생성 × N (createWorktree에서 node_modules symlink 자동)
+4. payload + spawn-worker 렌더 × N (`prompt.md`/`context.md` 작성)
+5. 실패 시 모든 created worktree 롤백
+6. `.pact/current_batch.json` 영속 (collect가 사용)
+7. stdout JSON: `task_prompts`, `coordinator_review_needed`, `context_warnings`
+
+### collect 책임
+1. `planMerge` → `mergeAll` → `merge-result.json`
+2. 머지 성공 worktree만 cleanup (실패·blocked·충돌은 보존)
+3. status.json들에서 `verification_summary`·`decisions_to_record`·`failures` 집계
+4. `.pact/current_batch.json` 소비
+
+### LLM 영역 (CLI X)
+- 단계 1: review 확인 게이트 (한국어 사용자 인터랙션)
+- 단계 4: 워커 N개 동시 spawn (Task tool, **한 메시지에서**)
+- 단계 7: coordinator 통합 모드 (큰 batch만)
+- 단계 8: 사용자 보고
+
+### 메인 입장 turn
+
+```
+1. Bash: pact run-cycle prepare      (1)
+2. Task tool × N (한 메시지)          (1)
+3. (대기, LLM 사이클)
+4. Bash: pact run-cycle collect      (1)
+5. coordinator (옵션) + 보고          (1-2)
+─────────────────────────────────────
+총: 4-5 turn (이전 95)
+```
+
+**왜 turn 압축이 가장 큰 lever**: cache_read = 매 turn prefix size × turn 수. prefix 크기 줄이는 것보다 turn 수 줄이는 게 곱셈 효과로 leverage 큼 (batch15 분석).
 
 ## 4. 워커 설계
 
