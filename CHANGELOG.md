@@ -1,5 +1,38 @@
 # Changelog
 
+## v0.5.1 — 2026-05-10
+
+`/pact:parallel` 무한루프 hotfix. 머지 완료된 task가 다음 batch에 다시 잡히던 문제를 두 단계로 차단.
+
+### 증상
+
+BOOT-001 머지 성공 → 다음 사이클이 다시 BOOT-001을 batch에 넣음. cycle 진행 불가.
+
+### 원인 (두 단계)
+
+1. **`scripts/parse-tasks.js:113-119`** — `{...parsed, status: 'todo', retry_count: 0}` spread 순서. yaml frontmatter의 `status: done`이 hardcoded `'todo'`로 덮어씌워짐.
+2. **task source에 `done`을 박는 코드가 부재** — 워커는 `.pact/runs/<id>/status.json`에 done 기록, `pact merge`는 git 머지만 함. `tasks/<domain>.md`의 yaml은 영원히 `todo`. 다음 cycle batch-builder가 `t.status === 'done'`으로만 제외하므로 머지된 task 재선택.
+
+### Fix
+
+- `scripts/parse-tasks.js`: spread 순서 정정. `status`/`retry_count` default를 spread 앞에 두고, `id`/`title`은 spread 뒤에 두어 헤더 값 보호.
+- `scripts/task-sources.js`: `setTaskStatus(taskId, status, opts)` helper 추가. yaml 블록에 `status:` 라인 있으면 replace, 없으면 append. tasks/*.md shard와 legacy TASKS.md 모두 지원.
+- `bin/cmds/merge.js`: `mergeAll` 성공 후 `result.merged.forEach(id => setTaskStatus(id, 'done'))`. 충돌·skipped는 건드리지 않음 (재시도 가능 상태 보존). `merge-result.json`에 `status_updates` 필드 누적.
+
+### 즉시 unblock (v0.5.0 사용자)
+
+`tasks/<domain>.md`의 머지된 task yaml 블록에 `status: done` 한 줄 수동 추가. v0.5.1 적용 후엔 자동.
+
+### 테스트
+
+- 172 → 177 통과 (+5: parse-tasks 회귀 2개, setTaskStatus 5개 중 3개는 task-sources 테스트로 흡수)
+
+### Breaking Changes
+
+- 없음. yaml에 `status:` 라인이 없던 task는 default 'todo'로 동일 동작. v0.5.0에서 머지 후 멈춘 사이클은 즉시 unblock 절차로 풀림.
+
+---
+
 ## v0.5.0 — 2026-05-09
 
 서브에이전트별 모델 차등 매핑. 이전엔 8개 agent 전부 `model: inherit` (메인과 동일 모델) → 큰 batch에서 비용 비효율. 이번 릴리즈는 superpowers의 3계층 가이드(cheap/standard/most capable)를 pact 8개 역할에 매핑.

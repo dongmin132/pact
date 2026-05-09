@@ -181,3 +181,56 @@ tdd: false
   assert.equal(result.tasks[0].id, 'PACT-042');
   assert.equal(result.tasks[1].id, 'AUTH-001');
 });
+
+test('회귀: yaml의 status:done이 default todo로 덮어씌워지지 않음 (v0.5.0 BOOT-001 무한루프 fix)', () => {
+  const md = `## BOOT-001  완료된 task
+
+\`\`\`yaml
+priority: P0
+dependencies: []
+files: [a.ts]
+work: [test]
+done_criteria: [done]
+tdd: false
+status: done
+retry_count: 1
+\`\`\`
+
+## BOOT-002  새 task
+
+\`\`\`yaml
+priority: P0
+dependencies: []
+files: [b.ts]
+work: [test]
+done_criteria: [done]
+tdd: false
+\`\`\`
+`;
+  const result = parseTasks(md);
+  const t1 = result.tasks.find(t => t.id === 'BOOT-001');
+  const t2 = result.tasks.find(t => t.id === 'BOOT-002');
+  assert.equal(t1.status, 'done', 'yaml status:done이 보존되어야 batch가 다시 안 뽑음');
+  assert.equal(t1.retry_count, 1, 'yaml retry_count도 보존');
+  assert.equal(t2.status, 'todo', 'yaml에 status 없으면 default todo');
+  assert.equal(t2.retry_count, 0, 'yaml에 retry_count 없으면 default 0');
+});
+
+test('회귀: yaml에 id 박혀도 헤더 ID가 진실 (오타 방어)', () => {
+  const md = `## BOOT-001  헤더가 진실
+
+\`\`\`yaml
+id: WRONG-999
+title: yaml에 박힌 가짜 title
+priority: P0
+dependencies: []
+files: [a.ts]
+work: [test]
+done_criteria: [done]
+tdd: false
+\`\`\`
+`;
+  const result = parseTasks(md);
+  assert.equal(result.tasks[0].id, 'BOOT-001', '헤더 ID가 yaml id 덮음');
+  assert.equal(result.tasks[0].title, '헤더가 진실', '헤더 title이 yaml title 덮음');
+});

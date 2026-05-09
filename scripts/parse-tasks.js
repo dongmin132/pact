@@ -110,12 +110,15 @@ function parseTasks(markdown) {
       tbdMarkers.push({ taskId, fields: tbdFields });
     }
 
+    // default → yaml override → header-derived 강제 순서.
+    // id / title은 헤더에서 뽑은 값을 진실로 보호 (yaml 오타 방지).
+    // status / retry_count는 yaml frontmatter 값이 있으면 우선 (done task 재선택 방지).
     tasks.push({
-      id: taskId,
-      title,
-      ...parsed,
       status: 'todo',
       retry_count: 0,
+      ...parsed,
+      id: taskId,
+      title,
     });
   }
 

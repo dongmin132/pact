@@ -15,6 +15,7 @@ const { spawnSync } = require('child_process');
 const { validateStatus } = require(path.join(__dirname, '..', '..', 'scripts', 'validate-status.js'));
 const { mergeAll } = require(path.join(__dirname, '..', '..', 'scripts', 'merge-coordinator.js'));
 const { matchesGlob } = require(path.join(__dirname, '..', '..', 'hooks', 'pre-tool-guard.js'));
+const { setTaskStatus } = require(path.join(__dirname, '..', '..', 'scripts', 'task-sources.js'));
 
 function actualDiff(baseBranch, branchName, opts = {}) {
   const r = spawnSync('git', ['diff', '--name-only', `${baseBranch}...${branchName}`], {
@@ -159,6 +160,14 @@ function executeMerge(args) {
 
   const result = mergeAll(eligible);
 
+  // 머지 성공한 task만 source file에 status:done 박기 (다음 batch에서 제외).
+  // 충돌·skipped는 건드리지 않음 (재시도 가능 상태 보존).
+  const statusUpdates = [];
+  for (const taskId of result.merged) {
+    const r = setTaskStatus(taskId, 'done', { cwd });
+    statusUpdates.push({ task_id: taskId, ...r });
+  }
+
   const out = {
     timestamp: new Date().toISOString(),
     eligible: eligible.length,
@@ -166,6 +175,7 @@ function executeMerge(args) {
     conflicted: result.conflicted,
     skipped: result.skipped,
     rejected,
+    status_updates: statusUpdates,
   };
   fs.writeFileSync(path.join(cwd, '.pact/merge-result.json'), JSON.stringify(out, null, 2) + '\n');
 
