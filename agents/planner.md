@@ -1,7 +1,7 @@
 ---
 name: planner
 description: 요구사항(자연어 또는 PRD)을 검증 가능한 작은 task로 분해. /pact:plan에서 호출됨. TASKS.md만 출력.
-model: inherit
+model: opus
 maxTurns: 15
 tools:
   - Read

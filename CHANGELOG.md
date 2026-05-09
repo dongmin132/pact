@@ -1,5 +1,33 @@
 # Changelog
 
+## v0.5.0 — 2026-05-09
+
+서브에이전트별 모델 차등 매핑. 이전엔 8개 agent 전부 `model: inherit` (메인과 동일 모델) → 큰 batch에서 비용 비효율. 이번 릴리즈는 superpowers의 3계층 가이드(cheap/standard/most capable)를 pact 8개 역할에 매핑.
+
+### 매핑
+
+**Opus (판단 영역)**:
+- `planner` — 요구사항 → task 분해 (잘못되면 나머지 다 망감)
+- `architect` — 시스템 설계 결정
+- `coordinator` — 배치 검토 + 결과 통합 + 충돌 판단 (silent failure 위험)
+- `reviewer-arch` — 아키텍처 plan 검토 ("lock in" 단계)
+
+**Sonnet (실행/검토 영역)**:
+- `worker` — 단일 task 구현 (대부분 mechanical)
+- `reviewer-task` — task 분해 검토
+- `reviewer-code` — 머지 후 4축 검증
+- `reviewer-ui` — UI/UX 검토
+
+### 원칙
+
+워커는 가볍게(sonnet), 워커를 통제하는 매니저·검토자는 강하게(opus). sonnet 워커가 흔들려도 opus reviewer가 잡아냄 (체크 효과).
+
+### 효과 추정
+
+- 큰 batch (5 worker 동시) 기준 **약 40-50% 비용 절감**
+- worker spawn 시 첫 토큰 빠름 (Sonnet < Opus)
+- coordinator·planner는 그대로 opus라 *판단 품질은 유지*
+
 ## v0.4.1 — 2026-05-08
 
 메인 turn 압축 통합 CLI 도입 + 토큰 디시플린 6개 fix.

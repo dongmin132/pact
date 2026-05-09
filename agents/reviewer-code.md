@@ -1,7 +1,7 @@
 ---
 name: reviewer-code
 description: 머지 후 자동 4축 검증 (Code·Contract·Docs·Integration). 워커 결과 신뢰 X, 재실행. /pact:verify에서 호출됨.
-model: inherit
+model: sonnet
 maxTurns: 10
 tools:
   - Read

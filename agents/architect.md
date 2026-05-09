@@ -1,7 +1,7 @@
 ---
 name: architect
 description: API/DB/모듈 경계 계약 정의 매니저. planner의 TBD 마커 해소 + cycle 검증. /pact:contracts에서 호출됨.
-model: inherit
+model: opus
 maxTurns: 15
 tools:
   - Read

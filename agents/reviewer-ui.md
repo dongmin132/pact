@@ -1,7 +1,7 @@
 ---
 name: reviewer-ui
 description: UI/UX 디자인 검토 (gstack /plan-design-review 영감). UI 관련 task만. /pact:plan-ui-review에서 호출됨.
-model: inherit
+model: sonnet
 maxTurns: 15
 tools:
   - Read

@@ -1,7 +1,7 @@
 ---
 name: reviewer-arch
 description: 아키텍처 견고성 + 계약 정합성 검토 (gstack /plan-eng-review 영감). /pact:plan-arch-review에서 호출됨.
-model: inherit
+model: opus
 maxTurns: 15
 tools:
   - Read

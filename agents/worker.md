@@ -1,7 +1,7 @@
 ---
 name: worker
 description: pact 일회용 task 실행자. 메인 Claude가 spawn해서 한 task 처리하고 status.json·report.md로 보고 후 종료.
-model: inherit
+model: sonnet
 maxTurns: 60
 tools:
   - Read
