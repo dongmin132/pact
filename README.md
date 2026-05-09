@@ -3,7 +3,7 @@
 > Claude Code 위에 얹는 **계약 기반 AI 개발 운영 시스템**.
 > 문서·계약·검증·worktree 격리 병렬 에이전트로 통제하는 플러그인.
 
-[![tests](https://img.shields.io/badge/tests-170%2F170-brightgreen)](./test) [![version](https://img.shields.io/badge/version-0.4.1-blue)](./.claude-plugin/plugin.json) [![deps](https://img.shields.io/badge/deps-zero-success)](./package.json) [![license](https://img.shields.io/badge/license-MIT-blue)](#라이선스)
+[![tests](https://img.shields.io/badge/tests-170%2F170-brightgreen)](./test) [![version](https://img.shields.io/badge/version-0.5.0-blue)](./.claude-plugin/plugin.json) [![deps](https://img.shields.io/badge/deps-zero-success)](./package.json) [![license](https://img.shields.io/badge/license-MIT-blue)](#라이선스)
 
 ---
 
@@ -297,7 +297,7 @@ opt-out은 마크다운/설정/마이그레이션 task에서만: `tdd: false` fr
 
 ---
 
-## 릴리스 흐름 (v0.1 → v0.4.1)
+## 릴리스 흐름 (v0.1 → v0.5.0)
 
 | 버전 | 날짜 | 한 줄 |
 |---|---|---|
@@ -307,6 +307,7 @@ opt-out은 마크다운/설정/마이그레이션 task에서만: `tdd: false` fr
 | v0.3.0 | 2026-05-03 | Context-light SOT 시스템 (`tasks/*.md`, `contracts/{api,db,modules}/*.md`, `pact split-docs`, `pact context-map sync`, ADR-015~018) |
 | v0.4.0 | 2026-05-04 | 워커 truncation fix (`maxTurns: 60`) + CLI 토큰 디시플린 (`-q`/`-n`/`-s`) |
 | v0.4.1 | 2026-05-08 | **`pact run-cycle prepare/collect`** + 토큰 디시플린 6개 fix. 메인 turn 95→5. cache_read -94% |
+| v0.5.0 | 2026-05-09 | **agent 모델 차등** (planner/architect=opus, coordinator=sonnet 등, ADR-019) + **병렬 도구 호출 지시** 8 agent에 추가 + `stop-verify` async (응답 즉시 반응) |
 
 전체 변경 사항은 [CHANGELOG.md](./CHANGELOG.md).
 
