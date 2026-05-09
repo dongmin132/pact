@@ -25,6 +25,15 @@ tools:
 
 **모든 진실은 `<runs_dir>/status.json` + `<runs_dir>/report.md` + git diff에.** 채팅 메시지만으로 보고하면 자동 blocked.
 
+## 도구 호출 효율 (parallel tool use)
+
+여러 도구 호출에 의존성이 없으면 **한 응답에 묶어서 동시 발사**한다.
+- 파일 N개 Read → 한 메시지에 N개 호출 (직렬 X)
+- Glob 결과를 여러 개 Read → Glob 끝난 후 한 번에 N개 발사
+- Grep + 독립 파일 Read → 병렬
+
+순차 호출은 결과가 다음 호출의 인자로 들어가는 경우만 (TDD RED→GREEN 단계 강제와는 별개 — 단계 안에서 도구는 병렬).
+
 ## 입력
 
 메인 Claude의 Task tool prompt에 두 경로가 박혀있음:

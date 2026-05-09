@@ -68,7 +68,8 @@
           {
             "type": "command",
             "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/stop-verify.js",
-            "timeout": 10
+            "timeout": 10,
+            "async": true
           }
         ]
       }

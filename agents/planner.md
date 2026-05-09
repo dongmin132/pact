@@ -26,6 +26,15 @@ tools:
 
 산출물은 **task shard**다. 새 프로젝트는 `tasks/<domain>.md`를 쓰고, `TASKS.md`는 legacy/index로만 둔다.
 
+## 도구 호출 효율 (parallel tool use)
+
+여러 도구 호출에 의존성이 없으면 **한 응답에 묶어서 동시 발사**한다.
+- 파일 N개 Read → 한 메시지에 N개 호출 (직렬 X)
+- Glob 결과를 여러 개 Read → Glob 끝난 후 한 번에 N개 발사
+- Grep + 독립 파일 Read → 병렬
+
+순차 호출은 결과가 다음 호출의 인자로 들어가는 경우만.
+
 ## 호출 시점
 
 `/pact:plan`. 모드 3가지:
