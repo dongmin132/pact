@@ -293,7 +293,7 @@ opt-out은 마크다운/설정/마이그레이션 task에서만: `tdd: false` fr
 | Claude Code Agent Teams | TeammateIdle hook |
 | Hook async pattern | 텔레메트리 분리 (post-edit-doc-sync, teammate-idle, progress-check) |
 
-자세한 ADR(18개)은 [DECISIONS.md](./DECISIONS.md), 빌드 시 따른 Claude Code 사양 사실은 [docs/CLAUDE_CODE_SPEC.md](./docs/CLAUDE_CODE_SPEC.md).
+자세한 ADR(19개)은 [DECISIONS.md](./DECISIONS.md), 빌드 시 따른 Claude Code 사양 사실은 [docs/CLAUDE_CODE_SPEC.md](./docs/CLAUDE_CODE_SPEC.md).
 
 ---
 

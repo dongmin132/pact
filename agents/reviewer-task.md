@@ -1,7 +1,7 @@
 ---
 name: reviewer-task
 description: task 분해 품질 검토 (메타 수준). 크기·done_criteria·의존성·TDD 가능성. /pact:plan-task-review에서 호출됨.
-model: sonnet
+model: haiku
 maxTurns: 10
 tools:
   - Read

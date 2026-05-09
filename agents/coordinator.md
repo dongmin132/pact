@@ -1,7 +1,7 @@
 ---
 name: coordinator
 description: 배치 검토 + 워커 결과 통합 매니저 (worktree 인지). /pact:parallel에서 호출됨.
-model: opus
+model: sonnet
 maxTurns: 10
 tools:
   - Read

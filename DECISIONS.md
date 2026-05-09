@@ -6,6 +6,60 @@
 
 ---
 
+## ADR-019 — 매니저·워커 모델 차등 (ADR-004 supersede)
+
+- **상태**: 채택 (ADR-004 폐기)
+- **날짜**: 2026-05-09
+- **출처**: dogfooding 비용 분석 + v0.4.1 책임 재분배
+- **관련**: ARCHITECTURE.md §3 (매니저), §4 (워커), ADR-009 (coordinator 책임 축소), ADR-004 (폐기)
+
+### 발견 / 배경
+
+ADR-004는 "모든 매니저·워커 `model: inherit`"로 채택했다. 메인 모델 단일 변수로 비용·품질 제어. 그러나 v0.4.1 시점에 전제가 바뀜:
+
+1. **ADR-009 coordinator 책임 축소** (30k → 15k 토큰 예산). 결정적 작업이 `pact batch`/`pact merge`로 빠짐.
+2. **v0.4.1 `pact run-cycle prepare/collect`**. 사전검사·worktree·payload·머지·cleanup이 CLI로 응집. 매니저는 "판단"만 남음. 즉 매니저별 판단의 무게가 명확히 차등화됨.
+3. **dogfooding 결과**: planner/architect는 사이클당 1회·첫 단추. coordinator는 사이클당 2회·통합 작업. reviewer-task는 메타 분류. 모두 같은 모델로 굴리면 ROI가 안 맞음.
+
+또한 실제 frontmatter는 이미 `inherit`이 아니라 `opus`/`sonnet` 명시 상태로 표류. ADR-004와 코드가 어긋남 → 사실 일치 필요.
+
+### 결정
+
+매니저·워커별 모델을 frontmatter에 **명시**하고 차등 채택.
+
+| agent | 모델 | 근거 |
+|---|---|---|
+| `planner` | opus | 첫 단추. 잘못되면 워커 N명 재작업. 사이클당 1회로 비용 부담 적음. PRD 흡수에 1M 컨텍스트 가치. |
+| `architect` | opus | 계약 정의. 잘못되면 워커 N명 재작업. 사이클당 1회. cycle 검증·TBD 해소에 추론 가치 큼. |
+| `coordinator` | **sonnet** (← opus) | ADR-009로 책임 축소. 배치 의도 검토 + status 통합은 Sonnet으로 충분. 사이클당 2회 + opus 가격 → 절감 ROI 1순위. |
+| `reviewer-arch` | opus | 아키텍처 정합성·계약 cycle 검증. 사용자 명시 호출이라 빈도 낮음. |
+| `reviewer-code` | sonnet | 4축 검증은 도구 실행 위주. |
+| `reviewer-task` | **haiku** (← sonnet) | 메타 분류 (크기·done_criteria 체크리스트). 실패 위험 낮음. |
+| `reviewer-ui` | sonnet | 코드/마크업 검토. 시각적 판단 X. |
+| `worker` | sonnet | TDD evidence 정확성 + 코드 품질 필요. N개 병렬이라 비용 민감하지만 haiku는 위험 (재시도 비용이 더 큼). |
+
+워커 spawn 시 `Task` tool의 `model` 파라미터는 frontmatter 값을 그대로 사용 (생략 X).
+
+### 트레이드오프
+
+- ❌ 사용자가 메인을 swap해도 매니저·워커는 frontmatter 값으로 고정 (단일 변수 통제 불가)
+- ❌ 모델 ID/네이밍 변경 시 8개 파일 일괄 수정 필요
+- ✅ ROI 정렬 — 비싼 모델은 첫 단추(planner/architect)에만, 메타·통합 작업은 저렴한 모델
+- ✅ ADR-004와 코드의 표류 정리 — 사실 일치
+- ✅ v0.4.1 책임 분배(LLM=판단, CLI=결정적 작업)에 맞게 차등화
+
+### 기대 효과
+
+대략 사이클당 비용 ~10~20% 절감 (워커 비용이 베이스 가장 큼). 가장 큰 lever는 coordinator opus→sonnet.
+
+### ADR-004 (폐기) 요약
+
+> "모든 매니저·워커 `model: inherit`"
+
+전제: 단일 변수 통제가 사용자 친화. 폐기 사유: v0.4.1 책임 분배 후 매니저별 작업 무게 차이가 커짐. 차등 모델이 ROI 명확.
+
+---
+
 ## ADR-015 — Context-light SOT: 문서는 shard로 보관하고 필요한 섹션만 읽는다
 
 - **상태**: 채택
