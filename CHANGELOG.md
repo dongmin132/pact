@@ -1,5 +1,36 @@
 # Changelog
 
+## v0.5.2 — 2026-05-12
+
+사이클 종료 후 사용자의 직접 수정과 contracts/PROGRESS의 표류(drift)를 두 시점에서 잡는다.
+
+### 증상
+
+`/pact:parallel` 끝나서 contracts/api/auth.md가 박혔는데, 사용자가 응답 형식을 직접 손대고 contracts 안 갱신. 다음 사이클 워커가 옛 contracts 믿고 잘못 짬.
+
+### 추가
+
+- **`hooks/stop-verify.js`**: turn 끝마다 git status 분류 — 코드 변경 있고 contracts/PROGRESS/MODULE_OWNERSHIP/tasks 변경 0개면 "문서 표류 가능" 별도 알림 추가. async라 응답 흐름 방해 X.
+- **`commands/reflect.md`**: 단계 1.5 신설 — `.pact/merge-result.json`의 timestamp 이후 `git log --since`로 변경 파일 수집, planner reflect 모드 prompt에 CODE_CHANGED / DOCS_CHANGED 전달. 회고 출력에 "Docs Drift" 섹션 추가.
+
+### 동작 시점
+
+| 시점 | 어디서 잡나 |
+|---|---|
+| 매 turn 끝 | `stop-verify`가 단발 알림 (가벼움) |
+| 사이클 회고 | `/pact:reflect`가 마지막 머지 이후 누적 분석 (정밀) |
+
+### 테스트
+
+- 177 → 184 통과 (+7: `stop-verify`의 `classifyChanges`/`extractPath` 7개 시나리오)
+- pure 함수로 추출해서 hook 본체와 분리
+
+### Breaking Changes
+
+- 없음. 알림만 추가, 차단 X.
+
+---
+
 ## v0.5.1 — 2026-05-10
 
 `/pact:parallel` 무한루프 hotfix. 머지 완료된 task가 다음 batch에 다시 잡히던 문제를 두 단계로 차단.

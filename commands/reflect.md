@@ -11,6 +11,22 @@ description: 사이클 회고 — 잘된 점·실패 원인·개선 후보 (prop
 - `CLAUDE.md`, `PROGRESS.md`, `DECISIONS.md` 존재
 - 마지막 cycle이 `done` 또는 `aborted`인 상태가 자연스러움 (running 중에도 호출은 가능)
 
+## 단계 1.5: Docs drift 사전 수집 (Bash)
+
+마지막 머지 시점 이후 사용자가 직접 수정한 코드와 문서 갱신 누락 검사:
+
+```bash
+LAST_MERGE_TS=$(jq -r '.timestamp // empty' .pact/merge-result.json 2>/dev/null)
+if [ -n "$LAST_MERGE_TS" ]; then
+  # 마지막 머지 이후 commit들의 변경 파일 수집
+  CHANGED=$(git log --since="$LAST_MERGE_TS" --name-only --pretty=format: | sort -u | grep -v '^$')
+  CODE_CHANGED=$(echo "$CHANGED" | grep -E '\.(ts|tsx|js|jsx|py|go|rs|java|kt|rb)$' || true)
+  DOCS_CHANGED=$(echo "$CHANGED" | grep -E '^(contracts/|PROGRESS\.md|tasks/)' || true)
+fi
+```
+
+planner에 이 결과를 전달 (아래 prompt에 inline).
+
 ## 단계 2: planner 서브에이전트 호출 (회고 모드)
 
 Task tool:
@@ -24,12 +40,14 @@ Task tool:
   - 잘 된 부분 (3개 이내)
   - 안 된 부분 + 가능한 원인 (3개 이내)
   - 개선 후보 ADR (DECISIONS.md 추가용, 사용자 승인 전제)
+  - **Docs drift** — 마지막 머지 이후 사용자가 직접 수정했지만 contracts/PROGRESS 갱신 안 된 파일 (단계 1.5에서 수집된 CODE_CHANGED / DOCS_CHANGED 비교)
   
   입력:
   - .pact/runs/*/status.json 들 (이번 cycle)
   - .pact/merge-result.json
   - PROGRESS.md
   - 워커 보고서들 (.pact/runs/*/report.md)
+  - 단계 1.5의 CODE_CHANGED / DOCS_CHANGED 목록
   
   출력은 채팅 prose로:
   
@@ -40,6 +58,10 @@ Task tool:
   
   ### 안 된 부분
   - <bullet> — 원인 추정: <설명>
+  
+  ### Docs Drift (마지막 머지 이후)
+  - <코드 파일>: 대응 contracts/PROGRESS 갱신 누락 — <갱신 권장 경로>
+  (없으면 "표류 없음")
   
   ### 제안 ADR (사용자 승인 후 DECISIONS.md 추가)
   
