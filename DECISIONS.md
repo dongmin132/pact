@@ -6,6 +6,59 @@
 
 ---
 
+## ADR-020 — 멀티세션 sibling 패턴 (sub-agent 패턴과 공존)
+
+- **상태**: 채택
+- **날짜**: 2026-05-13
+- **출처**: dogfooding — 사용자가 cmux로 여러 세션 동시에 굴리고 싶다는 요청
+- **관련**: ARCHITECTURE.md §4 (워커), v0.6.0
+
+### 발견 / 배경
+
+기존 워커는 Task tool로 spawn된 sub-agent(부모 conversation의 자식). v0.4.1 run-cycle CLI로 메인 turn 95→5 압축해 cache_read -94% 달성했지만, 워커 결과가 부모 컨텍스트에 누적되는 구조 자체는 그대로. 진정한 "메인 컨텍스트 누수 0" 달성 불가.
+
+사용자가 cmux/tmux로 N개 Claude Code 세션 동시 띄우면 OS 프로세스 수준 격리 → 메인 누수 진짜 0. 그러나 그러려면:
+
+1. 같은 task를 두 세션이 잡지 못하게 막을 메커니즘 (lock)
+2. 미점유 task 찾기 helper
+3. 세션 간 진행 가시성 (메인이 polling)
+4. 비정상 종료 시 lock 청소
+
+### 결정
+
+멀티세션 모드를 **sub-agent 패턴과 공존**하는 형태로 추가 (대체 X).
+
+| | sub-agent (기존, default) | 멀티세션 (이번 추가) |
+|---|---|---|
+| spawn | Task tool | OS 프로세스 |
+| 트리거 | `/pact:parallel` | `pact claim` + 사용자가 새 `claude` 세션 |
+| 메인 누수 | 일부 누적 (v0.4.1 후 5%) | 0 |
+| 관측성 | 메인 turn마다 통합 | `pact status --watch` 폴링 |
+| 인터랙션 | 메인이 게이트 | 각 세션 자율 (yolo 권장) |
+
+추가 산출물:
+- `scripts/lock.js` — `.pact/runs/<id>/lock.pid` 기반 점유. acquire/release/stale takeover/list/cleanStale.
+- `pact claim <task_id>` — 명시적 점유.
+- `pact next` — 미점유 task 추천.
+- `pact status --watch` — 주기 폴링 모니터.
+- `commands/multi-session.md` — 사용자 가이드.
+- `session-start` / `progress-check` hook에 `cleanStaleLocks` 호출 추가.
+
+### 트레이드오프
+
+- ❌ 통합 관측성 ↓ — 메인이 한눈에 진행 보려면 `pact status --watch` 별도 호출 필요
+- ❌ 인터랙션 게이트 깨짐 — 워커 도중 사용자에게 묻는 패턴 사실상 불가, yolo 또는 명확한 done_criteria 필수
+- ❌ 사용자 인지 부담 — N개 세션 띄우고 종료까지 챙기는 흐름. cmux/tmux 같은 도구 필요
+- ❌ Claude Code CLI headless 모드 정식 지원 시 자동화 가능, 현재는 수동 시작
+- ✅ **메인 컨텍스트 누수 0** — sub-agent 패턴 한계 돌파
+- ✅ 진짜 OS 동시성 — Anthropic API 호출 N개 시작 즉시 보장
+- ✅ 각 세션이 독립 hooks·독립 모델 가능 (실험 자유)
+- ✅ sub-agent 패턴 그대로 작동 — Breaking change 0
+
+PID 재사용 위험: macOS/Linux에서 PID 재활용은 짧은 시간 내엔 드물지만 이론적 가능. 락 파일에 `acquired_at`도 박아 향후 "오래된 stale" 보강 가능. v0.6.0은 isAlive 단일 검사로 시작.
+
+---
+
 ## ADR-019 — 매니저·워커 모델 차등 (ADR-004 supersede)
 
 - **상태**: 채택 (ADR-004 폐기)

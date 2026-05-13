@@ -3,7 +3,7 @@
 > Claude Code 위에 얹는 **계약 기반 AI 개발 운영 시스템**.
 > 문서·계약·검증·worktree 격리 병렬 에이전트로 통제하는 플러그인.
 
-[![tests](https://img.shields.io/badge/tests-184%2F184-brightgreen)](./test) [![version](https://img.shields.io/badge/version-0.5.2-blue)](./.claude-plugin/plugin.json) [![deps](https://img.shields.io/badge/deps-zero-success)](./package.json) [![license](https://img.shields.io/badge/license-MIT-blue)](#라이선스)
+[![tests](https://img.shields.io/badge/tests-198%2F198-brightgreen)](./test) [![version](https://img.shields.io/badge/version-0.6.0-blue)](./.claude-plugin/plugin.json) [![deps](https://img.shields.io/badge/deps-zero-success)](./package.json) [![license](https://img.shields.io/badge/license-MIT-blue)](#라이선스)
 
 ---
 
@@ -214,7 +214,7 @@ opt-out은 마크다운/설정/마이그레이션 task에서만: `tdd: false` fr
 
 ---
 
-## 슬래시 명령 (17개)
+## 슬래시 명령 (18개)
 
 | 명령 | 책임 |
 |---|---|
@@ -235,6 +235,7 @@ opt-out은 마크다운/설정/마이그레이션 task에서만: `tdd: false` fr
 | `/pact:resolve-conflict` | 머지 충돌 사용자 해결 워크플로우 |
 | `/pact:worktree-status` | worktree 목록·디스크 사용량 |
 | `/pact:worktree-cleanup` | 고아 worktree 일괄 삭제 |
+| `/pact:multi-session` | 멀티세션 sibling 패턴 가이드 (v0.6.0) |
 
 ## CLI (`pact` 바이너리, 9개)
 
@@ -252,6 +253,9 @@ opt-out은 마크다운/설정/마이그레이션 task에서만: `tdd: false` fr
 | `pact split-docs` | legacy `TASKS.md`/`API_CONTRACT.md`/`DB_CONTRACT.md`/`MODULE_OWNERSHIP.md` → shard |
 | `pact context-map sync` | `docs/context-map.md`의 Domains 표를 현재 shard 상태로 갱신 (idempotent) |
 | `pact context-guard [-q]` | parallel 전 긴 문서/선택 컨텍스트 위험 검사 |
+| `pact claim <task_id> [--session <label>]` | 멀티세션에서 task 점유 (lock). v0.6.0 |
+| `pact next [--all] [--json]` | 현재 batch에서 미점유 task 한 개 (또는 전체). v0.6.0 |
+| `pact status --watch [SECS]` | 주기 폴링으로 다른 세션 진행·lock 상태 모니터. v0.6.0 |
 
 ### `/pact:parallel` 흐름 (v0.4.1 run-cycle)
 
@@ -293,11 +297,11 @@ opt-out은 마크다운/설정/마이그레이션 task에서만: `tdd: false` fr
 | Claude Code Agent Teams | TeammateIdle hook |
 | Hook async pattern | 텔레메트리 분리 (post-edit-doc-sync, teammate-idle, progress-check) |
 
-자세한 ADR(19개)은 [DECISIONS.md](./DECISIONS.md), 빌드 시 따른 Claude Code 사양 사실은 [docs/CLAUDE_CODE_SPEC.md](./docs/CLAUDE_CODE_SPEC.md).
+자세한 ADR(20개)은 [DECISIONS.md](./DECISIONS.md), 빌드 시 따른 Claude Code 사양 사실은 [docs/CLAUDE_CODE_SPEC.md](./docs/CLAUDE_CODE_SPEC.md).
 
 ---
 
-## 릴리스 흐름 (v0.1 → v0.5.2)
+## 릴리스 흐름 (v0.1 → v0.6.0)
 
 | 버전 | 날짜 | 한 줄 |
 |---|---|---|
@@ -310,6 +314,7 @@ opt-out은 마크다운/설정/마이그레이션 task에서만: `tdd: false` fr
 | v0.5.0 | 2026-05-09 | **agent 모델 차등** (planner/architect=opus, coordinator=sonnet 등, ADR-019) + **병렬 도구 호출 지시** 8 agent에 추가 + `stop-verify` async (응답 즉시 반응) |
 | v0.5.1 | 2026-05-10 | **hotfix**: 머지된 task가 다음 batch에 재선택되던 무한루프 차단. parse-tasks spread 순서 + `pact merge`가 task source에 `status: done` 자동 박기 |
 | v0.5.2 | 2026-05-12 | **docs drift 감지**: 사이클 후 사용자가 코드만 수정하고 contracts/PROGRESS 안 고쳤을 때 `stop-verify` turn 알림 + `/pact:reflect` 누적 분석으로 표류 잡기 |
+| v0.6.0 | 2026-05-13 | **멀티세션 sibling 패턴 SDK** — `pact claim/next`, `pact status --watch`, `.pact/runs/<id>/lock.pid` 기반 점유 락, stale 자동 청소. cmux/tmux로 N개 Claude Code 세션 진짜 OS 병렬. 메인 컨텍스트 누수 0 (ADR-020) |
 
 전체 변경 사항은 [CHANGELOG.md](./CHANGELOG.md).
 
@@ -329,7 +334,7 @@ pact/
 ├── .claude-plugin/plugin.json    # 플러그인 매니페스트 + hook 등록
 ├── agents/                       # 8 서브에이전트 (planner, architect, coordinator,
 │                                 # reviewer-code/task/arch/ui, worker)
-├── commands/                     # 17 슬래시 명령
+├── commands/                     # 18 슬래시 명령
 ├── hooks/                        # 8 hook 스크립트
 ├── scripts/                      # CLI helper (worktree, merge, parse, validate, ...)
 ├── schemas/                      # JSON schemas (worker-status, task)

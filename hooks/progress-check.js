@@ -17,6 +17,14 @@ function main() {
   }
 
   const cwd = payload.cwd || process.cwd();
+
+  // 멀티세션 lock 정리 (v0.6.0) — 죽은 PID 잡은 lock 일괄 해제.
+  // Claude Code 세션 종료 시 그 세션의 자식 PID(pact claim 한 프로세스)도 회수되었을 것.
+  try {
+    const { cleanStaleLocks } = require(path.join(__dirname, '..', 'scripts', 'lock.js'));
+    cleanStaleLocks({ cwd });
+  } catch { /* lock.js 없거나 .pact 미초기화 — skip */ }
+
   const progressFile = path.join(cwd, 'PROGRESS.md');
   if (!fs.existsSync(progressFile)) process.exit(0);
 

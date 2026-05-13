@@ -1,5 +1,75 @@
 # Changelog
 
+## v0.6.0 — 2026-05-13
+
+멀티세션 sibling 패턴 SDK. cmux/tmux 등으로 여러 Claude Code 세션을 진짜 OS 프로세스 병렬로 굴리는 모드 추가. sub-agent 패턴과 공존.
+
+### 동기
+
+기존 sub-agent 패턴(Task tool로 자식 conversation spawn)은 부모 메인 컨텍스트에 워커 prefix가 일부 누적. v0.4.1 run-cycle CLI로 95→5 turn 압축했지만 누적 0은 못 함. 사용자 요청: "진짜로 N개 세션을 동시 실행"으로 메인 누수 0 달성.
+
+### 추가
+
+- **`scripts/lock.js`** — `.pact/runs/<id>/lock.pid` 파일 기반 멀티세션 점유 락
+  - `acquireLock` — fresh / takeover(stale PID) / 거부(살아있는 holder) 3가지 동작
+  - `releaseLock` — 자기 PID 일치 시만 삭제 (다른 세션 lock 보호), `--force` 옵션
+  - `releaseAllByPid` — 자기 PID 잡은 락 일괄 해제
+  - `cleanStaleLocks` — 죽은 PID 잡은 락 일괄 정리
+  - `listLocks` — alive/stale 표시
+- **`pact claim <task_id> [--session <label>] [--json]`** — 명시적 점유 + 다음 단계 안내(worktree·prompt·context 경로)
+- **`pact next [--all] [--json]`** — 현재 batch에서 미점유 task 한 개 (또는 전체) 출력
+- **`pact status --watch [SECS]`** — 주기 폴링(default 2s)으로 다른 세션 진행·lock 상태 실시간 보기
+- **`commands/multi-session.md`** — `/pact:multi-session` 슬래시 명령 가이드
+- **session-start / progress-check hook** — stale lock 자동 청소 (이전 세션 비정상 종료 잔재)
+
+### 멀티세션 흐름
+
+```
+[메인 세션]
+  pact run-cycle prepare              # 기존 — batch + worktree + payload 준비
+  pact next                           # 미점유 task ID 한 개
+
+[워커 세션 (각자 cmux/tmux 패널)]
+  pact claim PACT-001 --session 'pane:0.1'
+  cd .pact/worktrees/PACT-001/
+  claude                              # 새 세션, prompt.md 첫 입력
+  # ... 작업 ... status.json + report.md 남기고 종료
+
+[메인 세션]
+  pact status --watch                 # 진행 모니터
+  pact run-cycle collect              # 모든 워커 종료 후 머지 + cleanup
+```
+
+### sub-agent 패턴과 비교
+
+| | sub-agent (Task tool) | 멀티세션 (이번 patch) |
+|---|---|---|
+| spawn | 부모 conversation 내부 | OS 프로세스 N개 |
+| 메인 컨텍스트 누수 | 일부 누적 | **0** |
+| 모니터링 | 메인 turn마다 | 파일 polling (`pact status --watch`) |
+| 사용자 인터랙션 | 메인이 게이트 | 각 세션 자율 (yolo 권장) |
+| Hooks | 부모 컨텍스트 hooks | 각 세션 독립 |
+
+### 안전망
+
+- 같은 task 중복 시작: `acquireLock`이 살아있는 PID 검사로 거부
+- 비정상 종료 stale lock: SessionStart/SessionEnd hook이 자동 정리
+- 머지 race: 머지는 메인 단일 지점(`pact run-cycle collect`)에서만
+
+### 테스트
+
+- 184 → 198 통과 (+14: isAlive 3 + acquireLock 4 + releaseLock 3 + releaseAllByPid 1 + cleanStaleLocks 1 + listLocks 1 + 회귀 1)
+
+### ADR
+
+- **ADR-020** — 멀티세션 sibling 패턴 (sub-agent 패턴과 공존)
+
+### Breaking Changes
+
+- 없음. sub-agent 패턴 그대로 작동. 멀티세션은 opt-in (사용자가 `pact claim` + 새 세션 시작 시에만).
+
+---
+
 ## v0.5.2 — 2026-05-12
 
 사이클 종료 후 사용자의 직접 수정과 contracts/PROGRESS의 표류(drift)를 두 시점에서 잡는다.

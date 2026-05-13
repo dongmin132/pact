@@ -21,6 +21,12 @@ function main() {
   const stateDir = path.join(cwd, '.pact');
   if (!fs.existsSync(stateDir)) process.exit(0);  // pact 미초기화 프로젝트 → skip
 
+  // 멀티세션 stale lock 정리 (v0.6.0) — 이전 세션이 비정상 종료해 남긴 lock 일괄 청소.
+  try {
+    const { cleanStaleLocks } = require(path.join(__dirname, '..', 'scripts', 'lock.js'));
+    cleanStaleLocks({ cwd });
+  } catch { /* skip */ }
+
   const mode = payload.permission_mode
     || payload.permissionMode
     || (payload.metadata && payload.metadata.permission_mode)
