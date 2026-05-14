@@ -14,6 +14,10 @@ const {
   listLocks,
   isAlive,
   lockPath,
+  acquireCycleLock,
+  releaseCycleLock,
+  readCycleLock,
+  cycleLockPath,
 } = require('../scripts/lock.js');
 
 function tmpProject() {
@@ -182,5 +186,71 @@ test('listLocks — alive/stale 둘 다 표시', () => {
     assert.equal(t1.alive, true);
     assert.equal(t1.session_label, 'main');
     assert.equal(t2.alive, false);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+// ─── Cycle lock (v0.6.1) ───
+
+test('acquireCycleLock — 새 사이클 lock 획득', () => {
+  const dir = tmpProject();
+  try {
+    const r = acquireCycleLock({ cwd: dir, pid: ALIVE_PID, stage: 'prepare' });
+    assert.equal(r.ok, true);
+    assert.equal(r.action, 'fresh');
+    assert.ok(fs.existsSync(cycleLockPath(dir)));
+
+    const holder = readCycleLock({ cwd: dir });
+    assert.equal(holder.pid, ALIVE_PID);
+    assert.equal(holder.stage, 'prepare');
+    assert.equal(holder.alive, true);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('acquireCycleLock — 살아있는 lock 있으면 거부', () => {
+  const dir = tmpProject();
+  try {
+    acquireCycleLock({ cwd: dir, pid: ALIVE_PID, stage: 'prepare' });
+    const r2 = acquireCycleLock({ cwd: dir, pid: ALIVE_PID, stage: 'collect' });
+    assert.equal(r2.ok, false);
+    assert.match(r2.error, /다른 세션에서 진행 중/);
+    assert.equal(r2.holder.pid, ALIVE_PID);
+    assert.equal(r2.holder.stage, 'prepare');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('acquireCycleLock — stale(죽은 PID)은 takeover', () => {
+  const dir = tmpProject();
+  try {
+    fs.writeFileSync(
+      cycleLockPath(dir),
+      JSON.stringify({ pid: DEAD_PID, stage: 'collect', acquired_at: '2020' }),
+    );
+    const r = acquireCycleLock({ cwd: dir, pid: ALIVE_PID, stage: 'prepare' });
+    assert.equal(r.ok, true);
+    assert.equal(r.action, 'takeover');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('releaseCycleLock — 자기 PID 일치 시 삭제', () => {
+  const dir = tmpProject();
+  try {
+    acquireCycleLock({ cwd: dir, pid: ALIVE_PID, stage: 'prepare' });
+    const r = releaseCycleLock({ cwd: dir, pid: ALIVE_PID });
+    assert.equal(r.ok, true);
+    assert.equal(r.removed, true);
+    assert.ok(!fs.existsSync(cycleLockPath(dir)));
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('cleanStaleLocks — cycle lock도 청소 (v0.6.1)', () => {
+  const dir = tmpProject();
+  try {
+    fs.writeFileSync(
+      cycleLockPath(dir),
+      JSON.stringify({ pid: DEAD_PID, stage: 'prepare', acquired_at: '2020' }),
+    );
+    const r = cleanStaleLocks({ cwd: dir });
+    assert.ok(r.cleaned.includes('__cycle__'));
+    assert.ok(!fs.existsSync(cycleLockPath(dir)));
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });

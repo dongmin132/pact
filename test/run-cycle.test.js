@@ -163,14 +163,33 @@ test('run-cycle prepare — 빈 batch면 empty: true', () => {
 
 // ─── collect ────────────────────────────────────────────
 
-test('run-cycle collect — current_batch 없으면 실패', () => {
+test('run-cycle collect — current_batch 없으면 already_collected (v0.6.1 멱등)', () => {
   const dir = makeProject();
   try {
     fs.mkdirSync(path.join(dir, '.pact'), { recursive: true });
     const r = runPact(['run-cycle', 'collect'], dir);
-    assert.equal(r.status, 1);
+    assert.equal(r.status, 0, `stderr: ${r.stderr}\nstdout: ${r.stdout}`);
     const out = JSON.parse(r.stdout);
-    assert.equal(out.stage, 'no-current-batch');
+    assert.equal(out.ok, true);
+    assert.equal(out.already_collected, true);
+  } finally { cleanupProject(dir); }
+});
+
+test('run-cycle prepare — 두 번째 호출은 already_prepared (v0.6.1 멱등)', () => {
+  const dir = makeProject();
+  try {
+    writeTasks(dir, [{ id: 'IDEM-001', allowed_paths: ['src/a.ts'] }]);
+    const r1 = runPact(['run-cycle', 'prepare'], dir);
+    assert.equal(r1.status, 0, `1st: ${r1.stderr}`);
+    const out1 = JSON.parse(r1.stdout);
+    assert.equal(out1.ok, true);
+    assert.equal(out1.already_prepared, undefined, '첫 호출은 정상 진행');
+
+    const r2 = runPact(['run-cycle', 'prepare'], dir);
+    assert.equal(r2.status, 0, `2nd: ${r2.stderr}`);
+    const out2 = JSON.parse(r2.stdout);
+    assert.equal(out2.ok, true);
+    assert.equal(out2.already_prepared, true, '두 번째는 멱등 skip');
   } finally { cleanupProject(dir); }
 });
 

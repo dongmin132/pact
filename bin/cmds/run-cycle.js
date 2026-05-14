@@ -25,6 +25,8 @@ const { prepareWorkerSpawn } = require(path.join(PLUGIN_ROOT, 'scripts', 'spawn-
 const { collectLongDocs, DEFAULT_MAX_LINES } = require(path.join(PLUGIN_ROOT, 'bin', 'cmds', 'context-guard.js'));
 const { planMerge } = require(path.join(PLUGIN_ROOT, 'bin', 'cmds', 'merge.js'));
 const { mergeAll } = require(path.join(PLUGIN_ROOT, 'scripts', 'merge-coordinator.js'));
+const { acquireCycleLock, releaseCycleLock } = require(path.join(PLUGIN_ROOT, 'scripts', 'lock.js'));
+const { setTaskStatus } = require(path.join(PLUGIN_ROOT, 'scripts', 'task-sources.js'));
 
 const CURRENT_BATCH_FILE = '.pact/current_batch.json';
 
@@ -33,8 +35,35 @@ function emit(obj) {
 }
 
 function fail(stage, errors) {
-  emit({ ok: false, stage, errors });
+  // throw로 처리해서 try-finally의 unlock이 실행되게.
+  // 호출 측이 catch해서 emit + process.exit.
+  const e = new Error(`stage ${stage} failed`);
+  e.pactStage = stage;
+  e.pactErrors = errors;
+  throw e;
+}
+
+function emitFail(e) {
+  emit({ ok: false, stage: e.pactStage, errors: e.pactErrors });
   process.exit(1);
+}
+
+function isAlreadyPrepared(cwd) {
+  const cb = path.join(cwd, CURRENT_BATCH_FILE);
+  if (!fs.existsSync(cb)) return false;
+  try {
+    const batch = JSON.parse(fs.readFileSync(cb, 'utf8'));
+    const taskIds = batch.task_ids || [];
+    if (taskIds.length === 0) return false;
+    for (const id of taskIds) {
+      const wt = path.join(cwd, '.pact', 'worktrees', id);
+      const prompt = path.join(cwd, '.pact', 'runs', id, 'prompt.md');
+      if (!fs.existsSync(wt) || !fs.existsSync(prompt)) return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function preflight(cwd) {
@@ -73,9 +102,43 @@ function parseMaxFlag(args) {
 
 function prepare(args, opts = {}) {
   const cwd = opts.cwd || process.cwd();
+  const force = args.includes('--force');
 
+  // 멱등 (v0.6.1): 이미 prepared면 skip. --force로 무시 가능.
+  if (!force && isAlreadyPrepared(cwd)) {
+    emit({
+      ok: true,
+      already_prepared: true,
+      message: '이미 prepare 완료 — current_batch.json + worktrees 존재. --force로 다시 진행.',
+    });
+    return;
+  }
+
+  // preflight를 lock 전에. lock 획득이 .pact/ 만들면 isClean이 false 잡으므로.
   const pre = preflight(cwd);
-  if (!pre.ok) return fail('preflight', pre.errors);
+  if (!pre.ok) {
+    emit({ ok: false, stage: 'preflight', errors: pre.errors });
+    process.exit(1);
+  }
+
+  // 사이클 lock (v0.6.1) — 다른 세션의 prepare/collect 진행 중이면 거부
+  const lock = acquireCycleLock({ cwd, stage: 'prepare' });
+  if (!lock.ok) {
+    emit({ ok: false, stage: 'cycle-busy', errors: [{ message: lock.error, fix: '다른 세션 종료 대기 또는 pact status' }] });
+    process.exit(1);
+  }
+
+  try {
+    doPrepare(args, opts, cwd, pre);
+  } catch (e) {
+    if (e.pactStage) emitFail(e);
+    else throw e;
+  } finally {
+    releaseCycleLock({ cwd });
+  }
+}
+
+function doPrepare(args, opts, cwd, pre) {
 
   const parsed = parseTaskFiles(pre.taskFiles, { cwd });
   if (parsed.errors.length > 0) {
@@ -179,9 +242,33 @@ function collect(args, opts = {}) {
   const cwd = opts.cwd || process.cwd();
   const cbPath = path.join(cwd, CURRENT_BATCH_FILE);
 
+  // 멱등 (v0.6.1): current_batch.json 없으면 이미 collect 완료 또는 prepare 안 됨
   if (!fs.existsSync(cbPath)) {
-    return fail('no-current-batch', [{ message: 'current_batch.json 없음 — pact run-cycle prepare 먼저' }]);
+    emit({
+      ok: true,
+      already_collected: true,
+      message: 'current_batch.json 없음 — 이미 collect 완료 또는 prepare 안 됨',
+    });
+    return;
   }
+
+  // 사이클 lock — 다른 세션이 collect 중이면 거부
+  const lock = acquireCycleLock({ cwd, stage: 'collect' });
+  if (!lock.ok) {
+    return emitFail({ pactStage: 'cycle-busy', pactErrors: [{ message: lock.error }] });
+  }
+
+  try {
+    doCollect(args, opts, cwd, cbPath);
+  } catch (e) {
+    if (e.pactStage) emitFail(e);
+    else throw e;
+  } finally {
+    releaseCycleLock({ cwd });
+  }
+}
+
+function doCollect(args, opts, cwd, cbPath) {
   const currentBatch = JSON.parse(fs.readFileSync(cbPath, 'utf8'));
 
   const plan = planMerge({ cwd, taskIds: currentBatch.task_ids });

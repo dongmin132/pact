@@ -1,6 +1,6 @@
 {
   "name": "pact",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "Claude Code 위에 얹는 계약 기반 AI 개발 운영 시스템 — 문서·계약·검증·worktree 격리 병렬 에이전트로 통제하는 플러그인",
   "author": {
     "name": "dongmin132",

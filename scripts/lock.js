@@ -14,6 +14,10 @@ function lockPath(cwd, taskId) {
   return path.join(cwd, '.pact', 'runs', taskId, 'lock.pid');
 }
 
+function cycleLockPath(cwd) {
+  return path.join(cwd, '.pact', 'cycle.lock');
+}
+
 function isAlive(pid) {
   if (typeof pid !== 'number' || !Number.isFinite(pid) || pid <= 0) return false;
   try {
@@ -130,7 +134,7 @@ function releaseAllByPid(opts = {}) {
 }
 
 /**
- * stale lock(죽은 PID) 일괄 정리.
+ * stale lock(죽은 PID) 일괄 정리 — task lock + cycle lock.
  * @returns {{cleaned: string[]}}
  */
 function cleanStaleLocks(opts = {}) {
@@ -138,20 +142,92 @@ function cleanStaleLocks(opts = {}) {
   const runsDir = path.join(cwd, '.pact', 'runs');
   const cleaned = [];
 
-  if (!fs.existsSync(runsDir)) return { cleaned };
+  if (fs.existsSync(runsDir)) {
+    for (const taskId of fs.readdirSync(runsDir)) {
+      const file = lockPath(cwd, taskId);
+      if (!fs.existsSync(file)) continue;
+      const holder = readLock(file);
+      if (!holder || !isAlive(holder.pid)) {
+        try {
+          fs.unlinkSync(file);
+          cleaned.push(taskId);
+        } catch { /* ignore */ }
+      }
+    }
+  }
 
-  for (const taskId of fs.readdirSync(runsDir)) {
-    const file = lockPath(cwd, taskId);
-    if (!fs.existsSync(file)) continue;
-    const holder = readLock(file);
+  // cycle lock (v0.6.1) — prepare/collect 도중 죽은 세션 잔재
+  const cycleFile = cycleLockPath(cwd);
+  if (fs.existsSync(cycleFile)) {
+    const holder = readLock(cycleFile);
     if (!holder || !isAlive(holder.pid)) {
       try {
-        fs.unlinkSync(file);
-        cleaned.push(taskId);
+        fs.unlinkSync(cycleFile);
+        cleaned.push('__cycle__');
       } catch { /* ignore */ }
     }
   }
+
   return { cleaned };
+}
+
+/**
+ * 사이클 lock 획득 (prepare/collect 동시 호출 차단, v0.6.1).
+ * stale 시 takeover.
+ */
+function acquireCycleLock(opts = {}) {
+  const cwd = opts.cwd || process.cwd();
+  const pid = opts.pid || process.pid;
+  const file = cycleLockPath(cwd);
+  const pactDir = path.dirname(file);
+
+  if (!fs.existsSync(pactDir)) fs.mkdirSync(pactDir, { recursive: true });
+
+  let action = 'fresh';
+  if (fs.existsSync(file)) {
+    const holder = readLock(file);
+    if (holder && isAlive(holder.pid)) {
+      return {
+        ok: false,
+        error: `사이클이 다른 세션에서 진행 중 (pid=${holder.pid}${holder.stage ? `, stage=${holder.stage}` : ''})`,
+        holder,
+      };
+    }
+    action = 'takeover';
+  }
+
+  const payload = {
+    pid,
+    stage: opts.stage || null,
+    acquired_at: new Date().toISOString(),
+  };
+  fs.writeFileSync(file, JSON.stringify(payload, null, 2) + '\n');
+  return { ok: true, file, action };
+}
+
+function releaseCycleLock(opts = {}) {
+  const cwd = opts.cwd || process.cwd();
+  const pid = opts.pid || process.pid;
+  const file = cycleLockPath(cwd);
+
+  if (!fs.existsSync(file)) return { ok: true, removed: false };
+
+  const holder = readLock(file);
+  if (!opts.force && holder && holder.pid !== pid) {
+    return { ok: false, error: `다른 PID(${holder.pid})가 사이클 진행 중. force 필요.` };
+  }
+
+  fs.unlinkSync(file);
+  return { ok: true, removed: true };
+}
+
+function readCycleLock(opts = {}) {
+  const cwd = opts.cwd || process.cwd();
+  const file = cycleLockPath(cwd);
+  if (!fs.existsSync(file)) return null;
+  const holder = readLock(file);
+  if (!holder) return null;
+  return { ...holder, alive: isAlive(holder.pid) };
 }
 
 /**
@@ -189,4 +265,8 @@ module.exports = {
   listLocks,
   isAlive,
   lockPath,
+  acquireCycleLock,
+  releaseCycleLock,
+  readCycleLock,
+  cycleLockPath,
 };

@@ -1,5 +1,50 @@
 # Changelog
 
+## v0.6.1 — 2026-05-14
+
+`pact run-cycle prepare/collect` 멱등화. 멀티세션에서 "orchestrator 한 세션" 제약 제거 — 누구든 안전하게 호출 가능.
+
+### 배경
+
+v0.6.0 멀티세션 SDK 후 dogfooding 중 발견: prepare/collect는 여전히 한 세션에서만 안전하게 호출 가능. 두 세션이 동시 prepare 부르면 batch.json 동시 write·worktree 충돌. 사용자가 "메인 세션" 개념을 두는 게 부담스럽다는 피드백.
+
+### 추가
+
+- **`.pact/cycle.lock`** 기반 사이클 lock (prepare/collect 동시 호출 차단)
+  - `scripts/lock.js`에 `acquireCycleLock` / `releaseCycleLock` / `readCycleLock` / `cycleLockPath` 추가
+  - stale takeover (죽은 PID 잡은 lock은 자동 인계)
+  - `cleanStaleLocks`가 cycle lock도 청소
+- **`pact run-cycle prepare` 멱등**
+  - `.pact/current_batch.json` + 모든 task의 worktree·prompt.md 존재하면 → `already_prepared: true` 반환
+  - `--force`로 무시 가능
+  - lock 획득 전 preflight 먼저 (lock 파일 생성이 clean tree 검사 깨지 않게)
+- **`pact run-cycle collect` 멱등**
+  - `current_batch.json` 없으면 → `already_collected: true` 반환 (이전 동작: 실패)
+  - lock으로 동시 collect 차단
+
+### 사용
+
+```
+세션 A: pact run-cycle prepare    # 첫 호출 — 정상 진행
+세션 B: pact run-cycle prepare    # 두 번째 — already_prepared skip
+세션 A or B: pact run-cycle collect # 어느 세션이든 한 번만 실행됨
+```
+
+"orchestrator 세션" 개념 사라짐. 모든 세션이 동등하게 prepare/collect 호출 가능.
+
+### Breaking Changes
+
+- `pact run-cycle collect` (current_batch 없음 케이스): 이전엔 exit 1 + `stage: no-current-batch`. v0.6.1부터 exit 0 + `already_collected: true`.
+  - 영향: 이 케이스를 실패로 분기하던 호출자 코드 (없을 가능성 높음). pact 내부에선 없음.
+
+### 테스트
+
+- 198 → 204 (+6)
+  - cycle lock: acquire 3 + release 1 + cleanStale 1
+  - run-cycle 멱등: prepare 두 번 호출 시 already_prepared, collect 시 already_collected
+
+---
+
 ## v0.6.0 — 2026-05-13
 
 멀티세션 sibling 패턴 SDK. cmux/tmux 등으로 여러 Claude Code 세션을 진짜 OS 프로세스 병렬로 굴리는 모드 추가. sub-agent 패턴과 공존.
