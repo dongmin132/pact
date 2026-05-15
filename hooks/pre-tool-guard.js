@@ -186,6 +186,30 @@ function main() {
 
   const absFile = path.isAbsolute(filePath) ? filePath : path.join(cwd, filePath);
 
+  // 0) edit-lock 검사 (v0.7.0) — 다른 세션이 이 파일을 잡고 있나
+  // 환경변수 또는 ppid로 자기 session_label 추정. 정확히 일치 안 하면 차단.
+  try {
+    const { findLockForFile } = require(path.join(__dirname, '..', 'scripts', 'edit-lock.js'));
+    const hit = findLockForFile(absFile, { cwd });
+    if (hit) {
+      const mySession = process.env.PACT_SESSION || `ppid-${process.ppid}`;
+      if (hit.session_label !== mySession) {
+        const out = {
+          hookSpecificOutput: {
+            hookEventName: 'PreToolUse',
+            permissionDecision: 'deny',
+            permissionDecisionReason:
+              `pact edit-lock: ${path.relative(cwd, absFile)}은(는) 다른 세션이 점유 중 ` +
+              `(target=${hit.target}, kind=${hit.kind}, session=${hit.session_label || 'unknown'}, pid=${hit.pid}). ` +
+              `해당 세션의 pact edit-release 대기 또는 --session 라벨 일치 확인.`,
+          },
+        };
+        process.stdout.write(JSON.stringify(out));
+        process.exit(0);
+      }
+    }
+  } catch { /* edit-lock.js 없거나 .pact 미초기화 — skip */ }
+
   const wt = detectWorktreeContext(cwd);
 
   // 1) 워커 worktree 경계 검사 (spec §3.4 post-hoc → pre-block 강화)

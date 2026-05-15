@@ -1,5 +1,78 @@
 # Changelog
 
+## v0.7.0 — 2026-05-15
+
+자유 수정 단계 멀티세션 안전망 — 모듈/파일 edit-lock + pre-tool-guard 차단.
+
+### 동기
+
+사이클 끝나고 사용자가 직접 코드·문서 수정할 때, 두 세션이 동시 같은 영역 만지면 race. v0.6.2 분담 모드는 빌드 단계까지만 안전. 자유 수정엔 빈 자리였음.
+
+### 추가
+
+- **`scripts/edit-lock.js`** — 모듈/파일 edit-lock 코어
+  - `acquireEditLock(target, opts)` — target이 모듈(`auth`)이면 owner_paths + shard 자동 묶음. 파일 경로(`PROGRESS.md`)면 단일.
+  - `releaseEditLock` — 자기 session_label 일치 시만 (force 옵션)
+  - `listEditLocks` / `findLockForFile` / `cleanStaleEditLocks` / `expandModuleFiles`
+  - stale takeover, session_label 우선순위는 v0.6.2와 동일
+- **`pact edit-lock <target>` / `pact edit-release <target>` CLI**
+  - `--session <label>` / `--kind module|file` / `--json` / `--force`
+  - edit-release는 마지막 acquire 이후 git status로 drift 분석 + 알림
+- **`hooks/pre-tool-guard.js` 확장**
+  - Write/Edit/MultiEdit 시 파일 → 매칭 edit-lock 검사
+  - 다른 session_label이 잡은 lock이면 차단 (모듈 owner_paths glob 매칭 또는 파일 정확 일치)
+  - 자기 session(`PACT_SESSION` 또는 `ppid-<N>`) 잡은 lock이면 통과
+
+### 모듈 lock의 자동 묶음
+
+`pact edit-lock auth` 호출 시 다음 경로 일괄 lock:
+- `contracts/modules/auth.md`의 `owner_paths` (예: `src/auth/**`, `src/api/auth/**`)
+- `contracts/api/auth.md` (있으면)
+- `contracts/db/auth.md` (있으면)
+- `contracts/modules/auth.md`
+- `tasks/auth.md` (있으면)
+
+코드·계약·task가 한 묶음으로 보호됨.
+
+### 글로벌 md 처리
+
+`PROGRESS.md`, `DECISIONS.md`, `CLAUDE.md` 같은 글로벌은 파일 단위 lock으로:
+```bash
+pact edit-lock PROGRESS.md --session me
+# ... 수정 ...
+pact edit-release PROGRESS.md
+```
+
+### 사용 예
+
+```bash
+세션 A: pact edit-lock auth --session a
+        # auth 모듈의 코드 + contracts + tasks 다 보호됨
+        # ... 수정 작업 ...
+        pact edit-release auth --session a
+        
+세션 B: pact edit-lock auth --session b
+        # → 거부 (a가 잡고 있음)
+        
+세션 B: pact edit-lock payment --session b
+        # → OK (다른 모듈)
+```
+
+### ADR
+
+- **ADR-021** — 멀티세션 자유 수정 안전망 (모듈/파일 edit-lock)
+
+### 테스트
+
+- 211 → 221 (+10)
+  - detectTargetKind / expandModuleFiles / acquire 4 / release 1 / findLockForFile 2 / cleanStaleEditLocks 1
+
+### Breaking Changes
+
+- 없음. edit-lock은 opt-in. 명시적 호출 X면 기존 동작.
+
+---
+
 ## v0.6.2 — 2026-05-15
 
 한 사이클을 여러 세션이 분담하는 패턴 정식 지원 — 각 세션이 잡은 task만 자기 sub-agent로 spawn.

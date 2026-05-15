@@ -21,6 +21,8 @@ const commands = {
   claim: () => require('./cmds/claim.js')(args),
   next: () => require('./cmds/next.js')(args),
   'list-locks': () => require('./cmds/list-locks.js')(args),
+  'edit-lock': () => require('./cmds/edit-lock.js')(args),
+  'edit-release': () => require('./cmds/edit-release.js')(args),
 };
 
 if (!cmd || !commands[cmd]) {
@@ -37,7 +39,9 @@ if (!cmd || !commands[cmd]) {
   console.error('  run-cycle <prepare|collect> [--max=N]  /pact:parallel 결정적 작업 통합 (메인 turn 압축)');
   console.error('  claim <task_id> [<task_id>...] [--session <label>]  멀티세션에서 task 점유 (한 번에 여러)');
   console.error('  next [--all] [--json]                  현재 batch에서 미점유 task 한 개 (또는 전체)');
-  console.error('  list-locks [--mine] [--session <label>] [--alive] [--json]  잡힌 lock 목록');
+  console.error('  list-locks [--mine] [--session <label>] [--alive] [--json]  잡힌 task lock 목록');
+  console.error('  edit-lock <target> [--session <label>]  자유 수정 단계 멀티세션 안전망');
+  console.error('  edit-release <target> [--session <label>] [--force]  edit-lock 해제 + drift 알림');
   process.exit(cmd ? 1 : 0);
 }
 

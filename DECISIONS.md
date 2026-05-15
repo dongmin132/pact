@@ -6,6 +6,67 @@
 
 ---
 
+## ADR-021 — 멀티세션 자유 수정 안전망 (edit-lock)
+
+- **상태**: 채택
+- **날짜**: 2026-05-15
+- **출처**: dogfooding — 사이클 끝난 후 멀티세션 자유 수정 시 race 우려
+- **관련**: ADR-020 (멀티세션 sibling), v0.7.0
+
+### 발견 / 배경
+
+v0.6.0~0.6.2로 빌드 단계 멀티세션은 안전(task lock + 분담 모드). 그러나 사이클 끝나고 사용자가 코드·contracts·PROGRESS 자유 수정할 때 멀티세션이면 race 가능:
+
+- 같은 파일 동시 write → 마지막이 이김
+- PROGRESS/DECISIONS 글로벌 md 동시 갱신 → 한쪽 손실
+- 같은 모듈 코드 + contracts shard 동시 손대면 일관성 깨짐
+
+운영 규율("모듈별 분담")로 피할 수도 있지만 사람 실수에 의존.
+
+### 결정
+
+**모듈/파일 edit-lock + pre-tool-guard 차단**으로 자동 안전망.
+
+#### `acquireEditLock(target)` — target 두 종류
+
+1. **모듈 이름** (예: `auth`): 그 도메인의 모든 파일 묶음 lock
+   - `contracts/modules/auth.md`의 `owner_paths`
+   - `contracts/api|db/auth.md`, `contracts/modules/auth.md`, `tasks/auth.md`
+2. **파일 경로** (예: `PROGRESS.md`): 단일 파일 lock — 글로벌 md 보호용
+
+#### pre-tool-guard 검사 흐름
+
+```
+Write/Edit/MultiEdit 요청 → 파일 경로 추출
+  → findLockForFile(경로) — 잡힌 lock 중 매칭 검사
+  → hit 있고 session_label != 내 세션이면 차단
+  → hit 있고 같은 session이면 통과 (자기 작업)
+  → hit 없으면 기존 ownership 검사로 fallthrough
+```
+
+### 트레이드오프
+
+- ❌ 사용자가 명시적 lock 호출해야 작동 — 자동 안전망이지만 opt-in
+- ❌ 모듈 정의 미흡(`contracts/modules/<m>.md` 없음) 시 lock 대상 paths 불완전 — fallback shard 매핑으로 일부 보강
+- ❌ 명령 추가(`edit-lock`/`edit-release`) — 사용자 부담 일부 증가
+- ✅ race 자동 차단, 운영 규율 의존 X
+- ✅ 모듈 단위 묶음 — 코드·계약·task가 자연 일치
+- ✅ 글로벌 md(PROGRESS·DECISIONS)도 같은 명령으로 보호
+- ✅ stale takeover, SessionStart hook의 자동 정리와 일관
+
+### 사용 패턴
+
+```
+세션 A: pact edit-lock auth --session a
+        # 자유 수정
+        pact edit-release auth --session a  → drift 알림
+
+세션 B: pact edit-lock payment --session b  → OK (다른 모듈)
+세션 C: pact edit-lock PROGRESS.md --session c  → OK (글로벌 md)
+```
+
+---
+
 ## ADR-020 — 멀티세션 sibling 패턴 (sub-agent 패턴과 공존)
 
 - **상태**: 채택
