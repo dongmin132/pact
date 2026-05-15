@@ -1,70 +1,91 @@
 'use strict';
 
-// pact claim <task_id> — 멀티세션에서 task 명시적 점유.
+// pact claim <task_id> [<task_id>...] — 멀티세션에서 task 명시적 점유.
+// 한 번에 여러 task 가능 (v0.6.2). session_label 자동 인식:
+//   --session <label> > $PACT_SESSION > process.ppid (부모 셸 PID)
 // 이미 살아있는 lock 있으면 거부. stale lock은 takeover.
-// 성공 시 prompt.md / context.md / worktree 경로 stdout 출력.
 
 const fs = require('fs');
 const path = require('path');
 const { acquireLock } = require('../../scripts/lock.js');
 
 function parseArgs(args) {
-  let taskId = null;
+  const taskIds = [];
   let sessionLabel = null;
   let json = false;
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (a === '--json') json = true;
     else if (a === '--session' || a === '--label') sessionLabel = args[++i];
-    else if (!taskId && !a.startsWith('-')) taskId = a;
+    else if (!a.startsWith('-')) taskIds.push(a);
   }
-  return { taskId, sessionLabel, json };
+  return { taskIds, sessionLabel, json };
+}
+
+function resolveSessionLabel(explicit) {
+  if (explicit) return explicit;
+  if (process.env.PACT_SESSION) return process.env.PACT_SESSION;
+  // 자동: 부모 셸 PID (PPID). 셸이 살아있는 동안 동일 세션으로 인식됨.
+  return `ppid-${process.ppid}`;
 }
 
 module.exports = function claim(args) {
-  const { taskId, sessionLabel, json } = parseArgs(args);
-  if (!taskId) {
-    console.error('Usage: pact claim <task_id> [--session <label>] [--json]');
+  const { taskIds, sessionLabel: explicit, json } = parseArgs(args);
+  if (taskIds.length === 0) {
+    console.error('Usage: pact claim <task_id> [<task_id>...] [--session <label>] [--json]');
     process.exit(2);
   }
 
   const cwd = process.cwd();
-  const r = acquireLock(taskId, { cwd, sessionLabel });
+  const sessionLabel = resolveSessionLabel(explicit);
+  const results = [];
+  let anyFailed = false;
 
-  if (!r.ok) {
-    if (json) {
-      process.stdout.write(JSON.stringify({ ok: false, ...r }) + '\n');
-    } else {
-      console.error(`✗ ${taskId} 점유 실패: ${r.error}`);
+  for (const taskId of taskIds) {
+    const r = acquireLock(taskId, { cwd, sessionLabel });
+    const runDir = path.join(cwd, '.pact', 'runs', taskId);
+    const worktree = path.join(cwd, '.pact', 'worktrees', taskId);
+
+    if (!r.ok) {
+      anyFailed = true;
+      results.push({ ok: false, task_id: taskId, error: r.error, holder: r.holder });
+      continue;
     }
-    process.exit(1);
+
+    results.push({
+      ok: true,
+      task_id: taskId,
+      action: r.action,
+      lock_file: r.file,
+      session_label: sessionLabel,
+      prompt_path: fs.existsSync(path.join(runDir, 'prompt.md')) ? path.join(runDir, 'prompt.md') : null,
+      context_path: fs.existsSync(path.join(runDir, 'context.md')) ? path.join(runDir, 'context.md') : null,
+      worktree: fs.existsSync(worktree) ? worktree : null,
+    });
   }
-
-  // 경로 정보 수집 (사용자가 다음 단계로 바로 갈 수 있게)
-  const runDir = path.join(cwd, '.pact', 'runs', taskId);
-  const promptPath = path.join(runDir, 'prompt.md');
-  const contextPath = path.join(runDir, 'context.md');
-  const worktree = path.join(cwd, '.pact', 'worktrees', taskId);
-
-  const info = {
-    ok: true,
-    task_id: taskId,
-    action: r.action,
-    lock_file: r.file,
-    prompt_path: fs.existsSync(promptPath) ? promptPath : null,
-    context_path: fs.existsSync(contextPath) ? contextPath : null,
-    worktree: fs.existsSync(worktree) ? worktree : null,
-  };
 
   if (json) {
-    process.stdout.write(JSON.stringify(info, null, 2) + '\n');
-  } else {
-    console.log(`✓ ${taskId} 점유 (${r.action})`);
-    if (info.worktree) console.log(`  worktree: ${info.worktree}`);
-    if (info.prompt_path) console.log(`  prompt:   ${info.prompt_path}`);
-    if (info.context_path) console.log(`  context:  ${info.context_path}`);
-    console.log('\n다음:');
-    console.log(`  cd ${info.worktree || '<worktree>'}`);
-    console.log(`  claude          # 새 세션에서 시작, prompt.md를 첫 입력으로`);
+    process.stdout.write(JSON.stringify({ ok: !anyFailed, session_label: sessionLabel, results }, null, 2) + '\n');
+    process.exit(anyFailed ? 1 : 0);
   }
+
+  for (const r of results) {
+    if (r.ok) {
+      console.log(`✓ ${r.task_id} 점유 (${r.action}) — session=${r.session_label}`);
+      if (r.worktree) console.log(`  worktree: ${r.worktree}`);
+    } else {
+      console.error(`✗ ${r.task_id} 실패: ${r.error}`);
+    }
+  }
+
+  if (!anyFailed && taskIds.length > 0) {
+    console.log('\n다음 (단일세션 워커 패턴):');
+    console.log(`  cd ${results[0].worktree || '<worktree>'} && claude`);
+    console.log('\n다음 (sub-agent 분담 패턴):');
+    console.log(`  /pact:parallel    # 내가 잡은 ${taskIds.length}개만 sub-agent로 spawn`);
+  }
+
+  process.exit(anyFailed ? 1 : 0);
 };
+
+module.exports.resolveSessionLabel = resolveSessionLabel;

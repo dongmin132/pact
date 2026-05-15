@@ -20,6 +20,7 @@ const commands = {
   'run-cycle': () => require('./cmds/run-cycle.js')(args),
   claim: () => require('./cmds/claim.js')(args),
   next: () => require('./cmds/next.js')(args),
+  'list-locks': () => require('./cmds/list-locks.js')(args),
 };
 
 if (!cmd || !commands[cmd]) {
@@ -34,8 +35,9 @@ if (!cmd || !commands[cmd]) {
   console.error('  context-map sync   docs/context-map.md Domains 표를 현재 shard 상태로 갱신');
   console.error('  context-guard      parallel 전 긴 문서/선택 컨텍스트 위험 검사');
   console.error('  run-cycle <prepare|collect> [--max=N]  /pact:parallel 결정적 작업 통합 (메인 turn 압축)');
-  console.error('  claim <task_id> [--session <label>]    멀티세션에서 task 점유 (lock)');
+  console.error('  claim <task_id> [<task_id>...] [--session <label>]  멀티세션에서 task 점유 (한 번에 여러)');
   console.error('  next [--all] [--json]                  현재 batch에서 미점유 task 한 개 (또는 전체)');
+  console.error('  list-locks [--mine] [--session <label>] [--alive] [--json]  잡힌 lock 목록');
   process.exit(cmd ? 1 : 0);
 }
 

@@ -27,6 +27,21 @@ prepare가 반환한 키:
 - `coordinator_review_needed: bool`
 - `context_warnings: [...]` — 있으면 한국어 경고 (중단 X)
 
+## 단계 2.5: 분담 모드 인식 (v0.6.2)
+
+이 세션이 멀티세션 분담 모드인지 확인 — `pact claim`으로 잡아둔 task가 있나:
+
+```bash
+node ${CLAUDE_PLUGIN_ROOT}/bin/pact list-locks --mine --alive --json
+```
+
+stdout `task_ids`:
+- `[]` → **단일세션 모드.** `task_prompts` 전체를 그대로 사용.
+- `[PACT-001, PACT-002, ...]` → **분담 모드.** `task_prompts`에서 그 ID들만 필터 (다른 세션이 잡은 건 그 세션이 처리).
+
+분담 모드에서는 사용자에게 한국어 안내:
+> 🪟 분담 모드: 이 세션이 잡은 N개만 sub-agent로 처리 (다른 세션이 나머지 처리 중).
+
 ## 단계 3: coordinator 검토 (조건부)
 
 `coordinator_review_needed: true`면 Task tool로 coordinator 검토 모드 spawn:
@@ -39,7 +54,7 @@ OK → 단계 4. 수정 필요 → 사용자 위임 (worktree·payload는 이미
 
 ## 단계 4: 워커 N개 동시 spawn (Task tool ×N, **한 메시지**)
 
-서브에이전트 nesting 불가 (ARCHITECTURE.md §14.2). 메인이 `task_prompts`의 각 항목으로 동시 호출:
+서브에이전트 nesting 불가 (ARCHITECTURE.md §14.2). 메인이 (단계 2.5에서 필터된) `task_prompts`의 각 항목으로 동시 호출:
 - `subagent_type`: `worker`
 - `description`: `<task_id>: <title>`
 - `prompt`: `task_prompt` 그대로 (메인은 prompt.md/context.md를 read X)
@@ -51,6 +66,8 @@ OK → 단계 4. 수정 필요 → 사용자 위임 (worktree·payload는 이미
 ```bash
 node ${CLAUDE_PLUGIN_ROOT}/bin/pact run-cycle collect
 ```
+
+분담 모드에서는 다른 세션도 같은 batch를 처리 중일 수 있음. collect는 v0.6.1 멱등 + cycle.lock으로 한 곳에서만 실행되므로 누가 부르든 안전 (다른 세션 미완 task는 `failures`로 보고됨, 그 task는 잡고 있는 세션 종료 후 또 호출 가능).
 
 stdout JSON:
 - `merged: [...]`, `rejected: [...]`, `conflicted: null | {...}`, `skipped: [...]`

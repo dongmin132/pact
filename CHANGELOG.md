@@ -1,5 +1,58 @@
 # Changelog
 
+## v0.6.2 — 2026-05-15
+
+한 사이클을 여러 세션이 분담하는 패턴 정식 지원 — 각 세션이 잡은 task만 자기 sub-agent로 spawn.
+
+### 시나리오
+
+```
+[메인]   /pact:plan → /pact:contracts → pact run-cycle prepare    (9 task batch)
+[세션 1] pact claim PACT-001 PACT-002 PACT-003
+         /pact:parallel   ← 내 3개만 sub-agent로 처리
+[세션 2] pact claim PACT-004 PACT-005 PACT-006 (동시에)
+         /pact:parallel   ← 내 3개만
+[세션 3] pact claim PACT-007 PACT-008 PACT-009
+         /pact:parallel   ← 내 3개만
+[누구든] pact run-cycle collect   ← 머지 (멱등)
+```
+
+각 세션의 메인 컨텍스트에 9개 sub-agent 결과 누적 X → 3개씩 분산. multi-tenant cycle 디자인 변경 없이 lock 기반으로.
+
+### 추가
+
+- **`pact claim` 다중 task** — `pact claim PACT-001 PACT-002 PACT-003` 한 번에 여러
+- **세션 라벨 자동 인식** 우선순위:
+  1. `--session <label>` 명시
+  2. `$PACT_SESSION` 환경변수
+  3. `process.ppid` 자동 (부모 셸 PID, `ppid-<N>` 형태)
+- **`pact list-locks` 신규 CLI** — `--mine` / `--session <label>` / `--alive` / `--json`
+- **`commands/parallel.md` 단계 2.5 신설** — 분담 모드 자동 인식. 자기 세션이 잡은 task 있으면 그 ID만 필터해 Task tool spawn. 잡은 게 없으면 batch 전체 (기존 단일세션 동작).
+
+### 사용자 부담
+
+명령 1개 추가(`list-locks`)지만 slash 명령은 그대로 `/pact:parallel` 하나로 작동. 분담 모드는 자동 인식.
+
+### 트레이드오프
+
+- ✅ 메인 누수 분산 (3 세션 × 3 task = 9개 동시, 메인 1개에 누적 X)
+- ✅ 디자인 변경 0 (v0.7.0 multi-tenant 폐기)
+- ✅ slash 명령 외울 게 그대로
+- ❌ 사용자가 `pact claim` 명시적으로 호출해야 분담 모드 진입 (자동 분배 X — 안전 우선)
+
+### 테스트
+
+- 204 → 211 (+7)
+  - resolveSessionLabel 3 (명시/env/ppid)
+  - list-locks 3 (--session / --mine env / --alive stale 제외)
+  - claim 다중 1
+
+### Breaking Changes
+
+- `pact claim`이 다중 task 받으면서 lock 출력 형식 변경 (`results: [...]` 배열). 단일 task 호출은 기존과 동일 결과.
+
+---
+
 ## v0.6.1 — 2026-05-14
 
 `pact run-cycle prepare/collect` 멱등화. 멀티세션에서 "orchestrator 한 세션" 제약 제거 — 누구든 안전하게 호출 가능.

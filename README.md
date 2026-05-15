@@ -3,7 +3,7 @@
 > Claude Code 위에 얹는 **계약 기반 AI 개발 운영 시스템**.
 > 문서·계약·검증·worktree 격리 병렬 에이전트로 통제하는 플러그인.
 
-[![tests](https://img.shields.io/badge/tests-204%2F204-brightgreen)](./test) [![version](https://img.shields.io/badge/version-0.6.1-blue)](./.claude-plugin/plugin.json) [![deps](https://img.shields.io/badge/deps-zero-success)](./package.json) [![license](https://img.shields.io/badge/license-MIT-blue)](#라이선스)
+[![tests](https://img.shields.io/badge/tests-211%2F211-brightgreen)](./test) [![version](https://img.shields.io/badge/version-0.6.2-blue)](./.claude-plugin/plugin.json) [![deps](https://img.shields.io/badge/deps-zero-success)](./package.json) [![license](https://img.shields.io/badge/license-MIT-blue)](#라이선스)
 
 ---
 
@@ -301,7 +301,7 @@ opt-out은 마크다운/설정/마이그레이션 task에서만: `tdd: false` fr
 
 ---
 
-## 릴리스 흐름 (v0.1 → v0.6.1)
+## 릴리스 흐름 (v0.1 → v0.6.2)
 
 | 버전 | 날짜 | 한 줄 |
 |---|---|---|
@@ -316,6 +316,7 @@ opt-out은 마크다운/설정/마이그레이션 task에서만: `tdd: false` fr
 | v0.5.2 | 2026-05-12 | **docs drift 감지**: 사이클 후 사용자가 코드만 수정하고 contracts/PROGRESS 안 고쳤을 때 `stop-verify` turn 알림 + `/pact:reflect` 누적 분석으로 표류 잡기 |
 | v0.6.0 | 2026-05-13 | **멀티세션 sibling 패턴 SDK** — `pact claim/next`, `pact status --watch`, `.pact/runs/<id>/lock.pid` 기반 점유 락, stale 자동 청소. cmux/tmux로 N개 Claude Code 세션 진짜 OS 병렬. 메인 컨텍스트 누수 0 (ADR-020) |
 | v0.6.1 | 2026-05-14 | **prepare/collect 멱등화** — `.pact/cycle.lock` + already_prepared/collected. orchestrator 세션 개념 제거. 누구든 안전하게 호출 가능 |
+| v0.6.2 | 2026-05-15 | **한 사이클 분담 모드** — `pact claim` 다중 + `pact list-locks --mine` + `/pact:parallel`이 자기 세션 점유 task만 sub-agent spawn. multi-tenant 없이 sibling 패턴 + sub-agent 결합 |
 
 전체 변경 사항은 [CHANGELOG.md](./CHANGELOG.md).
 
