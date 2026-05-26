@@ -410,3 +410,193 @@ test('pact context-guard --allow-long-context — 긴 문서 경고만 출력', 
     assert.match(r.stdout, /TASKS\.md/);
   } finally { cleanupRepo(repo); }
 });
+
+// ─── B-1: split-docs domain inference 개선 ────────────────────────────────
+// Supabase Edge Functions, 버전 prefix, function: 블록 등을 정확히 도메인으로 분류
+
+test('pact split-docs — Supabase /functions/v1/ path 가 function name 으로 분할', () => {
+  const repo = makeRepo();
+  try {
+    fs.writeFileSync(path.join(repo, 'API_CONTRACT.md'), `# API
+
+## signup-step1
+
+\`\`\`yaml
+function: signup-step1
+path: /functions/v1/signup-step1
+method: POST
+\`\`\`
+
+## profile-update
+
+\`\`\`yaml
+function: profile-update
+path: /functions/v1/profile-update
+method: POST
+\`\`\`
+
+## meetup-create
+
+\`\`\`yaml
+function: meetup-create
+path: /functions/v1/meetup-create
+method: POST
+\`\`\`
+`);
+    const r = runPact(['split-docs'], repo);
+    assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+    // function: name 의 prefix 가 도메인
+    assert.ok(fs.existsSync(path.join(repo, 'contracts/api/signup.md')), 'signup shard 없음');
+    assert.ok(fs.existsSync(path.join(repo, 'contracts/api/profile.md')), 'profile shard 없음');
+    assert.ok(fs.existsSync(path.join(repo, 'contracts/api/meetup.md')), 'meetup shard 없음');
+    // 'functions' 도메인은 안 만들어져야 함
+    assert.ok(!fs.existsSync(path.join(repo, 'contracts/api/functions.md')), 'functions 통째 shard 가 만들어짐');
+  } finally { cleanupRepo(repo); }
+});
+
+test('pact split-docs — REST 버전 prefix (/api/v2/) 가 도메인 추출에서 무시됨', () => {
+  const repo = makeRepo();
+  try {
+    fs.writeFileSync(path.join(repo, 'API_CONTRACT.md'), `# API
+
+## GET /api/v2/users
+
+\`\`\`yaml
+method: GET
+path: /api/v2/users
+\`\`\`
+
+## POST /api/v1/orders
+
+\`\`\`yaml
+method: POST
+path: /api/v1/orders
+\`\`\`
+`);
+    const r = runPact(['split-docs'], repo);
+    assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+    // v1/v2 가 도메인이 되면 안 됨. user/order 가 도메인.
+    assert.ok(fs.existsSync(path.join(repo, 'contracts/api/user.md')) || fs.existsSync(path.join(repo, 'contracts/api/users.md')), 'user(s) shard 없음');
+    assert.ok(fs.existsSync(path.join(repo, 'contracts/api/order.md')) || fs.existsSync(path.join(repo, 'contracts/api/orders.md')), 'order(s) shard 없음');
+    assert.ok(!fs.existsSync(path.join(repo, 'contracts/api/v1.md')), 'v1 shard 가 만들어짐');
+    assert.ok(!fs.existsSync(path.join(repo, 'contracts/api/v2.md')), 'v2 shard 가 만들어짐');
+  } finally { cleanupRepo(repo); }
+});
+
+test('pact split-docs — function: 블록이 path 보다 우선', () => {
+  const repo = makeRepo();
+  try {
+    fs.writeFileSync(path.join(repo, 'API_CONTRACT.md'), `# API
+
+## rating-submit
+
+\`\`\`yaml
+function: rating-submit
+path: /functions/v1/rating-submit
+method: POST
+\`\`\`
+`);
+    const r = runPact(['split-docs'], repo);
+    assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+    // function name prefix = 'rating'
+    assert.ok(fs.existsSync(path.join(repo, 'contracts/api/rating.md')), 'rating shard 없음');
+  } finally { cleanupRepo(repo); }
+});
+
+test('pact split-docs — function/path 없는 섹션은 related_tasks fallback', () => {
+  const repo = makeRepo();
+  try {
+    fs.writeFileSync(path.join(repo, 'API_CONTRACT.md'), `# API
+
+## §3 Error code 카탈로그
+
+\`\`\`yaml
+related_tasks:
+  - AUTH-002
+notes: error code 표준
+\`\`\`
+`);
+    const r = runPact(['split-docs'], repo);
+    assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+    // related_tasks 의 prefix = 'auth'
+    assert.ok(fs.existsSync(path.join(repo, 'contracts/api/auth.md')), 'auth shard 없음');
+    // §3 로 slugify 되어 '3.md' 가 되면 안 됨
+    assert.ok(!fs.existsSync(path.join(repo, 'contracts/api/3.md')), '숫자 도메인 shard 가 만들어짐');
+  } finally { cleanupRepo(repo); }
+});
+
+test('pact split-docs — 한 섹션 안 N개 function 블록을 sub-header 로 분할', () => {
+  const repo = makeRepo();
+  try {
+    // Supabase Edge Function 카탈로그 패턴: ### 섹션 안에 #### 함수들 나열
+    fs.writeFileSync(path.join(repo, 'API_CONTRACT.md'), `# API
+
+### §2.2 endpoint별 시그니처
+
+#### \`signup-step1\` — 가입 1단계
+
+\`\`\`yaml
+function: signup-step1
+path: /functions/v1/signup-step1
+method: POST
+\`\`\`
+
+#### \`profile-update\` — 프로필 수정
+
+\`\`\`yaml
+function: profile-update
+path: /functions/v1/profile-update
+method: POST
+\`\`\`
+
+#### \`meetup-create\` — 모임 생성
+
+\`\`\`yaml
+function: meetup-create
+path: /functions/v1/meetup-create
+method: POST
+\`\`\`
+
+#### \`rating-submit\` — 평가 제출
+
+\`\`\`yaml
+function: rating-submit
+path: /functions/v1/rating-submit
+method: POST
+\`\`\`
+`);
+    const r = runPact(['split-docs'], repo);
+    assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+    // 4개 function 이 각자 도메인 shard 로 분리되어야 함
+    assert.ok(fs.existsSync(path.join(repo, 'contracts/api/signup.md')), 'signup shard 없음');
+    assert.ok(fs.existsSync(path.join(repo, 'contracts/api/profile.md')), 'profile shard 없음');
+    assert.ok(fs.existsSync(path.join(repo, 'contracts/api/meetup.md')), 'meetup shard 없음');
+    assert.ok(fs.existsSync(path.join(repo, 'contracts/api/rating.md')), 'rating shard 없음');
+
+    // 각 shard 가 자기 function 만 포함하는지 확인 (오염 X)
+    const profileMd = fs.readFileSync(path.join(repo, 'contracts/api/profile.md'), 'utf8');
+    assert.match(profileMd, /function:\s*profile-update/);
+    assert.doesNotMatch(profileMd, /function:\s*signup-step1/);
+    assert.doesNotMatch(profileMd, /function:\s*meetup-create/);
+  } finally { cleanupRepo(repo); }
+});
+
+test('pact split-docs — function 1개인 섹션은 분할 X (정상 처리)', () => {
+  const repo = makeRepo();
+  try {
+    fs.writeFileSync(path.join(repo, 'API_CONTRACT.md'), `# API
+
+### POST /api/users
+
+\`\`\`yaml
+function: user-create
+path: /api/users
+method: POST
+\`\`\`
+`);
+    const r = runPact(['split-docs'], repo);
+    assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+    // user-create → user 도메인
+    assert.ok(fs.existsSync(path.join(repo, 'contracts/api/user.md')), 'user shard 없음');
+  } finally { cleanupRepo(repo); }
+});

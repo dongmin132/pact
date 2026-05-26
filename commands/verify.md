@@ -41,7 +41,7 @@ Task tool:
   Code: 사용자가 단계 2에서 실행한 결과:
     lint=<pass|fail|skip>, typecheck=..., test=..., build=...
   
-  Contract: API_CONTRACT.md ↔ 실제 라우트 비교
+  Contract: contracts/api/<domain>.md (shard 우선, 없으면 legacy API_CONTRACT.md) ↔ 실제 라우트 비교
   Docs: PROGRESS.md / ARCHITECTURE.md 동기화
   Integration: MODULE_OWNERSHIP 위반 / 동시 수정 흔적
   

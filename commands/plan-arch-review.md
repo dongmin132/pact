@@ -4,12 +4,12 @@ description: reviewer 호출 — 아키텍처 견고성 + 계약 정합성 (gsta
 
 사용자가 `/pact:plan-arch-review`를 실행했습니다.
 
-**범위**: 시스템 아키텍처 견고성 + pact 계약 정합성. gstack의 `/plan-eng-review` 영감 받음 — 우리는 추가로 API_CONTRACT·MODULE_OWNERSHIP·DB_CONTRACT 교차 검증.
+**범위**: 시스템 아키텍처 견고성 + pact 계약 정합성. gstack의 `/plan-eng-review` 영감 받음 — 우리는 추가로 `contracts/api/**`, `contracts/db/**`, `contracts/modules/**` shard 와 task `context_refs` 교차 검증 (legacy `API_CONTRACT.md` / `DB_CONTRACT.md` / `MODULE_OWNERSHIP.md` 는 shard 없을 때만 fallback).
 
 ## 단계 1: 사전 검사
 
 - `TASKS.md` 또는 `tasks/*.md` 존재 — 없으면 "/pact:plan 먼저"
-- `contracts/manifest.md` / `MODULE_OWNERSHIP.md` 있으면 정합성도 검증, 없으면 아키텍처만
+- `contracts/manifest.md` + `contracts/modules/**` (또는 legacy `MODULE_OWNERSHIP.md`) 있으면 정합성도 검증, 없으면 아키텍처만
 
 ## 단계 2: reviewer 서브에이전트 호출 (plan-arch-review 모드)
 
@@ -50,8 +50,8 @@ Task tool:
   - 큰 입력에 대한 지수적 복잡도
   
   ### Section 4: Pact 계약 정합성 (있으면)
-  - task의 contracts/context_refs 참조가 contracts/api/<domain>.md endpoint와 일치
-  - allowed_paths가 MODULE_OWNERSHIP.md 모듈 안
+  - task의 contracts/context_refs 참조가 contracts/api/<domain>.md endpoint와 일치 (shard 우선; legacy API_CONTRACT.md 는 shard 없을 때만 참고)
+  - allowed_paths가 contracts/modules/<domain>.md 모듈 안 (legacy MODULE_OWNERSHIP.md fallback)
   - 인증·rate limit·migration 같은 엣지 케이스
   - cross-cutting glob 처리
   

@@ -66,16 +66,24 @@ npm run build
 
 ### 2. Contract 축
 
-선택 task의 `context_refs`가 가리키는 `contracts/api/<domain>.md` endpoint 목록 vs 실제 라우트 정의 비교:
+**SOT 우선순위 (역순 = 절대 금지)**:
+- 1순위: `contracts/api/<domain>.md` shard (있으면 무조건 여기 비교)
+- 2순위: legacy `API_CONTRACT.md` (shard 가 **없을 때만** fallback)
+- domain 매핑은 `contracts/manifest.md` 또는 `ls contracts/api/` 로 먼저 확인
+
+선택 task의 `context_refs`가 가리키는 shard 의 endpoint 목록 vs 실제 라우트 정의 비교:
 
 ```bash
 # 예: Express 라우트
 grep -rE "router\.(get|post|put|delete|patch)" src/api/
 # 또는 Next.js
 find src/app -name "route.ts" -o -name "route.js"
+# 또는 Supabase Edge Functions
+find supabase/functions -name "index.ts"
 ```
 
-추출된 endpoint가 contract shard에 없으면 WARN, contract엔 있는데 실제 X면 FAIL.
+추출된 endpoint가 contract shard 에 없으면 WARN, contract 엔 있는데 실제 X면 FAIL.
+shard 없는데 root `API_CONTRACT.md` 도 없으면 "계약 미정의" SKIP.
 
 ### 3. Docs 축
 
@@ -86,7 +94,7 @@ PROGRESS.md·ARCHITECTURE.md가 변경 반영하나:
 
 ### 4. Integration 축
 
-- `MODULE_OWNERSHIP.md` 위반 흔적: 워커가 ownership 외 파일 수정 (실제 git diff 기준)
+- `contracts/modules/<domain>.md` shard 위반 흔적 (shard 없으면 legacy `MODULE_OWNERSHIP.md` fallback): 워커가 ownership 외 파일 수정 (실제 git diff 기준)
 - 동시 수정 흔적: 같은 cycle에서 두 워커가 같은 파일 commit
 
 ```bash
@@ -149,7 +157,7 @@ last_run_at: <ISO>
 ## 의문 시
 
 - verify 명령 timeout: 해당 axis만 fail 처리, 나머지 그대로 진행
-- contracts/manifest.md·MODULE_OWNERSHIP.md 미존재: Contract·Integration 축 skip 처리, "계약 미정의" 메시지
+- `contracts/manifest.md` + `contracts/modules/**` (legacy `MODULE_OWNERSHIP.md` 포함) 모두 미존재: Contract·Integration 축 skip 처리, "계약 미정의" 메시지
 - 발견 사항이 비즈니스 결정 필요: 사용자에게 위임, 자체 판정 X
 
 ## 토큰 예산

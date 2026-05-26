@@ -26,6 +26,20 @@ function slugify(s) {
   return cleaned.split(/[\/_-]+/).filter(Boolean)[0] || 'misc';
 }
 
+// 프레임워크/버전 prefix — 도메인 추론 시 무시
+// (예: /api/v2/profile, /functions/v1/signup-step1, /rest/v1/users)
+const FRAMEWORK_PREFIXES = new Set([
+  'api', 'rest', 'graphql', 'rpc', 'internal', 'public', 'protected',
+  'functions', 'edge',          // Supabase Edge Functions, Vercel Edge
+  'v1', 'v2', 'v3', 'v4', 'v5', // version prefix
+]);
+
+// Supabase Edge / RPC 등의 function 이름에서 도메인 추출
+// 예: signup-step1 → signup, profile-update → profile, meetup-create → meetup
+function domainFromFunctionName(name) {
+  return slugify(String(name).split('-')[0]);
+}
+
 function domainFromTask(task) {
   const paths = [
     ...(Array.isArray(task.allowed_paths) ? task.allowed_paths : []),
@@ -46,8 +60,13 @@ function domainFromTask(task) {
 
 function domainFromEndpoint(endpoint) {
   const pathPart = endpoint.replace(/^(GET|POST|PUT|PATCH|DELETE)\s+/i, '');
-  const parts = pathPart.split('/').filter(Boolean).filter(p => p !== 'api' && !p.startsWith(':') && !p.startsWith('['));
-  return slugify(parts[0] || 'api');
+  const parts = pathPart.split('/').filter(Boolean)
+    .filter(p => !FRAMEWORK_PREFIXES.has(p.toLowerCase()) && !p.startsWith(':') && !p.startsWith('['));
+  // Supabase 패턴: /functions/v1/signup-step1 → parts[0] = 'signup-step1' (function name)
+  // 함수 이름이면 kebab prefix 만 도메인으로 (signup-step1 → signup)
+  const first = parts[0] || 'misc';
+  if (first.includes('-')) return domainFromFunctionName(first);
+  return slugify(first);
 }
 
 function domainFromTable(table) {
@@ -74,12 +93,26 @@ function extractSections(markdown) {
 }
 
 function domainFromApiSection(section) {
+  const body = section.lines.join('\n');
+
+  // 1순위: function: <name> (Supabase Edge / RPC — 가장 명확한 signal)
+  const fnMatch = body.match(/^\s*function:\s*([A-Za-z0-9_-]+)/m);
+  if (fnMatch) return domainFromFunctionName(fnMatch[1]);
+
+  // 2순위: path: <path> (REST 또는 Edge 경로)
+  const pathMatch = body.match(/^\s*path:\s*(\S+)/m);
+  if (pathMatch) return domainFromEndpoint(pathMatch[1]);
+
+  // 3순위: title 안의 METHOD /path 표현
   const title = section.title;
   const endpointMatch = title.match(/\b(GET|POST|PUT|PATCH|DELETE)\s+(\S+)/i);
   if (endpointMatch) return domainFromEndpoint(`${endpointMatch[1]} ${endpointMatch[2]}`);
-  const body = section.lines.join('\n');
-  const pathMatch = body.match(/^\s*path:\s*(\S+)/m);
-  if (pathMatch) return domainFromEndpoint(pathMatch[1]);
+
+  // 4순위: related_tasks: 의 task prefix (AUTH-001 → auth)
+  const taskMatch = body.match(/related_tasks\s*:[\s\S]*?-\s*([A-Z][A-Z0-9]*)-\d+/);
+  if (taskMatch) return slugify(taskMatch[1]);
+
+  // 마지막: title slugify (숫자 도메인 = 부적합 신호, 호출 측이 알 수 있음)
   return slugify(title);
 }
 
@@ -171,22 +204,68 @@ function groupTasksByDomain() {
   return { groups, count: parsed.tasks.length };
 }
 
+// 한 섹션 안에 `function:` 블록이 N개 있고 `#### <name>` sub-header 로 구분돼있으면
+// (Supabase Edge Function 카탈로그 패턴) sub-header 단위로 쪼개서 도메인별로 분류 가능하게 만든다.
+// 예: §2.2 endpoint 시그니처 (`### §2.2`) 안에 `#### signup-step1`, `#### profile-update`,
+//     `#### meetup-create` 가 17개 → 각각 sub-section 으로 분리.
+//
+// sub-header 가 없거나 function 블록이 1개 이하면 원본 그대로 반환.
+function splitMultiFunctionSection(section) {
+  const body = section.lines.join('\n');
+  const fnCount = (body.match(/^\s*function:\s*/gm) || []).length;
+  if (fnCount <= 1) return [section];
+
+  const lines = section.lines;
+  const subs = [];
+  let current = null;
+  const preamble = [];
+  let foundFirstHeader = false;
+
+  for (const line of lines) {
+    const m = /^(#{4})\s+(.+)$/.exec(line);
+    if (m) {
+      if (current) subs.push(current);
+      foundFirstHeader = true;
+      const rawTitle = m[2].trim();
+      // 백틱 안 함수 이름만 추출: `signup-step1` — ... → signup-step1
+      const cleanTitle = (rawTitle.match(/`([^`]+)`/) || [, rawTitle])[1].trim();
+      current = { level: 4, title: cleanTitle, lines: [line] };
+    } else if (current) {
+      current.lines.push(line);
+    } else if (!foundFirstHeader) {
+      preamble.push(line);
+    }
+  }
+  if (current) subs.push(current);
+
+  // sub-header 없으면 분할 못 함 — 원본 유지
+  if (subs.length === 0) return [section];
+
+  return subs;
+}
+
 function groupContractSections(file, kind) {
   if (!fs.existsSync(file)) return { groups: new Map(), count: 0 };
   const md = fs.readFileSync(file, 'utf8');
   const sections = extractSections(md)
     .filter(s => !/사용 가이드|예시|\(예시\)/.test(s.title));
   const groups = new Map();
+  let processedCount = 0;
   for (const s of sections) {
-    let domain;
-    if (kind === 'api') domain = domainFromApiSection(s);
-    else if (kind === 'db') domain = domainFromDbSection(s);
-    else if (kind === 'modules') domain = domainFromModuleSection(s);
-    else domain = slugify(s.title);
-    if (!groups.has(domain)) groups.set(domain, []);
-    groups.get(domain).push(s.lines.join('\n').trim() + '\n');
+    // API 섹션은 multi-function split 시도, 나머지는 그대로
+    const units = (kind === 'api') ? splitMultiFunctionSection(s) : [s];
+    for (const unit of units) {
+      let domain;
+      if (kind === 'api') domain = domainFromApiSection(unit);
+      else if (kind === 'db') domain = domainFromDbSection(unit);
+      else if (kind === 'modules') domain = domainFromModuleSection(unit);
+      else domain = slugify(unit.title);
+      if (!groups.has(domain)) groups.set(domain, []);
+      groups.get(domain).push(unit.lines.join('\n').trim() + '\n');
+      processedCount++;
+    }
   }
-  return { groups, count: sections.length };
+  return { groups, count: processedCount };
 }
 
 function renderTaskShard(domain, sections) {

@@ -1,5 +1,62 @@
 # Changelog
 
+## v0.7.1 — 2026-05-26
+
+토큰 소모 절감 — shard 우선 SOT 룰 + split-docs domain inference 개선.
+
+### 동기
+
+brewdy 운영 분석에서 두 가지 누수 확인:
+1. `/pact:reflect` 가 `contracts/db/chat.md` shard 가 있는데도 `DB_CONTRACT.md` 같은 legacy root 를 가리킴 → 사용자가 root 만 고치고 shard 와 drift 벌어짐.
+2. `pact split-docs` 가 Supabase Edge Function 경로(`/functions/v1/...`) 같은 framework prefix 를 도메인으로 잘못 잡아 모든 endpoint 가 `functions.md` 한 파일로 뭉침. 진짜 도메인 분할 효과 0.
+
+이번 패치는 그 두 누수를 직접 봉합.
+
+### 변경
+
+**`commands/reflect.md`**
+- drift 감지 grep 패턴 확장 — 기존 `contracts/`, `tasks/`, `PROGRESS.md` 만에서 `docs/.*\.md`, `ARCHITECTURE.md`, `CLAUDE.md` 추가
+- planner 호출 prompt 에 **SOT 우선순위 룰** 추가:
+  1. 1순위: `contracts/<api|db|modules>/<domain>.md` shard (있으면 무조건)
+  2. 2순위: `ARCHITECTURE.md`, `CLAUDE.md`, `docs/*.md` (shard 없는 root SOT)
+  3. ❌ 금지: `API_CONTRACT.md` / `DB_CONTRACT.md` / `MODULE_OWNERSHIP.md` (shard 있을 때)
+- DECISIONS.md 는 append-only 라 drift 개념 부적합, 제외
+
+**`bin/cmds/split-docs.js`**
+- `FRAMEWORK_PREFIXES` set 도입 — `functions`, `edge`, `v1~v5`, `rest`, `graphql`, `rpc`, `internal`, `public`, `protected` 를 도메인 추론 시 무시
+- `domainFromFunctionName` 헬퍼 — kebab-case function 이름의 prefix 를 도메인으로 (signup-step1 → signup)
+- `domainFromApiSection` 우선순위 재구성: `function:` → `path:` → title `METHOD /path` → `related_tasks:` → title slugify
+- **`splitMultiFunctionSection`** — 한 level-3 섹션 안에 `function:` 블록이 N개면 level-4 (`####`) 헤더로 내부 분할. Supabase Edge Function 카탈로그 패턴(`### §2.2 endpoint별 시그니처` 안에 `#### signup-step1` 등) 정확히 분리.
+
+**`commands/verify.md`**, **`commands/plan-arch-review.md`**, **`agents/reviewer-code.md`**
+- Contract 축 / Integration 축 prompt 가 shard 를 1순위로 가리키도록 갱신
+- legacy root (`API_CONTRACT.md` 등) 는 shard 없을 때만 fallback 으로 명시
+
+**`commands/parallel.md`**
+- 단계 9 추가 — cycle 끝나면 메인이 "/exit + 새 세션 + /pact:resume" 강력 권장 안내 출력 (필수)
+- 동기: brewdy 분석에서 한 세션 57시간 누적 → 209M 토큰, batch 단위 세션 분할 → 같은 작업 ~30M
+
+### 테스트
+
+- `test/pact-cli.test.js` 에 6개 추가:
+  - Supabase `/functions/v1/` path domain inference
+  - REST 버전 prefix (`/api/v2/`) 무시
+  - `function:` 가 path 보다 우선
+  - `related_tasks:` fallback
+  - 섹션 내 N개 function 블록 sub-header 분할
+  - function 1개 섹션은 분할 X (정상 처리)
+- 전체 **227/227 통과**
+
+### 영향
+
+- 기존 split-docs 출력이 달라질 수 있음 (`functions.md` 같은 framework-prefix 도메인 → 실제 도메인별 shard). 첫 재실행 시 옛 shard 정리 권장.
+- reflect / verify / plan-arch-review 가 shard 가 있으면 shard 가리킴. legacy 가리키는 출력 사라짐.
+- parallel cycle 끝마다 세션 권장 안내 → 사용자 행동 변화 유도, 누적 컨텍스트 비용 절감.
+
+### 다음 (별도 plan)
+
+- `docs/token-optimization-todo.md` — C 그룹 (worker 모델 분기, maxTurns cap, reviewer-arch opus→sonnet, verify Code축 skip 등) 미적용 상태로 남김. 우선순위 결정 후 진행.
+
 ## v0.7.0 — 2026-05-15
 
 자유 수정 단계 멀티세션 안전망 — 모듈/파일 edit-lock + pre-tool-guard 차단.

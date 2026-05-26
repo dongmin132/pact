@@ -21,7 +21,7 @@ if [ -n "$LAST_MERGE_TS" ]; then
   # 마지막 머지 이후 commit들의 변경 파일 수집
   CHANGED=$(git log --since="$LAST_MERGE_TS" --name-only --pretty=format: | sort -u | grep -v '^$')
   CODE_CHANGED=$(echo "$CHANGED" | grep -E '\.(ts|tsx|js|jsx|py|go|rs|java|kt|rb)$' || true)
-  DOCS_CHANGED=$(echo "$CHANGED" | grep -E '^(contracts/|PROGRESS\.md|tasks/)' || true)
+  DOCS_CHANGED=$(echo "$CHANGED" | grep -E '^(contracts/|tasks/|docs/.*\.md$|PROGRESS\.md|ARCHITECTURE\.md|CLAUDE\.md)' || true)
 fi
 ```
 
@@ -40,7 +40,15 @@ Task tool:
   - 잘 된 부분 (3개 이내)
   - 안 된 부분 + 가능한 원인 (3개 이내)
   - 개선 후보 ADR (DECISIONS.md 추가용, 사용자 승인 전제)
-  - **Docs drift** — 마지막 머지 이후 사용자가 직접 수정했지만 contracts/PROGRESS 갱신 안 된 파일 (단계 1.5에서 수집된 CODE_CHANGED / DOCS_CHANGED 비교)
+  - **Docs drift** — 마지막 머지 이후 사용자가 직접 수정했지만 갱신이 누락된 SOT 파일 (단계 1.5에서 수집된 CODE_CHANGED / DOCS_CHANGED 비교)
+  
+  **갱신 권장 시 SOT 우선순위 (역순 = 절대 금지)**:
+  1. **1순위: shard** — `contracts/api/<domain>.md`, `contracts/db/<domain>.md`, `contracts/modules/<domain>.md`. 해당 domain shard가 존재하면 **무조건 shard를 가리킬 것**.
+  2. **2순위: shard 없는 root SOT** — `ARCHITECTURE.md`, `CLAUDE.md`, `docs/*.md`
+  3. ❌ **금지: legacy root** — `API_CONTRACT.md` / `DB_CONTRACT.md` / `MODULE_OWNERSHIP.md` 는 대응 shard 가 있으면 절대 가리키지 말 것. shard 가 진짜 SOT, 루트는 legacy index.
+  4. shard 가 **없는** 경우에만 root 가리키되, 그때는 "shard 없음, `pact split-docs` 분할 권장" 한 줄 함께 표시.
+  
+  domain 매핑은 `contracts/manifest.md` 또는 `ls contracts/api/ contracts/db/` 로 먼저 확인할 것.
   
   입력:
   - .pact/runs/*/status.json 들 (이번 cycle)
