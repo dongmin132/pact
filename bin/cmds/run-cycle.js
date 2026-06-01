@@ -274,6 +274,15 @@ function doCollect(args, opts, cwd, cbPath) {
   const plan = planMerge({ cwd, taskIds: currentBatch.task_ids });
   const result = mergeAll(plan.eligible, { cwd });
 
+  // ADR-048 — 머지 성공한 task의 source frontmatter에 status:done 박기.
+  // (executeMerge 경로는 이미 동일 로직 수행 중; doCollect만 누락이었음.)
+  // 다음 cycle의 prepare가 같은 task_id를 후보로 다시 잡지 않게 막는다.
+  const statusUpdates = [];
+  for (const id of result.merged) {
+    const r = setTaskStatus(id, 'done', { cwd });
+    statusUpdates.push({ task_id: id, ok: r.ok, action: r.action, file: r.file, error: r.error });
+  }
+
   fs.writeFileSync(path.join(cwd, '.pact/merge-result.json'), JSON.stringify({
     timestamp: new Date().toISOString(),
     eligible: plan.eligible.length,
@@ -281,6 +290,7 @@ function doCollect(args, opts, cwd, cbPath) {
     conflicted: result.conflicted,
     skipped: result.skipped,
     rejected: plan.rejected,
+    status_updates: statusUpdates,
   }, null, 2) + '\n');
 
   const cleanup = [];
@@ -323,6 +333,7 @@ function doCollect(args, opts, cwd, cbPath) {
     skipped: result.skipped,
     failures,
     cleanup,
+    status_updates: statusUpdates,
     verification_summary: verification,
     decisions_to_record: decisions,
   });

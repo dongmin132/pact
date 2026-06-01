@@ -1,5 +1,73 @@
 # Changelog
 
+## v0.8.0 — 2026-06-01
+
+워커/cycle 안정성 — brewdy cycle 3 회고 upstream fix (GitHub issue #1, 5건 묶음).
+
+### 동기
+
+brewdy(RN+Supabase 모노레포)에서 pact v0.7.0 cycle 2~3 운영 중 메인 워크플로우가 매 cycle 수동 보정으로 우회하던 5가지 결함. 누적 ROI 가장 큰 항목 (rejected 102건 중 94건 원인)부터 묶음 해결.
+
+### 변경
+
+**`bin/cmds/run-cycle.js` (ADR-022 = brewdy ADR-048)**
+- `doCollect`에 `setTaskStatus(id, 'done')` 추가 — 머지 후 task source frontmatter sync.
+- `executeMerge`는 이미 동일 로직 (merge.js:163-169) 수행 중이었으나 `run-cycle collect` 경로만 누락.
+- `merge-result.json` + emit 페이로드에 `status_updates: [{task_id, ok, action, file, error}]` 포함.
+
+**`bin/cmds/merge.js` (ADR-023 = brewdy ADR-049)**
+- `planMerge`에 `report.md` 게이트 — 파일 존재 + 비공백 10줄 이상 강제.
+- 위반 시 `rejected.reason: "report.md missing"` 또는 `"too short (N non-blank lines, min 10)"`.
+- self-report 아닌 파일 시스템 사실로 검증 — ADR-012 정신 유지.
+
+**`scripts/spawn-worker.js` (ADR-025 = brewdy ADR-055)**
+- `validatePayload`에 `yolo_mode + forbidden_paths` 검증:
+  - `yolo_mode === true`인데 `forbidden_paths` 누락 → reject
+  - `forbidden_paths: []` 빈 배열 → reject (deny-all 의도면 `["**/*"]` 명시 강제)
+  - `forbidden_paths` 비배열 → reject
+- `prompts/worker-system.md` forbidden 섹션에 "비어있어도 allowed_paths 외 자동 금지 (deny-all)" 명시.
+
+**`scripts/lib/validate-mini.js` + `schemas/worker-status.schema.json` (ADR-026 = brewdy ADR-056)**
+- `validateStatus` required 필드 7개 → 2개 (`task_id`, `status`).
+- 누락 필드는 merge gate가 안전 default (`|| []`, `|| {}`) 또는 명시 reject로 분기.
+- `schema_version` 도입 X — ARCHITECTURE.md L371 룰 ("schema_version 안 쓴다") 유지.
+- 구워커 산출물(cycle 1.5 시점 등) 호환.
+
+**`commands/parallel.md` + `agents/coordinator.md` (ADR-024 = brewdy ADR-053)**
+- 단계 5.5 신설 — "워커 실패 시 메인 fallback (4종)":
+  1. status.json 미작성 → worktree 사실 기반 메인 작성
+  2. commit 누락 + worktree 변경 → salvage commit
+  3. report.md 미작성 → 워커 의도 추정 보고서
+  4. decisions schema 위반 → 정규화 + 원본 `decisions.raw.json` 보존
+- 4종 외 사유는 메인 임의 우회 X — 사용자 결정 필요. 2회 fallback 실패 시 사용자 위임.
+- `agents/coordinator.md` 분류 테이블에 fallback 매핑 짧게 명시.
+
+**`agents/worker.md`**
+- 종료 의무 §4에 `report.md` 비공백 10줄 강제 명시 + "절대 안 하는 것"에 추가.
+
+### 테스트
+
+- `test/validate-status.test.js` — ADR-056 케이스 7종 추가 (required 완화, tdd_evidence 누락 허용 등)
+- `test/spawn-worker.test.js` — ADR-055 케이스 6종 추가 (yolo + forbidden 조합)
+- `test/run-cycle.test.js` — ADR-048/049 통합 검증 (E2E에 status_updates assert + report.md gate 2 case)
+- 전체 통과
+
+### 영향
+
+- **메인 수동 sync 절감** — cycle당 ~30분 (ADR-022)
+- **rejected alert fatigue 해소** — 머지된 task 재평가 노이즈 제거 (ADR-022) + 구워커 산출물 호환 (ADR-026)
+- **회고 입력 품질 향상** — report.md 작성률 ~42% → 100% 강제 (ADR-023)
+- **spec drift 차단** — yolo 모드 4건 같은 결함 spawn 단계 reject (ADR-025)
+- **메인 워크플로우 일관성** — fallback 4종 외 임의 우회 X (ADR-024)
+- **GitHub issue #1 close** — brewdy 측 ADR-048/049/053/055/056 5건 upstream 해결
+
+### Migration
+
+- 기존 cycle 산출물 호환 — 구버전 워커가 작성한 `status.json`(필드 누락 다수)도 검증 통과.
+- 단 `report.md` 없는 머지된 task는 v0.8.0부터 reject — brewdy 측 fallback (ADR-024 #3) 활용 또는 메인 수동 작성.
+
+---
+
 ## v0.7.1 — 2026-05-26
 
 토큰 소모 절감 — shard 우선 SOT 룰 + split-docs domain inference 개선.

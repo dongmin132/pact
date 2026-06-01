@@ -133,6 +133,23 @@ function planMerge(opts = {}) {
       continue;
     }
 
+    // ADR-049 — report.md 강제 게이트 (마지막 — 보안 게이트 ADR-012 통과 후 입력 품질 검증).
+    // status.json은 게이트라 100% 작성되지만 report.md는 선택으로 인식돼 5/12 작성률.
+    // 회고/coordinator 통합 입력이 비므로 머지 전에 강제. self-report 아닌 파일 존재로 검증.
+    const reportPath = path.join(runsRoot, taskId, 'report.md');
+    if (!fs.existsSync(reportPath)) {
+      rejected.push({ task_id: taskId, reason: 'report.md missing' });
+      continue;
+    }
+    const reportLines = fs.readFileSync(reportPath, 'utf8')
+      .split('\n')
+      .filter(l => l.trim().length > 0)
+      .length;
+    if (reportLines < 10) {
+      rejected.push({ task_id: taskId, reason: `report.md too short (${reportLines} non-blank lines, min 10)` });
+      continue;
+    }
+
     eligible.push(taskId);
   }
 

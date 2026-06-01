@@ -96,7 +96,10 @@ node ${CLAUDE_PLUGIN_ROOT}/scripts/validate-status.js .pact/runs/<id>/status.jso
 | `failed` (다수 test fail·contract violation) | 사용자 위임 |
 | `blocked` | 사유 + status.json 경로 PROGRESS.md Blocked |
 | `files_attempted_outside_scope ≠ []` | **즉시 차단**, 재시도 X |
-| status.json 미존재 | "blocked: 보고 누락" |
+| status.json 미존재 | "blocked: 보고 누락" — 메인 fallback #1 (commands/parallel.md 단계 5.5) 후 재시도 |
+| report.md 미작성/너무 짧음 (ADR-049) | 메인 fallback #3 — 워커 의도 추정 보고서 작성 후 재시도 |
+| decisions schema 위반 | 메인 fallback #4 — 정규화 후 raw 보존, 재시도 |
+| commit 누락 + worktree 변경 존재 | 메인 fallback #2 — salvage commit 후 재시도 |
 
 ### Step 3: 회로 차단기 (ARCHITECTURE.md §9)
 

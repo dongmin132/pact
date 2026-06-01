@@ -132,6 +132,12 @@ function simulateWorker(dir, taskId, fileName, content, status = 'done', allowed
     tokens_used: 1000,
     completed_at: new Date().toISOString(),
   }, null, 2));
+
+  // ADR-049 — report.md (비공백 10줄 이상)
+  fs.writeFileSync(path.join(runDir, 'report.md'),
+    [`# ${taskId} report`, `## what`, `${taskId} 시뮬`, `## why`, `E2E`,
+     `## decisions`, `- none`, `## verify`, `- lint pass`, `- typecheck pass`,
+     `- test pass`, `- build pass`].join('\n\n'));
 }
 
 // ───────────────────────────────────────────────

@@ -77,6 +77,41 @@ stdout JSON:
 
 CLI는 자동으로 머지 → merge-result.json 작성 → 성공 worktree cleanup → current_batch 소비.
 
+## 단계 5.5: 워커 실패 시 메인 fallback (ADR-053)
+
+`merge-result.json`의 `rejected` 발생 시 메인은 다음 **4종 시나리오만** 처리한다 (추측·자동수정 X, 메인이 의도 검증 후 수동).
+
+### 1. status.json 미작성 (`reason: "status.json missing"`)
+
+- worktree (`.pact/worktrees/<id>`) 보존 — 워커 산출물이 있을 수 있음
+- 메인이 worktree에서 `git status` + 변경 파일 확인 후 다음 중 하나:
+  - 산출물 있음 → 메인이 직접 status.json 작성 (`verify_results`는 실측 가능한 것만 채우고 나머지 `skip`), `report.md`도 워커 의도 추정해서 작성 (Fallback #3 참고), `pact merge` 재시도
+  - 산출물 없음 → 사용자에게 `/pact:resume <id>` 안내 후 종료
+
+### 2. commit 미작성 + worktree 변경 존재 (`reason: "files_changed 보고 ≠ 실제 diff"` 등에서 빈 diff)
+
+- worktree 안에서 메인이 직접 commit
+- commit message: `pact: salvage <task_id> (worker incomplete)`
+- 후 `pact merge` 재시도
+
+### 3. report.md 미작성 / 너무 짧음 (`reason: "report.md missing"` / `"too short"`)
+
+- 메인이 워커 산출물(diff + status.json + worker prompt)을 근거로 `report.md` 작성
+- 본문에 **"워커 의도 추정 — 회고 단계 사용자 검증 필요"** 명시 (출처 거짓 방지)
+- 최소 비공백 10줄 (Section: 무엇을 / 왜 / 마주친 문제 / 결정 / 메인이 알아야 할 것)
+- 후 `pact merge` 재시도
+
+### 4. decisions schema 위반 (`reason: "schema 위반"` 중 decisions 필드)
+
+- 메인이 schema 정합 형태로 정규화 후 status.json 덮어쓰기
+- 위반 원본은 `.pact/runs/<id>/decisions.raw.json`에 보존 (감사 추적)
+- 후 `pact merge` 재시도
+
+### 공통
+
+- 위 4종 외 reason(`ownership 위반`, `verify fail`, `git diff에 allowed_paths 외 파일` 등)은 **메인이 임의로 우회 X** — 워커 spec drift나 실제 결함이라 사용자 결정 필요
+- 회로 차단기: 같은 task 2회 fallback 실패 시 사용자 위임 (`/pact:abort <id>` 안내)
+
 ## 단계 6: 충돌·실패 안내 (조건부)
 
 `conflicted` 있으면 한국어:

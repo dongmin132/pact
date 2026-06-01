@@ -49,6 +49,19 @@ function validatePayload(payload) {
   if ('verify_commands' in payload && !Array.isArray(payload.verify_commands)) {
     errors.push('verify_commands must be an array');
   }
+  // ADR-055 — yolo_mode:true에서는 forbidden_paths를 명시 deny-all로 채워야 한다.
+  // 빈 배열을 허용하면 워커가 "금지 경로 없음"으로 해석해 allowed_paths를 권고로 취급.
+  // permission prompt가 없으니 spec drift를 막을 게이트가 사라진다 (cycle 2 4건 실측).
+  if ('forbidden_paths' in payload && !Array.isArray(payload.forbidden_paths)) {
+    errors.push('forbidden_paths must be an array');
+  }
+  if (payload.yolo_mode === true) {
+    if (!('forbidden_paths' in payload)) {
+      errors.push('yolo_mode=true requires forbidden_paths (use ["**/*"] for deny-all or list explicit globs)');
+    } else if (Array.isArray(payload.forbidden_paths) && payload.forbidden_paths.length === 0) {
+      errors.push('yolo_mode=true with empty forbidden_paths is forbidden (use ["**/*"] for deny-all or list explicit globs)');
+    }
+  }
   return errors;
 }
 

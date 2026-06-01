@@ -26,9 +26,10 @@ function validateStatus(obj) {
     return { ok: false, errors: [err('/', 'must be object', 'type')] };
   }
 
-  // 필수 필드
-  for (const f of ['task_id', 'status', 'files_changed', 'files_attempted_outside_scope',
-                   'verify_results', 'tdd_evidence', 'completed_at']) {
+  // 필수 필드 (ADR-056: 호환성 위해 2개로 축소.
+  // 누락된 필드는 merge gate가 안전 default(빈 배열·빈 객체) 또는 reject로 분기 처리.
+  // 구버전 워커 산출물(cycle 1.5 등)도 schema 검증은 통과시켜야 reject 사유가 명확해진다.)
+  for (const f of ['task_id', 'status']) {
     if (!(f in obj)) errors.push(err(`/${f}`, `must have required property '${f}'`, 'required'));
   }
 

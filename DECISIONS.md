@@ -6,6 +6,139 @@
 
 ---
 
+## ADR-026 — `status.json` schema 진화 시 required 완화 정책 (backward-compat)
+
+- **상태**: 채택
+- **날짜**: 2026-06-01
+- **출처**: brewdy cycle 3 회고 (GitHub issue #1, brewdy ADR-056 매핑)
+- **관련**: ARCHITECTURE.md L371 (schema_version X 룰 유지), v0.8.0
+
+### 발견 / 배경
+
+brewdy 운영 중 MANNER-101 (cycle 1.5 시점) 워커의 `status.json`이 `files_attempted_outside_scope`/`tdd_evidence`/`completed_at` 누락으로 merge gate에서 reject. schema 진화 시 구버전 워커 산출물과 호환 안 됨.
+
+### 결정
+
+**필수 필드 2개로 축소**: `task_id`, `status`만 required. 나머지는 optional.
+누락된 필드는 merge gate가 안전 default (`|| []`, `|| {}`) 또는 명시 reject (예: `files_changed` 누락 시 git diff 대조 불가 사유로 reject)로 분기 처리.
+
+`schema_version` 필드 도입 X — ARCHITECTURE.md L371 룰 ("archive·schema_version·frontmatter 모두 X") 유지.
+
+### 트레이드오프
+
+- ✅ 구워커 산출물 호환 — schema 진화 후에도 reject 노이즈 X
+- ✅ schema_version 도입으로 인한 ARCHITECTURE 룰 충돌 회피
+- ❌ 신규 워커가 필드 생략하기 쉬워짐 — `agents/worker.md`의 작성 지시로 보강
+- ❌ schema 자체로는 약해짐 — merge gate가 사실상 강한 검증층
+
+---
+
+## ADR-025 — 워커 spec `yolo_mode + 빈 forbidden_paths` 조합 거부
+
+- **상태**: 채택
+- **날짜**: 2026-06-01
+- **출처**: brewdy cycle 2 spec drift 4건 (PROFILE-107/SETTINGS-104/PROFILE-108/MEETUP-107, brewdy ADR-055 매핑)
+- **관련**: ADR-012 (워커 자기 보고 X), v0.8.0
+
+### 발견 / 배경
+
+`yolo_mode: true` + `forbidden_paths: []` 조합에서 워커가 `allowed_paths`를 "권고"로 해석. yolo에서 permission prompt가 없으니 워커가 통과 — `prompts/worker-system.md`의 `{{forbidden_paths}}` 섹션이 비어 있어 "금지 경로 없음"으로 해석됨.
+
+### 결정
+
+`scripts/spawn-worker.js` `validatePayload()`에서 `yolo_mode === true`일 때 `forbidden_paths`가 누락이거나 빈 배열이면 거부. deny-all 의도면 `["**/*"]` 명시 강제.
+`prompts/worker-system.md`의 forbidden 섹션에 "위 목록이 비어있더라도 allowed_paths 외 모든 경로는 자동 금지 (deny-all)" 명시.
+
+### 트레이드오프
+
+- ✅ spec drift 자동 차단 — yolo에서도 spawn 단계에서 reject
+- ✅ 사용자에게 forbidden_paths 의도를 명시하게 강제 (deny-all vs explicit)
+- ❌ batch-builder.js 측 default 처리는 별도 PR (보수적)
+
+---
+
+## ADR-024 — 워커 fallback 정책 명문화 (4종 시나리오)
+
+- **상태**: 채택
+- **날짜**: 2026-06-01
+- **출처**: brewdy cycle 2~3 워커 fallback 2회 + decisions schema 위반 4건 (brewdy ADR-053 매핑)
+- **관련**: ADR-012, v0.8.0
+
+### 발견 / 배경
+
+워커 fallback 시 메인이 매번 임시방편으로 status/commit/report/decisions 보정. 어떤 fallback이 안전하고 어떤 것이 사용자 결정 필요인지 일관성 없음.
+
+### 결정
+
+`commands/parallel.md` 단계 5.5에 "워커 실패 시 메인 fallback (4종)" 섹션 신설:
+
+1. **status.json 미작성** — 메인이 worktree git/typecheck 결과로 작성, `verify_results`는 실측 가능 항목만
+2. **commit 누락 + worktree 변경** — 메인이 worktree에서 salvage commit (`pact: salvage <id> (worker incomplete)`)
+3. **report.md 미작성** — 메인이 워커 산출물 기반 작성, "워커 의도 추정" 명시
+4. **decisions schema 위반** — 메인 정규화 + 원본 `decisions.raw.json` 보존
+
+위 4종 외(`ownership 위반`, `verify fail`, `git diff에 allowed_paths 외 파일`)는 **메인 임의 우회 X** — 사용자 결정 필요. 같은 task 2회 fallback 실패 시 사용자 위임.
+
+`agents/coordinator.md`에도 분류 테이블에 fallback 매핑 짧게 명시.
+
+### 트레이드오프
+
+- ✅ 메인 워크플로우 prompt 일관성 — 임시방편 의사결정 0
+- ✅ 4종 외 사유는 명시적으로 사용자 결정 → silent recover 방지
+- ❌ 문서 only — 자동화 X (v1.0 원칙 #5: 자동 제안만)
+
+---
+
+## ADR-023 — `report.md` 작성 강제 (merge gate, 비공백 10줄)
+
+- **상태**: 채택
+- **날짜**: 2026-06-01
+- **출처**: brewdy cycle 2_batch_12~14 작성률 5/12 (brewdy ADR-049 매핑)
+- **관련**: ADR-012, v0.8.0
+
+### 발견 / 배경
+
+`status.json`은 게이트라 100% 작성되지만 `report.md`는 선택적 산출물로 인식돼 5/12 작성률. 회고/coordinator 통합 시 워커 의도·결정·trade-off 추적 불가.
+
+### 결정
+
+`bin/cmds/merge.js` `planMerge()` 게이트에 `report.md` **파일 존재 + 비공백 10줄 이상** 검증 추가. 위반 시 `rejected.reason: "report.md missing"` 또는 `"too short"`로 reject. status.json self-report에 의존 X — ADR-012 정신 (워커 자기 보고 X, 외부 사실 검증) 유지.
+
+`agents/worker.md` 종료 의무 §4에 작성 강제 + 비공백 10줄 기준 명시. `prompts/worker-system.md` 변수 표에는 자연스럽게 노출 중.
+
+### 트레이드오프
+
+- ✅ 회고·coordinator 입력 품질 — 의사결정 추적 가능
+- ✅ 자기 보고 X — 파일 시스템 사실로만 게이트
+- ❌ 워커 부담 증가 — 짧은 task도 10줄 보고 — `report.md` 가이드 5섹션으로 자연 채워짐 (무엇/왜/문제/결정/메인 알릴 것)
+- ❌ 기존 cycle 산출물 호환 X — fallback (ADR-024 #3)으로 메인이 작성
+
+---
+
+## ADR-022 — `pact run-cycle collect`에서 task `status:done` 자동 sync
+
+- **상태**: 채택
+- **날짜**: 2026-06-01
+- **출처**: brewdy cycle 2~3 매 머지 후 메인 수동 patch, rejected 102건 중 94건 원인 (brewdy ADR-048 매핑)
+- **관련**: v0.8.0
+
+### 발견 / 배경
+
+`bin/cmds/merge.js`의 `executeMerge`는 머지 성공 시 `setTaskStatus(id, 'done')`로 source frontmatter에 박지만, **`bin/cmds/run-cycle.js`의 `doCollect`는 같은 sync 누락**. `run-cycle collect` 경로(= `/pact:parallel` 표준 흐름)로 진입 시 머지 끝나도 task가 `status: in_progress`인 채로 남음 → 다음 cycle의 `prepare`가 같은 task id를 또 batch 후보로 잡음 → batch-builder가 같은 spec으로 worker 또 spawn → 다음 머지에서 빈 diff로 reject 누적.
+
+### 결정
+
+`doCollect` 안에서 `result.merged` 순회하면서 `setTaskStatus(id, 'done', { cwd })` 호출. `merge-result.json`과 `emit` 양쪽에 `status_updates: [{task_id, ok, action, file, error}]` 포함.
+
+### 트레이드오프
+
+- ✅ 메인 수동 sync 절감 — cycle당 ~30분 누적 최대 ROI
+- ✅ merge gate alert fatigue 해소 (rejected 노이즈 감소)
+- ✅ 기존 `executeMerge` 경로와 일관 — 두 경로 모두 동일하게 박힘
+- ❌ 없음 (executeMerge가 이미 검증된 로직)
+
+---
+
 ## ADR-021 — 멀티세션 자유 수정 안전망 (edit-lock)
 
 - **상태**: 채택
