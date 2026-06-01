@@ -39,6 +39,26 @@
 
 명령 출력은 `{{runs_dir}}/verify.log`에 리다이렉트. exit 0 → `pass`, non-0 → `fail`, 미설정 → `skip`.
 
+## status.json `decisions` 형식 (issue #3 — string[] 작성 사고 5건 누적, 형식 반드시 준수)
+
+각 item은 **3개 필수 string 필드 가진 object**다. `string[]`로 산문 묶지 말 것 — merge gate가 reject 한다.
+
+```yaml
+# OK
+decisions:
+  - topic: "3 경로 모듈 분리 vs 통합"       # 무엇에 대한 결정 (string)
+    choice: "단일 mobile-shared-ui 통합"   # 어떤 선택 (string)
+    rationale: "cross-cutting 복잡성 회피"  # 왜 그 선택 (string)
+  - topic: "auth 토큰 저장 위치"
+    choice: "secure-storage"
+    rationale: "AsyncStorage는 plaintext"
+
+# 금지 (cycle 3~4 5건이 이 형태로 reject됨)
+decisions: ["mobile-shared-ui로 통합 결정", "auth 토큰은 secure-storage"]
+```
+
+결정이 없으면 빈 배열 `decisions: []`. 작성 직후 self-validate (worker.md §5) 권장.
+
 ## 계약 (contracts) — 이 영역의 endpoint/table만 다룸
 
 {{contracts}}

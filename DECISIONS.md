@@ -6,6 +6,34 @@
 
 ---
 
+## ADR-027 — worker prompt에 `decisions` 형식 예시 + reject 메시지에 schema path + worker self-validate CLI
+
+- **상태**: 채택
+- **날짜**: 2026-06-01
+- **출처**: GitHub issue #3 — brewdy cycle 3·4 worker decisions schema 위반 5건 누적
+- **관련**: ADR-026 (required 완화), v0.8.1
+
+### 발견 / 배경
+
+v0.8.0 ADR-026이 schema 수용 폭을 넓혔지만 `decisions` 배열 item 형식 (`{topic, choice, rationale}`) 안내가 worker prompt 어디에도 없음. brewdy CLEANUP-003~006 + INFRA-111 5건이 `string[]` 패턴으로 작성 → merge gate reject (메시지 `must be object` 5번 반복) → worker self-correct 정보 없음 → 메인 수동 정규화 반복.
+
+### 결정
+
+3가지 보완 동시 적용:
+
+1. **prompt에 형식 예시** (P0) — `prompts/worker-system.md`에 OK/금지 대조 yaml 1블록.
+2. **reject 메시지 schema path 노출** (P1) — `validate-mini.js`에 받은 타입 명시 + `merge.js` reason에 `instancePath` 포함.
+3. **worker self-validate CLI** (P2) — `pact validate-status <path>` 신규. worker가 status.json 작성 직후 호출 강력 권장. exit 3이면 위반 — 즉시 수정 후 종료.
+
+### 트레이드오프
+
+- ✅ 5건 패턴 즉시 차단 (P0 단독으로도 효과)
+- ✅ 디버깅 시간 단축 (P1)
+- ✅ 메인 fallback 호출 자체 제거 가능 (P2)
+- ❌ `pact validate-status`는 강제 X 권장 — 워커가 안 부르면 효과 X. 의도적: 호출 강제는 worker harness 침범, 안내로만.
+
+---
+
 ## ADR-026 — `status.json` schema 진화 시 required 완화 정책 (backward-compat)
 
 - **상태**: 채택

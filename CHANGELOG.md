@@ -1,5 +1,52 @@
 # Changelog
 
+## v0.8.1 — 2026-06-01
+
+`decisions` 배열 schema 안내 누락 fix — brewdy cycle 3·4 worker 사고 5건 누적 (GitHub issue #3).
+
+### 동기
+
+v0.8.0 ADR-026이 `status.json` required 필드를 완화했으나 `decisions` 배열의 **item 형식 안내 자체**가 worker prompt에 없었음. brewdy cycle 3 CLEANUP-003~006 (4건) + cycle 4 INFRA-111 (1건) 워커가 동일하게 `string[]` 패턴으로 작성 → merge gate reject → 메인 수동 정규화 반복.
+
+근본 원인: pact가 worker에게 형식 알려주는 안내 부재 + reject 메시지의 schema path 미노출.
+
+### 변경
+
+**`prompts/worker-system.md` (A — P0)**
+- `decisions` 형식 yaml 예시 1블록 추가 (OK/금지 대조). 5건 패턴 명시 차단.
+
+**`scripts/lib/validate-mini.js` (B — P1)**
+- `decisions` item `must be object` 메시지를 `must be object {topic, choice, rationale} — got <type>`로 풍부화. worker self-correct 가능.
+- 필드별 메시지에도 받은 타입 명시 (`must have 'topic' (string)`, `must be string — got number`).
+
+**`bin/cmds/merge.js` (B — P1)**
+- schema 위반 reject reason에 `instancePath` 포함 (`/decisions/0 must be object {...}`). 어디 어떤 필드인지 즉시 식별.
+
+**`bin/cmds/validate-status.js` + `bin/pact` 라우팅 (C — P2)**
+- 새 명령 `pact validate-status <path/to/status.json>` 노출. worker가 status.json 작성 직후 self-validate.
+- 기존 `scripts/validate-status.js` 로직을 CLI 명령으로 wrap. exit code 0/1/2/3.
+
+**`agents/worker.md`**
+- 종료 의무에 §5 추가 — self-validate 호출 강력 권장. exit 3이면 즉시 수정 후 종료.
+
+### 테스트
+
+- `test/validate-status.test.js` — issue #3 케이스 3종 추가 (string[] 메시지 + path).
+- `test/pact-cli.test.js` — `pact validate-status` 4종 (ok/위반/missing/usage).
+- 전체 통과.
+
+### 영향
+
+- brewdy 메인 fallback 빈도 6번 cycle 합산 ~0회 예상 (A만으로 5건 패턴 차단).
+- 디버깅 시간 단축 (B — schema path 노출).
+- 메인 fallback 호출 자체 제거 가능 (C — worker self-validate).
+
+### Migration
+
+기존 worker는 호환 (validate-status 호출은 강력 권장이지 강제 X). 신규 cycle부터 prompt 예시 + self-validate 자연스러운 흐름.
+
+---
+
 ## v0.8.0 — 2026-06-01
 
 워커/cycle 안정성 — brewdy cycle 3 회고 upstream fix (GitHub issue #1, 5건 묶음).

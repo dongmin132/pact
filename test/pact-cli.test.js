@@ -581,6 +581,58 @@ method: POST
   } finally { cleanupRepo(repo); }
 });
 
+// ─── issue #3 (v0.8.1): pact validate-status ───
+
+test('pact validate-status — 정상 status.json은 exit 0', () => {
+  const repo = makeRepo();
+  try {
+    const sp = path.join(repo, 'status.json');
+    fs.writeFileSync(sp, JSON.stringify({
+      task_id: 'PROJ-001',
+      status: 'done',
+      decisions: [{ topic: 't', choice: 'c', rationale: 'r' }],
+    }));
+    const r = runPact(['validate-status', 'status.json'], repo);
+    assert.equal(r.status, 0, `stderr: ${r.stderr}\nstdout: ${r.stdout}`);
+    const out = JSON.parse(r.stdout);
+    assert.equal(out.ok, true);
+  } finally { cleanupRepo(repo); }
+});
+
+test('pact validate-status — decisions가 string[]이면 exit 3 + 메시지에 형식 안내', () => {
+  const repo = makeRepo();
+  try {
+    const sp = path.join(repo, 'status.json');
+    fs.writeFileSync(sp, JSON.stringify({
+      task_id: 'PROJ-001',
+      status: 'done',
+      decisions: ['legacy 문장'],
+    }));
+    const r = runPact(['validate-status', 'status.json'], repo);
+    assert.equal(r.status, 3, `stderr: ${r.stderr}\nstdout: ${r.stdout}`);
+    const out = JSON.parse(r.stdout);
+    assert.equal(out.ok, false);
+    assert.ok(out.errors.some(e => /topic.*choice.*rationale/.test(e.message)));
+    assert.ok(out.errors.some(e => /\/decisions\/0$/.test(e.path)));
+  } finally { cleanupRepo(repo); }
+});
+
+test('pact validate-status — 파일 없으면 exit 2', () => {
+  const repo = makeRepo();
+  try {
+    const r = runPact(['validate-status', 'missing.json'], repo);
+    assert.equal(r.status, 2);
+  } finally { cleanupRepo(repo); }
+});
+
+test('pact validate-status — 인자 누락 시 exit 1 (usage)', () => {
+  const repo = makeRepo();
+  try {
+    const r = runPact(['validate-status'], repo);
+    assert.equal(r.status, 1);
+  } finally { cleanupRepo(repo); }
+});
+
 test('pact split-docs — function 1개인 섹션은 분할 X (정상 처리)', () => {
   const repo = makeRepo();
   try {

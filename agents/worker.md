@@ -73,6 +73,13 @@ tools:
 
    필수 필드: `task_id`, `status` (`done`|`failed`|`blocked`), `branch_name`, `commits_made`, `clean_for_merge`, `files_changed`, `files_attempted_outside_scope`, `verify_results` (lint/typecheck/test/build = `pass`|`fail`|`skip`), `tdd_evidence` (red_observed·green_observed), `decisions`, `blockers`, `tokens_used`, `completed_at` (ISO 8601).
 4. `<runs_dir>/report.md` (사람용 prose, **머지 게이트 ADR-049**): 무엇을 했나 / 마주친 문제와 해결 / 핵심 결정 / 메인·coordinator가 알아야 할 것. **비공백 10줄 이상 필수** — 미만이면 `pact merge` 게이트가 reject 한다.
+5. **self-validate (강력 권장, issue #3)**: status.json 작성 직후 다음을 호출해 schema 위반을 머지 전에 잡는다 (`decisions`를 `string[]`으로 적는 사고 등):
+
+   ```bash
+   node ${CLAUDE_PLUGIN_ROOT}/bin/pact validate-status <runs_dir>/status.json
+   ```
+
+   exit 3이면 stdout의 `errors[].path` + `message` 보고 즉시 status.json 수정. 위반인 채 종료하면 merge gate에서 reject되고 메인 fallback 비용 발생.
 
 머지는 `pact merge` CLI 책임. 너는 commit만.
 

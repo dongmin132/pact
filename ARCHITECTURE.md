@@ -510,6 +510,7 @@ $ pact batch  # CLI 명령, LLM 안 거침
 | NEW-6 (v0.8.0) | 워커 fallback 4종 명문화 (status/commit/report/decisions) | ADR-024 |
 | NEW-7 (v0.8.0) | yolo_mode + 빈 forbidden_paths 조합 거부 | ADR-025 |
 | NEW-8 (v0.8.0) | status.json schema required 완화 (task_id+status만) | ADR-026 |
+| NEW-9 (v0.8.1) | worker prompt에 decisions 형식 예시 + reject 메시지에 schema path + `pact validate-status` CLI | ADR-027 |
 
 ## 13. 매니저 핸드오프 인터페이스
 
