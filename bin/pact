@@ -23,6 +23,7 @@ const commands = {
   'list-locks': () => require('./cmds/list-locks.js')(args),
   'edit-lock': () => require('./cmds/edit-lock.js')(args),
   'edit-release': () => require('./cmds/edit-release.js')(args),
+  'validate-status': () => require('./cmds/validate-status.js')(args),
 };
 
 if (!cmd || !commands[cmd]) {
@@ -42,6 +43,7 @@ if (!cmd || !commands[cmd]) {
   console.error('  list-locks [--mine] [--session <label>] [--alive] [--json]  잡힌 task lock 목록');
   console.error('  edit-lock <target> [--session <label>]  자유 수정 단계 멀티세션 안전망');
   console.error('  edit-release <target> [--session <label>] [--force]  edit-lock 해제 + drift 알림');
+  console.error('  validate-status <path/to/status.json>   worker self-validate (issue #3)');
   process.exit(cmd ? 1 : 0);
 }
 

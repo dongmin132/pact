@@ -87,12 +87,19 @@ function validateStatus(obj) {
     } else {
       obj.decisions.forEach((d, i) => {
         if (!isObject(d)) {
-          errors.push(err(`/decisions/${i}`, 'must be object', 'type'));
+          // issue #3 — worker가 string[] 패턴으로 작성하는 사고가 잦음.
+          // self-correct 가능하도록 schema item 구조를 메시지에 노출.
+          const got = Array.isArray(d) ? 'array' : (d === null ? 'null' : typeof d);
+          errors.push(err(
+            `/decisions/${i}`,
+            `must be object {topic, choice, rationale} — got ${got}`,
+            'type',
+          ));
           return;
         }
         for (const f of ['topic', 'choice', 'rationale']) {
-          if (!(f in d)) errors.push(err(`/decisions/${i}/${f}`, `must have '${f}'`, 'required'));
-          else if (typeof d[f] !== 'string') errors.push(err(`/decisions/${i}/${f}`, 'must be string', 'type'));
+          if (!(f in d)) errors.push(err(`/decisions/${i}/${f}`, `must have '${f}' (string)`, 'required'));
+          else if (typeof d[f] !== 'string') errors.push(err(`/decisions/${i}/${f}`, `must be string — got ${typeof d[f]}`, 'type'));
         }
       });
     }

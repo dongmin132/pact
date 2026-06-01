@@ -118,3 +118,40 @@ test('ADR-056 — tdd_evidence가 있을 때는 여전히 red_observed/green_obs
   });
   assert.equal(r.ok, false);
 });
+
+// ─── issue #3 (v0.8.1): decisions error 풍부화 ───
+
+test('issue#3 — decisions가 string[]이면 각 item 메시지에 required 필드 안내', () => {
+  const r = validateStatus({
+    ...VALID,
+    decisions: ['legacy 문장 1', 'legacy 문장 2'],
+  });
+  assert.equal(r.ok, false);
+  // 각 item에 대해 schema가 어떤 형태인지 메시지에 노출 (worker self-correct 가능하도록)
+  const msgs = r.errors.map(e => e.message).join(' | ');
+  assert.match(msgs, /topic.*choice.*rationale/, `errors: ${JSON.stringify(r.errors)}`);
+});
+
+test('issue#3 — decisions 위반 error에 instancePath 박혀있음 (decisions/0)', () => {
+  const r = validateStatus({
+    ...VALID,
+    decisions: ['문장'],
+  });
+  assert.equal(r.ok, false);
+  assert.ok(
+    r.errors.some(e => /\/decisions\/0$/.test(e.path)),
+    `paths: ${JSON.stringify(r.errors.map(e => e.path))}`,
+  );
+});
+
+test('issue#3 — decisions item이 object지만 topic 누락도 path 박혀있음', () => {
+  const r = validateStatus({
+    ...VALID,
+    decisions: [{ choice: 'X', rationale: 'Y' }],
+  });
+  assert.equal(r.ok, false);
+  assert.ok(
+    r.errors.some(e => e.path === '/decisions/0/topic'),
+    `paths: ${JSON.stringify(r.errors.map(e => e.path))}`,
+  );
+});

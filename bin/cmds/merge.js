@@ -67,7 +67,11 @@ function planMerge(opts = {}) {
 
     const validation = validateStatus(status);
     if (!validation.ok) {
-      rejected.push({ task_id: taskId, reason: 'schema 위반: ' + validation.errors.map(e => e.message).join(', ') });
+      // issue #3 — error message에 instancePath 포함. worker가 어느 필드 어떤 형태인지 즉시 파악.
+      rejected.push({
+        task_id: taskId,
+        reason: 'schema 위반: ' + validation.errors.map(e => `${e.path} ${e.message}`).join('; '),
+      });
       continue;
     }
 
