@@ -5,12 +5,7 @@
   "type": "object",
   "required": [
     "task_id",
-    "status",
-    "files_changed",
-    "files_attempted_outside_scope",
-    "verify_results",
-    "tdd_evidence",
-    "completed_at"
+    "status"
   ],
   "properties": {
     "task_id": {

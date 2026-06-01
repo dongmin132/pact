@@ -505,6 +505,11 @@ $ pact batch  # CLI 명령, LLM 안 거침
 | NEW-1 | 교육 모드 | plan 시 매번 질문 |
 | NEW-2 | TDD | 기본 ON, opt-out 가능 |
 | NEW-3 | plan-review | 사용자 직접 호출 + parallel 게이트 |
+| NEW-4 (v0.8.0) | `run-cycle collect`도 머지 후 task status:done sync | ADR-022 |
+| NEW-5 (v0.8.0) | report.md 강제 — 비공백 10줄, merge gate | ADR-023 |
+| NEW-6 (v0.8.0) | 워커 fallback 4종 명문화 (status/commit/report/decisions) | ADR-024 |
+| NEW-7 (v0.8.0) | yolo_mode + 빈 forbidden_paths 조합 거부 | ADR-025 |
+| NEW-8 (v0.8.0) | status.json schema required 완화 (task_id+status만) | ADR-026 |
 
 ## 13. 매니저 핸드오프 인터페이스
 

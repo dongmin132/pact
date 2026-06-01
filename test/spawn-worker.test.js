@@ -52,6 +52,47 @@ test('validatePayload — null/undefined payload 거부', () => {
   assert.ok(validatePayload(undefined).length > 0);
 });
 
+// ─── ADR-055: yolo_mode + forbidden_paths 빈/누락 거부 ───
+
+test('ADR-055 — yolo_mode:true + forbidden_paths 누락은 거부', () => {
+  const errors = validatePayload({ ...VALID, yolo_mode: true });
+  assert.ok(
+    errors.some(e => e.includes('forbidden_paths')),
+    `errors: ${JSON.stringify(errors)}`,
+  );
+});
+
+test('ADR-055 — yolo_mode:true + forbidden_paths:[] 빈 배열은 거부', () => {
+  const errors = validatePayload({ ...VALID, yolo_mode: true, forbidden_paths: [] });
+  assert.ok(
+    errors.some(e => /forbidden_paths/.test(e) && /empty|forbidden/.test(e)),
+    `errors: ${JSON.stringify(errors)}`,
+  );
+});
+
+test('ADR-055 — yolo_mode:true + forbidden_paths 비배열은 거부', () => {
+  const errors = validatePayload({ ...VALID, yolo_mode: true, forbidden_paths: 'all' });
+  assert.ok(
+    errors.some(e => e.includes('forbidden_paths')),
+    `errors: ${JSON.stringify(errors)}`,
+  );
+});
+
+test('ADR-055 — yolo_mode:true + forbidden_paths:["**/*"] deny-all은 통과', () => {
+  const errors = validatePayload({ ...VALID, yolo_mode: true, forbidden_paths: ['**/*'] });
+  assert.deepEqual(errors, [], `errors: ${JSON.stringify(errors)}`);
+});
+
+test('ADR-055 — yolo_mode 미지정은 forbidden_paths 누락 허용 (기존 동작 유지)', () => {
+  const errors = validatePayload({ ...VALID });
+  assert.deepEqual(errors, []);
+});
+
+test('ADR-055 — yolo_mode:false면 forbidden_paths 누락 허용', () => {
+  const errors = validatePayload({ ...VALID, yolo_mode: false });
+  assert.deepEqual(errors, []);
+});
+
 test('renderPrompt — task_id·title 치환', () => {
   const tmpl = '# {{task_id}}\n{{title}}';
   const out = renderPrompt(VALID, tmpl);

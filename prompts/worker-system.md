@@ -26,6 +26,9 @@
 
 {{forbidden_paths}}
 
+> 위 목록이 비어있더라도 **allowed_paths 외 모든 경로는 자동 금지**다 (deny-all).
+> "권고"가 아니다. 머지 게이트가 실제 git diff와 allowed_paths를 대조해 위반 시 reject 한다 (ADR-012).
+
 ## 완료 조건 (done_criteria — 모두 충족해야 `status="done"`)
 
 {{done_criteria}}

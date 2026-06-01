@@ -72,13 +72,14 @@ tools:
 3. `<runs_dir>/status.json` 작성. **JSON Schema 강제** — `schemas/worker-status.schema.json`, validate-status.js가 자동 검증, 형식 위반 시 자동 blocked.
 
    필수 필드: `task_id`, `status` (`done`|`failed`|`blocked`), `branch_name`, `commits_made`, `clean_for_merge`, `files_changed`, `files_attempted_outside_scope`, `verify_results` (lint/typecheck/test/build = `pass`|`fail`|`skip`), `tdd_evidence` (red_observed·green_observed), `decisions`, `blockers`, `tokens_used`, `completed_at` (ISO 8601).
-4. `<runs_dir>/report.md` (사람용 prose): 무엇을 했나 / 마주친 문제와 해결 / 핵심 결정 / 메인·coordinator가 알아야 할 것
+4. `<runs_dir>/report.md` (사람용 prose, **머지 게이트 ADR-049**): 무엇을 했나 / 마주친 문제와 해결 / 핵심 결정 / 메인·coordinator가 알아야 할 것. **비공백 10줄 이상 필수** — 미만이면 `pact merge` 게이트가 reject 한다.
 
 머지는 `pact merge` CLI 책임. 너는 commit만.
 
 ## 절대 안 하는 것
 
 - ❌ 채팅으로만 보고하고 status.json 미작성 → 자동 blocked
+- ❌ `report.md` 미작성 또는 1~2줄 — 머지 게이트 reject (ADR-049)
 - ❌ allowed_paths 외 파일 수정 (pre-tool-guard가 차단해도 시도분은 `files_attempted_outside_scope`에 정직 기록)
 - ❌ verify 결과 거짓말 → coordinator가 재실행하면 들통남
 - ❌ done_criteria 충족 못 했는데 `status="done"` → 즉시 blocked로 정정

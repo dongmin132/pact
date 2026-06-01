@@ -52,14 +52,69 @@ test('task_id 형식 위반 거부', () => {
   assert.equal(r.ok, false);
 });
 
-test('tdd_evidence 누락 거부', () => {
+test('tdd_evidence 누락 허용 (ADR-056: 구버전 워커 호환)', () => {
   const bad = { ...VALID };
   delete bad.tdd_evidence;
   const r = validateStatus(bad);
-  assert.equal(r.ok, false);
+  assert.equal(r.ok, true, JSON.stringify(r.errors));
 });
 
 test('completed_at이 ISO 형식 아닐 때 거부', () => {
   const r = validateStatus({ ...VALID, completed_at: '오늘' });
+  assert.equal(r.ok, false);
+});
+
+// ─── ADR-056: required 완화 (task_id + status 2개만 필수) ───
+
+test('ADR-056 — task_id + status만으로 통과 (구버전 워커 산출물 호환)', () => {
+  const minimal = { task_id: 'LEGACY-101', status: 'done' };
+  const r = validateStatus(minimal);
+  assert.equal(r.ok, true, JSON.stringify(r.errors));
+});
+
+test('ADR-056 — files_attempted_outside_scope 누락 허용', () => {
+  const bad = { ...VALID };
+  delete bad.files_attempted_outside_scope;
+  const r = validateStatus(bad);
+  assert.equal(r.ok, true, JSON.stringify(r.errors));
+});
+
+test('ADR-056 — completed_at 누락 허용', () => {
+  const bad = { ...VALID };
+  delete bad.completed_at;
+  const r = validateStatus(bad);
+  assert.equal(r.ok, true, JSON.stringify(r.errors));
+});
+
+test('ADR-056 — verify_results 누락 허용', () => {
+  const bad = { ...VALID };
+  delete bad.verify_results;
+  const r = validateStatus(bad);
+  assert.equal(r.ok, true, JSON.stringify(r.errors));
+});
+
+test('ADR-056 — files_changed 누락 허용', () => {
+  const bad = { ...VALID };
+  delete bad.files_changed;
+  const r = validateStatus(bad);
+  assert.equal(r.ok, true, JSON.stringify(r.errors));
+});
+
+test('ADR-056 — task_id 누락은 여전히 거부 (필수 2개 중 하나)', () => {
+  const r = validateStatus({ status: 'done' });
+  assert.equal(r.ok, false);
+});
+
+test('ADR-056 — status 누락은 여전히 거부 (필수 2개 중 하나)', () => {
+  const r = validateStatus({ task_id: 'PACT-001' });
+  assert.equal(r.ok, false);
+});
+
+test('ADR-056 — tdd_evidence가 있을 때는 여전히 red_observed/green_observed 필요', () => {
+  const r = validateStatus({
+    task_id: 'PACT-001',
+    status: 'done',
+    tdd_evidence: { red_observed: true /* green_observed 누락 */ },
+  });
   assert.equal(r.ok, false);
 });
