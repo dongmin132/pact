@@ -164,3 +164,73 @@ test('setTaskStatus — 다른 task의 yaml 블록 침범 X (첫 헤더 다음 �
     assert.equal(a2.status, 'todo', 'A-002는 영향 없어야 함');
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('setTaskStatus — 대상 task에 yaml 블록이 없으면 다음 task를 침범하지 않고 ok:false (버그 A)', () => {
+  const dir = tmpDir();
+  try {
+    fs.mkdirSync(path.join(dir, 'tasks'));
+    // NOYAML-116 은 헤더만 있고 yaml 블록 없음. 그 뒤에 yaml 가진 NEXT-017.
+    const noYaml = `## NOYAML-116  yaml 블록 없는 task\n\n설명만 있음.\n\n`;
+    const md = noYaml + TASK_BLOCK('NEXT-017');
+    fs.writeFileSync(path.join(dir, 'tasks', 'a.md'), md);
+
+    const r = setTaskStatus('NOYAML-116', 'done', { cwd: dir });
+
+    // 1) 대상에 yaml이 없으니 거짓 성공이 아니라 ok:false 여야 함
+    assert.equal(r.ok, false, 'yaml 블록 없는 task는 ok:false 여야 함');
+
+    // 2) 다음 task NEXT-017 의 yaml 블록이 손상되면 안 됨
+    const after = fs.readFileSync(path.join(dir, 'tasks', 'a.md'), 'utf8');
+    assert.doesNotMatch(after, /status: done/, 'NEXT-017 의 yaml 에 status:done 이 박히면 안 됨');
+    const parsed = parseTaskFiles(['tasks/a.md'], { cwd: dir });
+    const next = parsed.tasks.find(t => t.id === 'NEXT-017');
+    assert.ok(next, 'NEXT-017 은 파싱돼야 함');
+    assert.notEqual(next.status, 'done', 'NEXT-017 status 가 손상되면 안 됨');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('setTaskStatus — 중복 status 라인 자가치유 (정확히 1줄)', () => {
+  const dir = tmpDir();
+  try {
+    fs.mkdirSync(path.join(dir, 'tasks'));
+    const md = `## DUP-001  task
+
+\`\`\`yaml
+priority: P0
+status: todo
+files: [a.ts]
+status: blocked
+\`\`\`
+`;
+    fs.writeFileSync(path.join(dir, 'tasks', 'd.md'), md);
+    const r = setTaskStatus('DUP-001', 'done', { cwd: dir });
+    assert.equal(r.ok, true);
+    const after = fs.readFileSync(path.join(dir, 'tasks', 'd.md'), 'utf8');
+    assert.equal((after.match(/^status:/mg) || []).length, 1, 'status 라인 정확히 1개');
+    assert.match(after, /status: done/);
+    const parsed = parseTaskFiles(['tasks/d.md'], { cwd: dir });
+    assert.equal(parsed.errors.length, 0, 'yaml-mini 중복키 에러 없어야 함');
+    assert.equal(parsed.tasks[0].status, 'done');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('setTaskStatus — 이미 목표 status면 noop (멱등, 쓰기 안 함)', () => {
+  const dir = tmpDir();
+  try {
+    fs.mkdirSync(path.join(dir, 'tasks'));
+    const md = `## IDEM-001  task
+
+\`\`\`yaml
+priority: P0
+status: done
+files: [a.ts]
+\`\`\`
+`;
+    fs.writeFileSync(path.join(dir, 'tasks', 'i.md'), md);
+    const before = fs.readFileSync(path.join(dir, 'tasks', 'i.md'), 'utf8');
+    const r = setTaskStatus('IDEM-001', 'done', { cwd: dir });
+    assert.equal(r.ok, true);
+    assert.equal(r.action, 'noop');
+    assert.equal(fs.readFileSync(path.join(dir, 'tasks', 'i.md'), 'utf8'), before, '쓰기 없음');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});

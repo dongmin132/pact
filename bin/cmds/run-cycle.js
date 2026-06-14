@@ -20,13 +20,16 @@ const {
   createWorktree,
   removeWorktree,
   isMergeInProgress,
+  detectBaseBranch,
+  reconcileWorktree,
 } = require(path.join(PLUGIN_ROOT, 'scripts', 'worktree-manager.js'));
 const { prepareWorkerSpawn } = require(path.join(PLUGIN_ROOT, 'scripts', 'spawn-worker.js'));
 const { collectLongDocs, DEFAULT_MAX_LINES } = require(path.join(PLUGIN_ROOT, 'bin', 'cmds', 'context-guard.js'));
 const { planMerge } = require(path.join(PLUGIN_ROOT, 'bin', 'cmds', 'merge.js'));
 const { mergeAll } = require(path.join(PLUGIN_ROOT, 'scripts', 'merge-coordinator.js'));
-const { acquireCycleLock, releaseCycleLock } = require(path.join(PLUGIN_ROOT, 'scripts', 'lock.js'));
+const { acquireCycleLock, releaseCycleLock, cleanStaleLocks } = require(path.join(PLUGIN_ROOT, 'scripts', 'lock.js'));
 const { setTaskStatus } = require(path.join(PLUGIN_ROOT, 'scripts', 'task-sources.js'));
+const { writeJsonAtomic } = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'atomic-write.js'));
 
 const CURRENT_BATCH_FILE = '.pact/current_batch.json';
 
@@ -44,8 +47,10 @@ function fail(stage, errors) {
 }
 
 function emitFail(e) {
+  // process.exit() 는 finally 블록을 건너뛴다 → cycle.lock 누수. 절대 쓰지 않는다.
+  // exitCode만 세팅하고 정상 반환 → 호출부 finally{releaseCycleLock} 실행 후 자연 종료(코드 1).
   emit({ ok: false, stage: e.pactStage, errors: e.pactErrors });
-  process.exit(1);
+  process.exitCode = 1;
 }
 
 function isAlreadyPrepared(cwd) {
@@ -103,6 +108,9 @@ function parseMaxFlag(args) {
 function prepare(args, opts = {}) {
   const cwd = opts.cwd || process.cwd();
   const force = args.includes('--force');
+
+  // 진입 시 stale lock(죽은 PID) 자동 정리 — SIGKILL/구버전 누수 self-heal (hook 비의존).
+  cleanStaleLocks({ cwd });
 
   // 멱등 (v0.6.1): 이미 prepared면 skip. --force로 무시 가능.
   if (!force && isAlreadyPrepared(cwd)) {
@@ -178,8 +186,18 @@ function doPrepare(args, opts, cwd, pre) {
   const created = [];
   const taskPrompts = [];
 
+  // base branch 자동 감지 (master 기반 repo 지원, 'main' 하드코딩 제거)
+  const baseBranch = detectBaseBranch({ cwd });
+
   for (const task of batch0) {
-    const wt = createWorktree(task.id, 'main', { cwd });
+    // 재진입 stale 자가치유 — 미머지 커밋 없는 cruft 회수 (있으면 보존하고 실패).
+    const rec = reconcileWorktree(task.id, baseBranch, { cwd });
+    if (!rec.ok) {
+      for (const c of created) removeWorktree(c.task_id, { cwd });
+      return fail('worktree', [{ task_id: task.id, message: rec.error }]);
+    }
+
+    const wt = createWorktree(task.id, baseBranch, { cwd });
     if (!wt.ok) {
       for (const c of created) removeWorktree(c.task_id, { cwd });
       return fail('worktree', [{ task_id: task.id, message: wt.error }]);
@@ -200,7 +218,7 @@ function doPrepare(args, opts, cwd, pre) {
       prd_reference: task.prd_reference || null,
       working_dir: wt.working_dir,
       branch_name: wt.branch_name,
-      base_branch: 'main',
+      base_branch: baseBranch,
       context_budget_tokens: task.context_budget_tokens || 20000,
     };
 
@@ -223,11 +241,11 @@ function doPrepare(args, opts, cwd, pre) {
   }
 
   fs.mkdirSync(path.join(cwd, '.pact'), { recursive: true });
-  fs.writeFileSync(path.join(cwd, CURRENT_BATCH_FILE), JSON.stringify({
+  writeJsonAtomic(path.join(cwd, CURRENT_BATCH_FILE), {
     task_ids: batch0.map(t => t.id),
     prepared_at: new Date().toISOString(),
     coordinator_review_needed,
-  }, null, 2) + '\n');
+  });
 
   emit({
     ok: true,
@@ -240,6 +258,7 @@ function doPrepare(args, opts, cwd, pre) {
 
 function collect(args, opts = {}) {
   const cwd = opts.cwd || process.cwd();
+  cleanStaleLocks({ cwd });
   const cbPath = path.join(cwd, CURRENT_BATCH_FILE);
 
   // 멱등 (v0.6.1): current_batch.json 없으면 이미 collect 완료 또는 prepare 안 됨
@@ -283,7 +302,7 @@ function doCollect(args, opts, cwd, cbPath) {
     statusUpdates.push({ task_id: id, ok: r.ok, action: r.action, file: r.file, error: r.error });
   }
 
-  fs.writeFileSync(path.join(cwd, '.pact/merge-result.json'), JSON.stringify({
+  writeJsonAtomic(path.join(cwd, '.pact/merge-result.json'), {
     timestamp: new Date().toISOString(),
     eligible: plan.eligible.length,
     merged: result.merged,
@@ -291,7 +310,7 @@ function doCollect(args, opts, cwd, cbPath) {
     skipped: result.skipped,
     rejected: plan.rejected,
     status_updates: statusUpdates,
-  }, null, 2) + '\n');
+  });
 
   const cleanup = [];
   for (const id of result.merged) {

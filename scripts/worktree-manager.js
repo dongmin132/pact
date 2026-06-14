@@ -42,6 +42,21 @@ function isClean(opts) {
   return r.status === 0 && r.stdout.trim() === '';
 }
 
+/**
+ * base branch 자동 감지 — 'main' 하드코딩 제거 (master 기반 repo 지원).
+ * 우선순위: main → master → origin/HEAD → 'main'(최후 폴백).
+ */
+function detectBaseBranch(opts = {}) {
+  if (hasBranch('main', opts)) return 'main';
+  if (hasBranch('master', opts)) return 'master';
+  const r = git(['symbolic-ref', '--short', 'refs/remotes/origin/HEAD'], opts);
+  if (r.status === 0) {
+    const ref = (r.stdout || '').trim().replace(/^origin\//, '');
+    if (ref) return ref;
+  }
+  return 'main';
+}
+
 /** 머지 진행 중인지 감지 (MERGE_HEAD 존재). P1.5+ 게이트용. */
 function isMergeInProgress(opts = {}) {
   return git(['rev-parse', '-q', '--verify', 'MERGE_HEAD'], opts).status === 0;
@@ -141,6 +156,53 @@ function removeWorktree(taskId, opts = {}) {
   return { ok: true };
 }
 
+/**
+ * prepare 재진입 시 stale worktree 정리 (데이터 안전). createWorktree 계약은 그대로 두고
+ * 그 직전에 호출해 "worktree 이미 존재" cruft 를 안전하게 회수한다.
+ * - git worktree prune (이미 삭제된 dir 의 admin 메타 정리)
+ * - 대상 dir 이 남아있으면: base 대비 미머지 커밋이 없을 때만 제거(reclaimed),
+ *   미머지 커밋이 있으면 보존하고 ok:false (자동 파괴 금지 — 5철학).
+ * @returns {{ok:true, action:'clean'|'reclaimed'} | {ok:false, preserved?:boolean, error:string}}
+ */
+function reconcileWorktree(taskId, baseBranch, opts = {}) {
+  if (!TASK_ID_RE.test(taskId)) {
+    return { ok: false, error: `task_id 형식 위반: ${taskId}` };
+  }
+  const cwd = opts.cwd || process.cwd();
+  const branchName = `pact/${taskId}`;
+  const wtPath = path.join(WORKTREE_BASE, taskId);
+  const absPath = path.join(cwd, wtPath);
+
+  git(['worktree', 'prune'], opts);
+
+  if (!fs.existsSync(absPath)) {
+    return { ok: true, action: 'clean' };
+  }
+
+  // 미머지 커밋 검사 — 브랜치 없으면 git status!=0 → 미머지 없음으로 간주(안전 회수).
+  const log = git(['log', '--oneline', `${baseBranch}..${branchName}`], opts);
+  const hasUnmerged = log.status === 0 && (log.stdout || '').trim() !== '';
+  if (hasUnmerged) {
+    return {
+      ok: false,
+      preserved: true,
+      error: `worktree 이미 존재 + 미머지 커밋 있음 (보존): ${wtPath} — /pact:resume 또는 수동 정리`,
+    };
+  }
+
+  // 미머지 작업 없음 → 안전하게 회수 (worktree remove + branch -D + 잔재 rm)
+  removeWorktree(taskId, { ...opts, force: true });
+  if (fs.existsSync(absPath)) {
+    try { fs.rmSync(absPath, { recursive: true, force: true }); } catch { /* ignore */ }
+  }
+  git(['branch', '-D', branchName], opts);
+
+  if (fs.existsSync(absPath)) {
+    return { ok: false, error: `worktree 회수 실패: ${wtPath}` };
+  }
+  return { ok: true, action: 'reclaimed' };
+}
+
 /** 활성 worktree 목록. main worktree는 제외, .pact/worktrees/<id> 형식만 반환. */
 function listWorktrees(opts = {}) {
   const cwd = opts.cwd || process.cwd();
@@ -183,6 +245,8 @@ module.exports = {
   removeWorktree,
   listWorktrees,
   isMergeInProgress,
+  detectBaseBranch,
+  reconcileWorktree,
   TASK_ID_RE,
   WORKTREE_BASE,
 };

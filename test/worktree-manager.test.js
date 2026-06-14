@@ -14,6 +14,8 @@ const {
   createWorktree,
   removeWorktree,
   listWorktrees,
+  detectBaseBranch,
+  reconcileWorktree,
 } = require('../scripts/worktree-manager.js');
 
 function makeRepo() {
@@ -181,5 +183,64 @@ test('removeWorktree — node_modules symlink이 있어도 정리 성공', () =>
     const r = removeWorktree('TEST-001', { cwd: repo });
     assert.equal(r.ok, true, JSON.stringify(r));
     assert.equal(fs.existsSync(path.join(repo, '.pact/worktrees/TEST-001')), false);
+  } finally { cleanup(repo); }
+});
+
+// ─── detectBaseBranch (base_branch 하드코딩 제거) ──────────
+test('detectBaseBranch — main 있으면 main', () => {
+  const repo = makeRepo(); // git init -b main
+  try {
+    assert.equal(detectBaseBranch({ cwd: repo }), 'main');
+  } finally { cleanup(repo); }
+});
+
+test('detectBaseBranch — main 없고 master면 master', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pact-wt-master-'));
+  try {
+    execSync('git init -b master', { cwd: dir, stdio: 'ignore' });
+    execSync('git config user.email t@t.t && git config user.name test', { cwd: dir, stdio: 'ignore', shell: true });
+    fs.writeFileSync(path.join(dir, 'README.md'), '# t\n');
+    execSync('git add . && git commit -m init', { cwd: dir, stdio: 'ignore', shell: true });
+    assert.equal(detectBaseBranch({ cwd: dir }), 'master');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+// ─── reconcileWorktree (prepare 재진입 stale 자가치유, 데이터 안전) ──────
+test('reconcileWorktree — worktree 없으면 clean', () => {
+  const repo = makeRepo();
+  try {
+    const r = reconcileWorktree('PROJ-001', 'main', { cwd: repo });
+    assert.equal(r.ok, true);
+    assert.equal(r.action, 'clean');
+  } finally { cleanup(repo); }
+});
+
+test('reconcileWorktree — 미머지 커밋 없는 stale worktree는 회수(reclaimed)', () => {
+  const repo = makeRepo();
+  try {
+    const first = createWorktree('PROJ-001', 'main', { cwd: repo });
+    assert.equal(first.ok, true);
+    // 커밋 안 함(미머지 작업 없음) → 회수 가능해야
+    const r = reconcileWorktree('PROJ-001', 'main', { cwd: repo });
+    assert.equal(r.ok, true, `reclaimed 실패: ${r.error}`);
+    assert.equal(r.action, 'reclaimed');
+    assert.equal(fs.existsSync(path.join(repo, '.pact/worktrees/PROJ-001')), false, '회수 후 dir 없어야');
+    // 회수 후 재생성 성공
+    const again = createWorktree('PROJ-001', 'main', { cwd: repo });
+    assert.equal(again.ok, true, `재생성 실패: ${again.error}`);
+  } finally { cleanup(repo); }
+});
+
+test('reconcileWorktree — 미머지 커밋 있는 worktree는 보존하고 ok:false (데이터 안전)', () => {
+  const repo = makeRepo();
+  try {
+    const first = createWorktree('PROJ-002', 'main', { cwd: repo });
+    const wtAbs = path.join(repo, first.working_dir);
+    fs.writeFileSync(path.join(wtAbs, 'work.txt'), 'important\n');
+    execSync('git add . && git commit -m "unmerged work"', { cwd: wtAbs, stdio: 'ignore', shell: true });
+    const r = reconcileWorktree('PROJ-002', 'main', { cwd: repo });
+    assert.equal(r.ok, false, '미머지 커밋 있으면 회수 거부');
+    assert.equal(r.preserved, true);
+    assert.ok(fs.existsSync(path.join(wtAbs, 'work.txt')), '미머지 작업 보존돼야');
   } finally { cleanup(repo); }
 });

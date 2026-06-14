@@ -9,6 +9,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { writeJsonAtomic } = require('./lib/atomic-write.js');
 
 function lockPath(cwd, taskId) {
   return path.join(cwd, '.pact', 'runs', taskId, 'lock.pid');
@@ -76,7 +77,7 @@ function acquireLock(taskId, opts = {}) {
     session_label: opts.sessionLabel || null,
     acquired_at: new Date().toISOString(),
   };
-  fs.writeFileSync(file, JSON.stringify(payload, null, 2) + '\n');
+  writeJsonAtomic(file, payload); // 원자적 — 절단된 lock 파일 방지
   return { ok: true, file, action };
 }
 
@@ -201,7 +202,7 @@ function acquireCycleLock(opts = {}) {
     stage: opts.stage || null,
     acquired_at: new Date().toISOString(),
   };
-  fs.writeFileSync(file, JSON.stringify(payload, null, 2) + '\n');
+  writeJsonAtomic(file, payload); // 원자적 — 절단된 cycle.lock 방지
   return { ok: true, file, action };
 }
 

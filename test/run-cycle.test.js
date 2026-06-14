@@ -415,3 +415,60 @@ test('ADR-049 — report.md가 10줄 미만이면 reject', () => {
     );
   } finally { cleanupProject(dir); }
 });
+
+// ─── cycle.lock 누수 (finally 보장) ──────────────────────
+test('run-cycle prepare — pactStage 실패해도 cycle.lock 누수 없음 (finally 보장)', () => {
+  const dir = makeProject();
+  try {
+    // preflight는 통과시키되 doPrepare의 task-parse 단계에서 실패하게:
+    // 중복 키(priority 2회) → yaml-mini throw → parse-tasks가 task-parse 에러로 기록
+    const md = [
+      '# TASKS', '',
+      '## BAD-001  bad task', '',
+      '```yaml',
+      'priority: P0',
+      'priority: P1',
+      'allowed_paths: [src/a.ts]',
+      '```', '',
+    ].join('\n');
+    fs.writeFileSync(path.join(dir, 'TASKS.md'), md);
+    sh('git add TASKS.md && git commit -m bad', { cwd: dir });
+
+    const r = runPact(['run-cycle', 'prepare'], dir);
+    assert.equal(r.status, 1, `stdout: ${r.stdout}`);
+    const out = JSON.parse(r.stdout);
+    assert.equal(out.ok, false);
+    assert.equal(out.stage, 'task-parse', `stage가 task-parse 여야 (lock 획득 후 실패): ${JSON.stringify(out)}`);
+
+    // 핵심: cycle.lock이 finally로 해제됐어야 함 (process.exit가 finally를 건너뛰면 누수)
+    assert.equal(
+      fs.existsSync(path.join(dir, '.pact/cycle.lock')),
+      false,
+      'pactStage 실패 후 cycle.lock 누수됨',
+    );
+  } finally { cleanupProject(dir); }
+});
+
+// ─── worktree 자가치유 (재진입 stale cruft) ──────────────
+test('run-cycle prepare — stale worktree(미머지 없음) 있어도 reconcile 후 성공', () => {
+  const dir = makeProject();
+  try {
+    // 실제 pact 처럼 .pact/ gitignore (stale worktree가 tree를 dirty하게 안 만들게)
+    fs.writeFileSync(path.join(dir, '.gitignore'), '.pact/\n');
+    sh('git add .gitignore && git commit -m gitignore', { cwd: dir });
+    writeTasks(dir, [{ id: 'PROJ-001', allowed_paths: ['src/a.ts'] }]);
+
+    // 과거 cycle 잔재: PROJ-001 worktree가 이미 존재 (커밋 없음=미머지 없음)
+    fs.mkdirSync(path.join(dir, '.pact/worktrees'), { recursive: true });
+    sh('git worktree add -b pact/PROJ-001 .pact/worktrees/PROJ-001 main', { cwd: dir });
+    assert.ok(fs.existsSync(path.join(dir, '.pact/worktrees/PROJ-001')), '사전조건: stale worktree 존재');
+
+    const r = runPact(['run-cycle', 'prepare'], dir);
+    assert.equal(r.status, 0, `reconcile 후 성공해야: ${r.stdout}\n${r.stderr}`);
+    const out = JSON.parse(r.stdout);
+    assert.equal(out.ok, true);
+    assert.equal(out.task_prompts.length, 1);
+    assert.equal(out.task_prompts[0].task_id, 'PROJ-001');
+    assert.ok(fs.existsSync(path.join(dir, out.task_prompts[0].working_dir)), '재생성된 worktree 존재');
+  } finally { cleanupProject(dir); }
+});

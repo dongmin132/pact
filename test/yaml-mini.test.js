@@ -105,3 +105,10 @@ related_tasks:
   assert.equal(r.owner_paths.length, 2);
   assert.deepEqual(r.shared_with, []);
 });
+
+test('중복 키는 throw (버그 B — silent last-wins 방지)', () => {
+  // 같은 키가 두 번 나오면 조용히 마지막 값을 채택하지 말고 에러로 표면화
+  assert.throws(() => load('status: done\nstatus: todo'), /duplicate key: status/);
+  // 정상(중복 없음)은 영향 없어야 함
+  assert.deepEqual(load('a: 1\nb: 2'), { a: 1, b: 2 });
+});

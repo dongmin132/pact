@@ -102,6 +102,11 @@ function parseMapping(lines, baseIndent) {
     const colon = trimmed.indexOf(':');
     if (colon === -1) { i++; continue; }
     const key = trimmed.slice(0, colon).trim();
+    // 중복 키는 조용히 마지막 값을 채택하지 않고 에러로 표면화 (버그 B).
+    // parse-tasks.js 가 이 예외를 task-parse 에러로 잡아 prepare 를 멈춘다.
+    if (Object.prototype.hasOwnProperty.call(obj, key)) {
+      throw new Error(`duplicate key: ${key}`);
+    }
     const valStr = trimmed.slice(colon + 1).trim();
     if (valStr) {
       obj[key] = parseScalar(valStr);
