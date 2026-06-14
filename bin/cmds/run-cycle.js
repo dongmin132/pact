@@ -27,7 +27,7 @@ const {
 const { prepareWorkerSpawn } = require(path.join(PLUGIN_ROOT, 'scripts', 'spawn-worker.js'));
 const { collectLongDocs, DEFAULT_MAX_LINES } = require(path.join(PLUGIN_ROOT, 'bin', 'cmds', 'context-guard.js'));
 const { planMerge } = require(path.join(PLUGIN_ROOT, 'bin', 'cmds', 'merge.js'));
-const { mergeAll } = require(path.join(PLUGIN_ROOT, 'scripts', 'merge-coordinator.js'));
+const { mergeAll, abortMerge } = require(path.join(PLUGIN_ROOT, 'scripts', 'merge-coordinator.js'));
 const { acquireCycleLock, releaseCycleLock, cleanStaleLocks } = require(path.join(PLUGIN_ROOT, 'scripts', 'lock.js'));
 const { setTaskStatus } = require(path.join(PLUGIN_ROOT, 'scripts', 'task-sources.js'));
 const { writeJsonAtomic } = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'atomic-write.js'));
@@ -308,6 +308,28 @@ function collect(args, opts = {}) {
 
 function doCollect(args, opts, cwd, cbPath) {
   const currentBatch = JSON.parse(fs.readFileSync(cbPath, 'utf8'));
+  const journalPath = path.join(cwd, '.pact/collect-journal.json');
+
+  // 재진입 복구: 이전 collect 가 머지 도중 크래시했나? (MERGE_HEAD 잔존)
+  if (isMergeInProgress({ cwd })) {
+    if (fs.existsSync(journalPath)) {
+      // journal 존재 = 우리(이전 collect)가 시작한 dangling 머지 → abort 후 깨끗이 재개.
+      abortMerge({ cwd });
+    } else {
+      // journal 없음 = pact 가 시작한 머지가 아님(외부/수동) → 건드리지 않고 정지.
+      return fail('merge-in-progress', [{
+        message: '외부 머지 진행 중(MERGE_HEAD) — pact 가 시작한 머지가 아님',
+        fix: '/pact:resolve-conflict 또는 git merge --abort 후 재시도',
+      }]);
+    }
+  }
+
+  // 머지 시작 전 저널 기록 — 크래시 시 "우리 머지"임을 표시 (atomic).
+  writeJsonAtomic(journalPath, {
+    phase: 'merging',
+    task_ids: currentBatch.task_ids,
+    started_at: new Date().toISOString(),
+  });
 
   const plan = planMerge({ cwd, taskIds: currentBatch.task_ids });
   const result = mergeAll(plan.eligible, { cwd });
@@ -369,6 +391,7 @@ function doCollect(args, opts, cwd, cbPath) {
     ? commitStatusChanges(cwd, statusUpdates)
     : undefined;
 
+  try { fs.unlinkSync(journalPath); } catch {}
   try { fs.unlinkSync(cbPath); } catch {}
 
   emit({

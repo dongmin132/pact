@@ -541,3 +541,76 @@ test('run-cycle collect (플래그 없음) — 자동커밋 안 함 (인터랙�
     assert.notEqual(porcelain, '', '플래그 없으면 status 변경이 미커밋(dirty)');
   } finally { cleanupProject(dir); }
 });
+
+// ─── collect 재진입: dangling 머지(크래시) 복구 ──────────────
+function mkStatus(id, file) {
+  return JSON.stringify({
+    task_id: id, status: 'done', branch_name: `pact/${id}`, commits_made: 1,
+    clean_for_merge: true, files_changed: [file], files_attempted_outside_scope: [],
+    verify_results: { lint: 'pass', typecheck: 'pass', test: 'pass', build: 'pass' },
+    tdd_evidence: { red_observed: false, green_observed: false }, decisions: [], blockers: [],
+    tokens_used: 100, completed_at: new Date().toISOString(),
+  }, null, 2);
+}
+function mkReport(id) {
+  return ['# ' + id, '## what', 'x', '## why', 'y', '## decisions', '- none',
+    '## verify', '- lint pass', '- tc pass', '- test pass', '- build pass'].join('\n\n');
+}
+function hasMergeHead(dir) {
+  return execSync('git rev-parse -q --verify MERGE_HEAD || true', { cwd: dir, encoding: 'utf8' }).trim() !== '';
+}
+
+test('run-cycle collect — 크래시 dangling 머지 + journal 있으면 abort 후 재개 성공', () => {
+  const dir = makeProject();
+  try {
+    fs.writeFileSync(path.join(dir, '.gitignore'), '.pact/\n');
+    sh('git add .gitignore && git commit -m gitignore', { cwd: dir });
+    writeTasks(dir, [{ id: 'PROJ-001', allowed_paths: ['src/a.ts'] }, { id: 'PROJ-002', allowed_paths: ['src/b.ts'] }]);
+    const prepOut = JSON.parse(runPact(['run-cycle', 'prepare'], dir).stdout);
+    for (const tp of prepOut.task_prompts) {
+      const wtAbs = path.join(dir, tp.working_dir);
+      const fname = tp.task_id === 'PROJ-001' ? 'src/a.ts' : 'src/b.ts';
+      fs.mkdirSync(path.join(wtAbs, 'src'), { recursive: true });
+      fs.writeFileSync(path.join(wtAbs, fname), `export const ${tp.task_id.replace('-', '_')}=1;\n`);
+      sh(`git add . && git commit -m "${tp.task_id}"`, { cwd: wtAbs });
+      fs.writeFileSync(path.join(dir, tp.status_path), mkStatus(tp.task_id, fname));
+      fs.writeFileSync(path.join(dir, tp.report_path), mkReport(tp.task_id));
+    }
+    // 크래시 시뮬: PROJ-001 머지를 미커밋 상태로 남김(dangling) + journal
+    sh('git merge --no-commit --no-ff pact/PROJ-001', { cwd: dir });
+    assert.equal(hasMergeHead(dir), true, '사전: dangling MERGE_HEAD 존재');
+    fs.writeFileSync(path.join(dir, '.pact/collect-journal.json'), JSON.stringify({ phase: 'merging' }));
+
+    const col = runPact(['run-cycle', 'collect'], dir);
+    assert.equal(col.status, 0, `${col.stdout}\n${col.stderr}`);
+    const out = JSON.parse(col.stdout);
+    assert.equal(out.conflicted, null, 'dangling abort 후 정상 머지');
+    assert.deepEqual(out.merged.sort(), ['PROJ-001', 'PROJ-002']);
+    assert.equal(hasMergeHead(dir), false, 'MERGE_HEAD 정리됨');
+    assert.equal(fs.existsSync(path.join(dir, '.pact/collect-journal.json')), false, 'journal 정리됨');
+  } finally { cleanupProject(dir); }
+});
+
+test('run-cycle collect — journal 없는 외부 머지(MERGE_HEAD)는 건드리지 않고 정지', () => {
+  const dir = makeProject();
+  try {
+    fs.writeFileSync(path.join(dir, '.gitignore'), '.pact/\n');
+    sh('git add .gitignore && git commit -m gitignore', { cwd: dir });
+    writeTasks(dir, [{ id: 'PROJ-001', allowed_paths: ['src/a.ts'] }]);
+    const prepOut = JSON.parse(runPact(['run-cycle', 'prepare'], dir).stdout);
+    const tp = prepOut.task_prompts[0];
+    const wtAbs = path.join(dir, tp.working_dir);
+    fs.mkdirSync(path.join(wtAbs, 'src'), { recursive: true });
+    fs.writeFileSync(path.join(wtAbs, 'src/a.ts'), 'export const x=1;\n');
+    sh('git add . && git commit -m w', { cwd: wtAbs });
+    // 외부 dangling 머지 (journal 없음)
+    sh('git merge --no-commit --no-ff pact/PROJ-001', { cwd: dir });
+    assert.equal(hasMergeHead(dir), true);
+
+    const col = runPact(['run-cycle', 'collect'], dir);
+    assert.equal(col.status, 1, `${col.stdout}`);
+    const out = JSON.parse(col.stdout);
+    assert.equal(out.stage, 'merge-in-progress');
+    assert.equal(hasMergeHead(dir), true, '외부 머지는 abort 안 하고 보존');
+  } finally { cleanupProject(dir); }
+});
