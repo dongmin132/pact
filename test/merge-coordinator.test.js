@@ -148,3 +148,30 @@ test('abortMerge — 충돌 상태 정리', () => {
     assert.equal(status.trim(), '');
   } finally { cleanupRepo(repo); }
 });
+
+// ─── 버그 #6: branch 없음을 충돌로 오분류 X (재진입 안전) ──────────
+test('mergeAll — branch 없는 task(이미 머지+정리됨)는 충돌 아니라 already_merged, 진행 계속', () => {
+  const repo = makeRepo();
+  try {
+    workInWorktree(repo, 'TEST-001', 'a.txt', 'A\n');   // 정상 브랜치
+    // TEST-002: 브랜치 없음 (이전 cycle 머지 후 branch -D 된 상황). createWorktree 안 함.
+    workInWorktree(repo, 'TEST-003', 'c.txt', 'C\n');   // 정상 브랜치
+
+    const r = mergeAll(['TEST-001', 'TEST-002', 'TEST-003'], { cwd: repo });
+    assert.equal(r.conflicted, null, 'branch 없음을 충돌로 오분류하면 안 됨');
+    assert.deepEqual(r.merged.sort(), ['TEST-001', 'TEST-003'], '나머지는 정상 머지');
+    assert.deepEqual(r.already_merged, ['TEST-002'], 'branch 없는 건 already_merged');
+    assert.deepEqual(r.skipped, [], 'stop 안 했으니 skipped 없음');
+    assert.ok(fs.existsSync(path.join(repo, 'a.txt')));
+    assert.ok(fs.existsSync(path.join(repo, 'c.txt')));
+  } finally { cleanupRepo(repo); }
+});
+
+test('mergeWorktree — branch 없으면 ok:false + branch_missing 플래그 (계약 유지)', () => {
+  const repo = makeRepo();
+  try {
+    const r = mergeWorktree('NONE-001', { cwd: repo });
+    assert.equal(r.ok, false);
+    assert.equal(r.branch_missing, true, 'branch 없음 구분 플래그');
+  } finally { cleanupRepo(repo); }
+});

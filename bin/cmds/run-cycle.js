@@ -315,8 +315,10 @@ function doCollect(args, opts, cwd, cbPath) {
   // ADR-048 — 머지 성공한 task의 source frontmatter에 status:done 박기.
   // (executeMerge 경로는 이미 동일 로직 수행 중; doCollect만 누락이었음.)
   // 다음 cycle의 prepare가 같은 task_id를 후보로 다시 잡지 않게 막는다.
+  // merged + already_merged(재진입: 이전 cycle 에 이미 머지됨) 모두 source status done 보장(멱등).
+  const alreadyMerged = result.already_merged || [];
   const statusUpdates = [];
-  for (const id of result.merged) {
+  for (const id of [...result.merged, ...alreadyMerged]) {
     const r = setTaskStatus(id, 'done', { cwd });
     statusUpdates.push({ task_id: id, ok: r.ok, action: r.action, file: r.file, error: r.error });
   }
@@ -325,6 +327,7 @@ function doCollect(args, opts, cwd, cbPath) {
     timestamp: new Date().toISOString(),
     eligible: plan.eligible.length,
     merged: result.merged,
+    already_merged: alreadyMerged,
     conflicted: result.conflicted,
     skipped: result.skipped,
     rejected: plan.rejected,
@@ -371,6 +374,7 @@ function doCollect(args, opts, cwd, cbPath) {
   emit({
     ok: true,
     merged: result.merged,
+    already_merged: alreadyMerged,
     rejected: plan.rejected,
     conflicted: result.conflicted,
     skipped: result.skipped,

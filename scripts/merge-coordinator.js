@@ -29,7 +29,10 @@ function mergeWorktree(taskId, opts = {}) {
   const branchName = `pact/${taskId}`;
 
   if (!branchExists(branchName, opts)) {
-    return { ok: false, error: `branch not found: ${branchName}` };
+    // pact 브랜치는 머지 성공 후 removeWorktree 가 branch -D 로만 삭제한다.
+    // 따라서 collect 재진입에서 branch 없음 = "이전 cycle 에 이미 머지+정리됨" 신호.
+    // branch_missing 플래그로 구분 (호출부 mergeAll 이 충돌이 아닌 already_merged 로 처리).
+    return { ok: false, branch_missing: true, branch_name: branchName, error: `branch not found: ${branchName}` };
   }
 
   const r = git(['merge', '--no-ff', '-m', `pact: merge ${branchName}`, branchName], opts);
@@ -50,11 +53,13 @@ function mergeWorktree(taskId, opts = {}) {
 }
 
 /**
- * 다수 worktree 순차 머지. 충돌 시 즉시 stop.
- * @returns {{merged: string[], conflicted: object|null, skipped: string[]}}
+ * 다수 worktree 순차 머지. 실제 충돌 시 즉시 stop.
+ * branch 없음(이미 머지+정리됨)은 충돌이 아니라 already_merged 로 처리하고 계속 — 재진입 안전(버그 #6).
+ * @returns {{merged: string[], already_merged: string[], conflicted: object|null, skipped: string[]}}
  */
 function mergeAll(taskIds, opts = {}) {
   const merged = [];
+  const alreadyMerged = [];
   const skipped = [];
   let conflicted = null;
 
@@ -63,6 +68,9 @@ function mergeAll(taskIds, opts = {}) {
     const r = mergeWorktree(id, opts);
     if (r.ok) {
       merged.push(id);
+    } else if (r.branch_missing) {
+      // 이전 cycle 에 이미 머지+정리됨 — 충돌 아님, 멈추지 않고 계속.
+      alreadyMerged.push(id);
     } else {
       conflicted = {
         task_id: id,
@@ -75,7 +83,7 @@ function mergeAll(taskIds, opts = {}) {
     }
   }
 
-  return { merged, conflicted, skipped };
+  return { merged, already_merged: alreadyMerged, conflicted, skipped };
 }
 
 /** git merge --abort. 충돌 상태 정리. */
