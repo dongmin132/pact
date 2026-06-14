@@ -10,6 +10,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { spawnSync } = require('child_process');
 
 const PLUGIN_ROOT = path.join(__dirname, '..', '..');
 
@@ -35,6 +36,24 @@ const CURRENT_BATCH_FILE = '.pact/current_batch.json';
 
 function emit(obj) {
   process.stdout.write(JSON.stringify(obj, null, 2) + '\n');
+}
+
+/**
+ * status 변경(setTaskStatus 가 건드린 task source 파일)을 자동 커밋한다.
+ * 무인 멀티사이클 전제 — 안 하면 다음 cycle preflight(isClean)가 'uncommitted'로 막힘.
+ * 건드린 파일만 stage (비-pact 변경은 휩쓸지 않음). 스테이징 없으면 skip.
+ */
+function commitStatusChanges(cwd, statusUpdates) {
+  const files = [...new Set((statusUpdates || []).filter(s => s.ok && s.file).map(s => s.file))];
+  if (files.length === 0) return { committed: false, reason: 'no status files' };
+  const add = spawnSync('git', ['add', ...files], { cwd, encoding: 'utf8' });
+  if (add.status !== 0) return { committed: false, error: (add.stderr || '').trim() || 'git add 실패' };
+  // 실제 스테이징된 변경이 있나 (exit 0 = 변경 없음)
+  const staged = spawnSync('git', ['diff', '--cached', '--quiet'], { cwd });
+  if (staged.status === 0) return { committed: false, reason: 'nothing staged' };
+  const commit = spawnSync('git', ['commit', '-m', 'pact: cycle status updates'], { cwd, encoding: 'utf8' });
+  if (commit.status !== 0) return { committed: false, error: (commit.stderr || '').trim() || 'git commit 실패' };
+  return { committed: true, files };
 }
 
 function fail(stage, errors) {
@@ -342,6 +361,11 @@ function doCollect(args, opts, cwd, cbPath) {
     } catch { /* skip malformed */ }
   }
 
+  // 무인 멀티사이클: status 변경 자동커밋 (--commit-status). 다음 cycle preflight(isClean) 통과용.
+  const statusCommit = args.includes('--commit-status')
+    ? commitStatusChanges(cwd, statusUpdates)
+    : undefined;
+
   try { fs.unlinkSync(cbPath); } catch {}
 
   emit({
@@ -353,6 +377,7 @@ function doCollect(args, opts, cwd, cbPath) {
     failures,
     cleanup,
     status_updates: statusUpdates,
+    status_commit: statusCommit,
     verification_summary: verification,
     decisions_to_record: decisions,
   });

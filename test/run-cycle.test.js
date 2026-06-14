@@ -472,3 +472,72 @@ test('run-cycle prepare — stale worktree(미머지 없음) 있어도 reconcile
     assert.ok(fs.existsSync(path.join(dir, out.task_prompts[0].working_dir)), '재생성된 worktree 존재');
   } finally { cleanupProject(dir); }
 });
+
+// ─── collect --commit-status (무인 멀티사이클 전제: status 변경 자동커밋) ──
+test('run-cycle collect --commit-status — status 변경 커밋 → tree clean → 다음 prepare 통과', () => {
+  const dir = makeProject();
+  try {
+    fs.writeFileSync(path.join(dir, '.gitignore'), '.pact/\n');
+    sh('git add .gitignore && git commit -m gitignore', { cwd: dir });
+    writeTasks(dir, [{ id: 'PROJ-001', allowed_paths: ['src/a.ts'] }]);
+
+    const prep = runPact(['run-cycle', 'prepare'], dir);
+    const tp = JSON.parse(prep.stdout).task_prompts[0];
+    const wtAbs = path.join(dir, tp.working_dir);
+    fs.mkdirSync(path.join(wtAbs, 'src'), { recursive: true });
+    fs.writeFileSync(path.join(wtAbs, 'src/a.ts'), 'export const x=1;\n');
+    sh('git add . && git commit -m work', { cwd: wtAbs });
+    fs.writeFileSync(path.join(dir, tp.status_path), JSON.stringify({
+      task_id: 'PROJ-001', status: 'done', branch_name: 'pact/PROJ-001', commits_made: 1,
+      clean_for_merge: true, files_changed: ['src/a.ts'], files_attempted_outside_scope: [],
+      verify_results: { lint: 'pass', typecheck: 'pass', test: 'pass', build: 'pass' },
+      tdd_evidence: { red_observed: false, green_observed: false }, decisions: [], blockers: [],
+      tokens_used: 100, completed_at: new Date().toISOString(),
+    }, null, 2));
+    fs.writeFileSync(path.join(dir, tp.report_path),
+      ['# r', '## what', 'x', '## why', 'y', '## decisions', '- none',
+       '## verify', '- lint pass', '- tc pass', '- test pass', '- build pass'].join('\n\n'));
+
+    const col = runPact(['run-cycle', 'collect', '--commit-status'], dir);
+    assert.equal(col.status, 0, col.stderr);
+    const colOut = JSON.parse(col.stdout);
+    assert.deepEqual(colOut.merged, ['PROJ-001']);
+    assert.ok(colOut.status_commit && colOut.status_commit.committed === true,
+      `status_commit.committed=true 여야: ${JSON.stringify(colOut.status_commit)}`);
+
+    // 핵심: tree가 clean → 다음 cycle preflight(isClean) 통과
+    const porcelain = execSync('git status --porcelain', { cwd: dir, encoding: 'utf8' }).trim();
+    assert.equal(porcelain, '', `collect 후 tree clean 이어야: "${porcelain}"`);
+  } finally { cleanupProject(dir); }
+});
+
+test('run-cycle collect (플래그 없음) — 자동커밋 안 함 (인터랙티브 동작 불변)', () => {
+  const dir = makeProject();
+  try {
+    fs.writeFileSync(path.join(dir, '.gitignore'), '.pact/\n');
+    sh('git add .gitignore && git commit -m gitignore', { cwd: dir });
+    writeTasks(dir, [{ id: 'PROJ-001', allowed_paths: ['src/a.ts'] }]);
+    const prep = runPact(['run-cycle', 'prepare'], dir);
+    const tp = JSON.parse(prep.stdout).task_prompts[0];
+    const wtAbs = path.join(dir, tp.working_dir);
+    fs.mkdirSync(path.join(wtAbs, 'src'), { recursive: true });
+    fs.writeFileSync(path.join(wtAbs, 'src/a.ts'), 'export const x=1;\n');
+    sh('git add . && git commit -m work', { cwd: wtAbs });
+    fs.writeFileSync(path.join(dir, tp.status_path), JSON.stringify({
+      task_id: 'PROJ-001', status: 'done', branch_name: 'pact/PROJ-001', commits_made: 1,
+      clean_for_merge: true, files_changed: ['src/a.ts'], files_attempted_outside_scope: [],
+      verify_results: { lint: 'pass', typecheck: 'pass', test: 'pass', build: 'pass' },
+      tdd_evidence: { red_observed: false, green_observed: false }, decisions: [], blockers: [],
+      tokens_used: 100, completed_at: new Date().toISOString(),
+    }, null, 2));
+    fs.writeFileSync(path.join(dir, tp.report_path),
+      ['# r', '## what', 'x', '## why', 'y', '## decisions', '- none',
+       '## verify', '- lint pass', '- tc pass', '- test pass', '- build pass'].join('\n\n'));
+    const col = runPact(['run-cycle', 'collect'], dir);
+    const colOut = JSON.parse(col.stdout);
+    assert.equal(colOut.status_commit, undefined, '플래그 없으면 status_commit 없음');
+    // TASKS.md status:done 변경이 커밋 안 돼 tree dirty (현행 동작)
+    const porcelain = execSync('git status --porcelain', { cwd: dir, encoding: 'utf8' }).trim();
+    assert.notEqual(porcelain, '', '플래그 없으면 status 변경이 미커밋(dirty)');
+  } finally { cleanupProject(dir); }
+});
