@@ -24,7 +24,7 @@ const {
   detectBaseBranch,
   reconcileWorktree,
 } = require(path.join(PLUGIN_ROOT, 'scripts', 'worktree-manager.js'));
-const { prepareWorkerSpawn } = require(path.join(PLUGIN_ROOT, 'scripts', 'spawn-worker.js'));
+const { prepareWorkerSpawn, makeTaskPrompt } = require(path.join(PLUGIN_ROOT, 'scripts', 'spawn-worker.js'));
 const { collectLongDocs, DEFAULT_MAX_LINES } = require(path.join(PLUGIN_ROOT, 'bin', 'cmds', 'context-guard.js'));
 const { planMerge } = require(path.join(PLUGIN_ROOT, 'bin', 'cmds', 'merge.js'));
 const { mergeAll, abortMerge } = require(path.join(PLUGIN_ROOT, 'scripts', 'merge-coordinator.js'));
@@ -90,6 +90,42 @@ function isAlreadyPrepared(cwd) {
   }
 }
 
+/**
+ * already_prepared 시 디스크의 기존 batch 로부터 task_prompts 를 재구성한다.
+ * fresh prepare 와 동일한 makeTaskPrompt 단일 소스를 써서 drift 를 원천 제거
+ * (드라이버가 자체 reconstruct 할 필요 없음). 각 task status.json 으로 done 여부도 판정.
+ */
+function rebuildTaskPrompts(cwd) {
+  const cb = JSON.parse(fs.readFileSync(path.join(cwd, CURRENT_BATCH_FILE), 'utf8'));
+  const ids = cb.task_ids || [];
+  const taskPrompts = [];
+  let allDone = ids.length > 0;
+  for (const id of ids) {
+    const runs = path.join(cwd, '.pact/runs', id);
+    const payload = JSON.parse(fs.readFileSync(path.join(runs, 'payload.json'), 'utf8'));
+    const paths = {
+      prompt_path: path.join(runs, 'prompt.md'),
+      context_path: path.join(runs, 'context.md'),
+      status_path: path.join(runs, 'status.json'),
+      report_path: path.join(runs, 'report.md'),
+    };
+    taskPrompts.push({
+      task_id: id,
+      title: payload.title || '',
+      task_prompt: makeTaskPrompt(payload, paths),
+      prompt_path: path.relative(cwd, paths.prompt_path),
+      context_path: path.relative(cwd, paths.context_path),
+      status_path: path.relative(cwd, paths.status_path),
+      report_path: path.relative(cwd, paths.report_path),
+      working_dir: payload.working_dir,
+    });
+    let done = false;
+    try { done = JSON.parse(fs.readFileSync(paths.status_path, 'utf8')).status === 'done'; } catch { /* 미완 */ }
+    if (!done) allDone = false;
+  }
+  return { task_prompts: taskPrompts, ready_to_collect: allDone, coordinator_review_needed: !!cb.coordinator_review_needed };
+}
+
 function preflight(cwd) {
   const errors = [];
 
@@ -132,11 +168,18 @@ function prepare(args, opts = {}) {
   cleanStaleLocks({ cwd });
 
   // 멱등 (v0.6.1): 이미 prepared면 skip. --force로 무시 가능.
+  // 단 task_prompts 는 항상 반환(makeTaskPrompt 단일 소스) → 드라이버 reconstruct 불필요·drift 제거.
   if (!force && isAlreadyPrepared(cwd)) {
+    const rebuilt = rebuildTaskPrompts(cwd);
     emit({
       ok: true,
       already_prepared: true,
-      message: '이미 prepare 완료 — current_batch.json + worktrees 존재. --force로 다시 진행.',
+      task_prompts: rebuilt.task_prompts,
+      ready_to_collect: rebuilt.ready_to_collect, // 모든 워커 done이면 spawn 스킵 → collect 로
+      coordinator_review_needed: rebuilt.coordinator_review_needed,
+      message: rebuilt.ready_to_collect
+        ? '이미 prepare 완료 + 모든 워커 done — collect 로 진행 권장.'
+        : '이미 prepare 완료 — 미완료 task 재개 가능 (--force 로 재생성).',
     });
     return;
   }

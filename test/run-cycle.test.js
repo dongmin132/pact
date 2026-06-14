@@ -614,3 +614,44 @@ test('run-cycle collect — journal 없는 외부 머지(MERGE_HEAD)는 건드�
     assert.equal(hasMergeHead(dir), true, '외부 머지는 abort 안 하고 보존');
   } finally { cleanupProject(dir); }
 });
+
+// ─── P2 마무리: already_prepared 도 task_prompts 반환 + ready_to_collect ──
+test('run-cycle prepare — already_prepared 도 task_prompts 반환 (drift 제거)', () => {
+  const dir = makeProject();
+  try {
+    writeTasks(dir, [{ id: 'PROJ-001', allowed_paths: ['src/a.ts'] }]);
+    const r1 = JSON.parse(runPact(['run-cycle', 'prepare'], dir).stdout);
+    assert.equal(r1.already_prepared, undefined, '첫 호출은 정상');
+    const r2 = JSON.parse(runPact(['run-cycle', 'prepare'], dir).stdout);
+    assert.equal(r2.already_prepared, true);
+    assert.ok(Array.isArray(r2.task_prompts), 'already_prepared 에도 task_prompts 있어야');
+    assert.equal(r2.task_prompts.length, 1);
+    // makeTaskPrompt 단일 소스 → "legacy SOT" 차단 줄 포함, 첫 호출과 동일(drift 없음)
+    assert.match(r2.task_prompts[0].task_prompt, /legacy SOT/i);
+    assert.equal(r2.task_prompts[0].task_prompt, r1.task_prompts[0].task_prompt);
+  } finally { cleanupProject(dir); }
+});
+
+test('run-cycle prepare — already_prepared + 모든 워커 done이면 ready_to_collect:true', () => {
+  const dir = makeProject();
+  try {
+    writeTasks(dir, [{ id: 'PROJ-001', allowed_paths: ['src/a.ts'] }]);
+    const r1 = JSON.parse(runPact(['run-cycle', 'prepare'], dir).stdout);
+    fs.writeFileSync(path.join(dir, r1.task_prompts[0].status_path), mkStatus('PROJ-001', 'src/a.ts'));
+    const r2 = JSON.parse(runPact(['run-cycle', 'prepare'], dir).stdout);
+    assert.equal(r2.already_prepared, true);
+    assert.equal(r2.ready_to_collect, true, '모두 done이면 spawn 스킵 신호');
+  } finally { cleanupProject(dir); }
+});
+
+test('run-cycle prepare — already_prepared + 일부만 done이면 ready_to_collect:false', () => {
+  const dir = makeProject();
+  try {
+    writeTasks(dir, [{ id: 'PROJ-001', allowed_paths: ['src/a.ts'] }, { id: 'PROJ-002', allowed_paths: ['src/b.ts'] }]);
+    const r1 = JSON.parse(runPact(['run-cycle', 'prepare'], dir).stdout);
+    const tp = r1.task_prompts.find(t => t.task_id === 'PROJ-001');
+    fs.writeFileSync(path.join(dir, tp.status_path), mkStatus('PROJ-001', 'src/a.ts'));
+    const r2 = JSON.parse(runPact(['run-cycle', 'prepare'], dir).stdout);
+    assert.equal(r2.ready_to_collect, false);
+  } finally { cleanupProject(dir); }
+});
