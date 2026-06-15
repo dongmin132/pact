@@ -1,7 +1,7 @@
 # 제안: continue-on-conflict (머지 충돌 시 나머지 진행)
 
-> **상태: PROPOSED — 승인 대기.** 이 문서는 동작을 바꾸지 않는다.
-> ARCHITECTURE §15(W5: "충돌 시 즉시 stop") 수정 + 사용자 승인이 선행되어야 구현한다.
+> **상태: REJECTED (2026-06-15) — 현행 "즉시 stop" 유지. 동작 변경 없음.**
+> 아래 "결정" 절 참고. 운영에서 충돌 빈도가 유의미하게 높아지면 재검토한다.
 
 ## 배경 (현재 동작)
 
@@ -32,9 +32,13 @@
 
 승인 전까지는 현행 유지: 첫 충돌에서 stop, `conflicted` 보고, `collect`가 MERGE_HEAD를 남기고(또는 P2 크래시복구가 journal로 식별), 다음 `prepare` preflight(`isMergeInProgress`)가 막아 사람이 `/pact:resolve-conflict`로 해결. **이미 충분히 안전하다.**
 
-## 결정 요청
+## 결정 (2026-06-15)
 
-- [ ] continue-on-conflict를 도입한다 (위 트레이드오프 수용, ARCHITECTURE §15 개정 동반)
-- [ ] 도입하지 않는다 (현행 "즉시 stop" 유지)
+**거부 — 현행 "즉시 stop" 유지.**
 
-승인 시 구현 범위: `mergeAll`에 `continueOnConflict` 옵션 + 충돌 시 `abortMerge` + 충돌 task 보존/escalation, `run-cycle collect --continue-on-conflict` 플래그, ARCHITECTURE §15 개정, 회귀 테스트(무충돌 다수 + 충돌 1 → 무충돌 전부 머지 / 충돌 보존 / escalation).
+근거: pact는 계약 + `allowed_paths` + MODULE_OWNERSHIP + worktree 격리로 머지 충돌을 **설계상 최소화**한다. 충돌이 드물다면 "stop + 사람 해결(`/pact:resolve-conflict`)"이 이미 안전하고, continue-on-conflict의 처리량 이득은 작은 반면 sequential 머지 거짓충돌 리스크 + ARCHITECTURE §15 개정 부담이 크다. **이득 < 리스크.**
+
+- [ ] continue-on-conflict 도입
+- [x] **도입하지 않음 (현행 유지)** ← 선택됨
+
+재검토 트리거: 실제 운영에서 머지 충돌 빈도가 유의미하게 높아질 때(즉 task 스코핑/계약이 충돌을 못 막는 증거가 쌓일 때). 그때 승인 시 구현 범위: `mergeAll`에 `continueOnConflict` 옵션 + 충돌 시 `abortMerge` + 충돌 task 보존/escalation, `run-cycle collect --continue-on-conflict` 플래그, ARCHITECTURE §15 개정, 회귀 테스트.
