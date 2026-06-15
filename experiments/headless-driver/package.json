@@ -1,0 +1,17 @@
+{
+  "name": "pact-headless-driver",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "pact 헤드리스 드라이버 PoC — Claude Agent SDK로 워커 spawn (오케스트레이터 토큰 0)",
+  "bin": {
+    "pact-driver": "./driver.mjs"
+  },
+  "scripts": {
+    "check": "node sdk-check.mjs",
+    "demo": "node driver.mjs --max=2"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "*"
+  }
+}
