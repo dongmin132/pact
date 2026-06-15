@@ -9,9 +9,17 @@ const require = createRequire(import.meta.url);
 const problems = [];
 
 // 1) Agent SDK 설치 확인 + 버전 노출 (버전 드리프트 시 옵션 키 재확인용)
+// 주의: SDK 의 package.json "exports" 가 ./package.json 서브패스를 막으므로
+// require('.../package.json') 는 ERR_PACKAGE_PATH_NOT_EXPORTED 로 실패한다.
+// 설치 확인은 require.resolve(메인 entry), 버전은 fs 로 직접 읽는다.
 let sdkVersion = null;
 try {
-  sdkVersion = require('@anthropic-ai/claude-agent-sdk/package.json').version;
+  const main = require.resolve('@anthropic-ai/claude-agent-sdk');
+  try {
+    const i = main.indexOf('@anthropic-ai/claude-agent-sdk');
+    const dir = main.slice(0, i + '@anthropic-ai/claude-agent-sdk'.length);
+    sdkVersion = JSON.parse(require('fs').readFileSync(dir + '/package.json', 'utf8')).version;
+  } catch { sdkVersion = 'installed (version unknown)'; }
 } catch {
   problems.push('@anthropic-ai/claude-agent-sdk 미설치 → cd experiments/headless-driver && npm i @anthropic-ai/claude-agent-sdk');
 }

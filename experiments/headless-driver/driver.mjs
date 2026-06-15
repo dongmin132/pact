@@ -111,7 +111,7 @@ function getTasksDemo() {
       title: `데모 task ${i + 1}`,
       task_prompt: `Create a file named poc-${i + 1}.txt in your cwd with one line: "worker ${i + 1} ran". Then stop.`,
       working_dir: wd,
-      allowed_paths: [wd], // 데모: worktree 전체 허용
+      allowed_paths: ['**'], // 데모: worktree 안 전체 허용 (worker-guard glob 기준)
     };
   });
   return { tasks, readyToCollect: false };
