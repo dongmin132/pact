@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+- **worker `maxTurns` cap 제거** — `agents/worker.md`의 `maxTurns: 60` 삭제. dense task(컴포넌트 3파일 토큰 매핑 등)에서 워커가 60턴에 잘려 부분완료+미커밋으로 작업 통째 유실되던 패턴(brewdy 028/029, `pact drive --real` 시범에서 재현). 인터랙티브는 사람이 backstop이라 턴 cap을 떼고 자연 완료까지 둔다(제거는 truncation을 완화만 하지 악화 불가). 무인 `pact drive`의 폭주 차단은 budget으로 — 별도. "워크플로우 서브에이전트처럼 끝까지 두고 폭주는 다른 축으로" 방향.
+- **worker 중간 커밋 강제** — 긴 작업을 논리 단위마다 commit하도록 `agents/worker.md`에 명시. 끊겨도 진행분이 worktree 브랜치에 보존돼 재개·검토 가능. 못 끝낼 것 같으면 부분 commit + `status=blocked`.
+
 ## v0.8.1 — 2026-06-01
 
 `decisions` 배열 schema 안내 누락 fix — brewdy cycle 3·4 worker 사고 5건 누적 (GitHub issue #3).

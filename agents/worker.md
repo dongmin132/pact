@@ -2,7 +2,6 @@
 name: worker
 description: pact 일회용 task 실행자. 메인 Claude가 spawn해서 한 task 처리하고 status.json·report.md로 보고 후 종료.
 model: sonnet
-maxTurns: 60
 tools:
   - Read
   - Write
@@ -65,9 +64,15 @@ tools:
 
 섹션: 1.무엇을 / 2.왜 / 3.핵심 코드 설명 / 4.연결 관계 / 5.새로운 개념. 비워두지 말 것.
 
+## 진행 중간 저장 (중단·한도 대비, 필수)
+
+긴 작업은 **논리 단위마다 중간 커밋**하라 — 파일 하나 완성, 한 컴포넌트 매핑 끝, RED→GREEN 한 사이클 등. 워커가 도중에 끊겨도(인터럽트·턴/시간 한도) 진행분이 worktree 브랜치에 남아 재개·검토가 가능하다. **마지막에 한 번에만 커밋하면 끊길 때 전부 날아간다** (실측: dense chunk 워커가 부분완료+미커밋으로 작업 통째 유실).
+
+끝까지 다 못 할 것 같으면 — 한 것까지 커밋하고 `status="blocked"` + `blockers`에 남은 일을 적어 종료하라. 메인/다음 워커가 이어받을 수 있게.
+
 ## 종료 직전 (필수)
 
-1. `git add . && git commit -m "<task_id>: <title>"` — `commits_made` 정확 카운트
+1. `git add . && git commit -m "<task_id>: <title>"` — `commits_made` 정확 카운트 (위에서 중간 커밋했으면 여기선 마지막 잔여분만)
 2. `git status --porcelain` clean 확인 → status.json `clean_for_merge: true`
 3. `<runs_dir>/status.json` 작성. **JSON Schema 강제** — `schemas/worker-status.schema.json`, validate-status.js가 자동 검증, 형식 위반 시 자동 blocked.
 
