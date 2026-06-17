@@ -60,11 +60,27 @@ function readContextRef(ref, opts = {}) {
     return { ref, ok: false, error: 'missing file' };
   }
   const markdown = fs.readFileSync(abs, 'utf8');
-  const content = extractAnchoredSection(markdown, anchor);
-  if (content === null) {
-    return { ref, ok: false, error: `anchor not found: ${anchor}` };
+
+  if (anchor) {
+    const content = extractAnchoredSection(markdown, anchor);
+    if (content === null) {
+      return { ref, ok: false, error: `anchor not found: ${anchor}` };
+    }
+    return { ref, ok: true, file, anchor, content };
   }
-  return { ref, ok: true, file, anchor, content };
+
+  // anchor 없음: task_id 를 암시적 anchor 로 슬라이스 시도.
+  // tasks/*.md 는 `## <task_id> ...` heading 구조라, 이게 안 되면 파일 전체(예: cleanup.md 2458줄)가
+  // 번들에 들어가 워커가 매 턴 재독 → 토큰 세금 폭증(실측 CLEANUP-029 = 147KB context.md). task 섹션만 자른다.
+  if (opts.taskId) {
+    const section = extractAnchoredSection(markdown, opts.taskId);
+    if (section) {
+      return { ref, ok: true, file, anchor: opts.taskId, content: section, auto_sliced: true };
+    }
+  }
+
+  // fallback: 전체 포함 (계약 shard 등 task_id heading 이 없는 ref — 통째 읽기 의도).
+  return { ref, ok: true, file, anchor: null, content: markdown.trim() };
 }
 
 function renderContextBundle(payload, opts = {}) {
@@ -103,13 +119,21 @@ function renderContextBundle(payload, opts = {}) {
   out.push('## Slices');
   out.push('');
   for (const ref of refs) {
-    const r = readContextRef(ref, opts);
+    const r = readContextRef(ref, { ...opts, taskId: payload.task_id });
     out.push(`### ${ref}`);
     out.push('');
     if (!r.ok) {
       out.push(`> ${r.error}`);
       out.push('');
       continue;
+    }
+    if (r.auto_sliced) {
+      out.push(`> (pact: anchor 없음 → task_id \`${r.anchor}\` 섹션만 자동 슬라이스. 전체는 \`pact slice\` 로.)`);
+      out.push('');
+    } else if (!r.anchor && r.content.split('\n').length > 200) {
+      // anchor·task_id 매칭 둘 다 없이 큰 파일을 통째 포함 — bloat 경고(잘라내진 않음, 계약 통독 보호).
+      out.push(`> ⚠️ pact: anchor 없이 전체 포함 (${r.content.split('\n').length}줄). \`${ref}#<섹션>\` 로 좁히면 워커 토큰 절감.`);
+      out.push('');
     }
     out.push(r.content);
     out.push('');
