@@ -22,7 +22,7 @@
 //   --max=N           사이클당 워커 수 (기본 3)
 //   --cycles=N        사이클 반복 (기본 1)
 //   --model=NAME      실제 워커 모델 (기본 sonnet)
-//   --timeout=SEC     워커별 타임아웃 (기본 120)
+//   --timeout=SEC     워커 hang 백스톱 (기본 1200 — 작업 안 자름, cap 은 budget)
 //   --budget=USD      누적 비용 상한 — 넘으면 정지 (기본 10)
 //   --retries=N       태스크당 재시도 (기본 1 → 최대 2회 시도)
 //   [MOCK 시연용]
@@ -88,6 +88,7 @@ function writeDriverState(patch) {
       pid: process.pid,
       updated_at: new Date().toISOString(),
       spent_usd: Number(ledger.spentUsd.toFixed(2)),
+      budget: BUDGET, // pact status 가 비용 진행률 바를 그리는 분모
       escalations: ledger.escalations.length,
       ...patch,
     });

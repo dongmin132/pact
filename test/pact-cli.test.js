@@ -166,6 +166,75 @@ test('pact status — 빈 .pact/에서도 동작', () => {
   } finally { cleanupRepo(repo); }
 });
 
+test('pact status — driver-state.json 있으면 드라이버 진행 표시 (P5 reader)', () => {
+  const repo = makeRepo();
+  try {
+    fs.mkdirSync(path.join(repo, '.pact'), { recursive: true });
+    fs.writeFileSync(path.join(repo, '.pact', 'driver-state.json'), JSON.stringify({
+      pid: process.pid, // 살아있는 pid (이 테스트 러너)
+      updated_at: '2026-06-17T05:00:00.000Z',
+      spent_usd: 0.42, escalations: 1, budget: 10,
+      phase: 'spawning', cycle: 2,
+      active_workers: ['T-001', 'T-002'], done: 3, escalated: 1,
+    }));
+    const r = runPact(['status'], repo);
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /pact drive/);   // 드라이버 대시보드 헤더
+    assert.match(r.stdout, /spawning/);     // phase
+    assert.match(r.stdout, /T-001/);        // active worker
+    assert.match(r.stdout, /0\.42/);        // 누적 비용
+    assert.match(r.stdout, /\$10/);         // budget (spent/budget 바)
+    assert.match(r.stdout, /%/);            // 진행률
+  } finally { cleanupRepo(repo); }
+});
+
+test('pact status — driver 죽었는데 phase 비종료면 stale 경고', () => {
+  const repo = makeRepo();
+  try {
+    fs.mkdirSync(path.join(repo, '.pact'), { recursive: true });
+    fs.writeFileSync(path.join(repo, '.pact', 'driver-state.json'), JSON.stringify({
+      pid: 999999, // 거의 확실히 죽은 pid
+      updated_at: '2026-06-17T05:00:00.000Z',
+      spent_usd: 0.1, escalations: 0,
+      phase: 'spawning', cycle: 1, active_workers: ['T-009'],
+    }));
+    const r = runPact(['status'], repo);
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /죽음|stale|⚠️/); // 죽은 드라이버 경고
+  } finally { cleanupRepo(repo); }
+});
+
+test('pact status — 종료(done) phase 면 죽은 pid 라도 stale 아님', () => {
+  const repo = makeRepo();
+  try {
+    fs.mkdirSync(path.join(repo, '.pact'), { recursive: true });
+    fs.writeFileSync(path.join(repo, '.pact', 'driver-state.json'), JSON.stringify({
+      pid: 999999, updated_at: '2026-06-17T05:00:00.000Z',
+      spent_usd: 0.2, escalations: 0,
+      phase: 'done', cycle: 4, active_workers: [], done: 4, escalated: 0,
+    }));
+    const r = runPact(['status'], repo);
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /done/);
+    assert.doesNotMatch(r.stdout, /죽음/); // 정상 종료(done)는 죽음 경고 X
+  } finally { cleanupRepo(repo); }
+});
+
+test('pact status --summary — driver-state 있으면 drive 필드 포함', () => {
+  const repo = makeRepo();
+  try {
+    fs.mkdirSync(path.join(repo, '.pact'), { recursive: true });
+    fs.writeFileSync(path.join(repo, '.pact', 'driver-state.json'), JSON.stringify({
+      pid: process.pid, updated_at: '2026-06-17T05:00:00.000Z',
+      spent_usd: 1.5, escalations: 0, phase: 'collecting', cycle: 3, active_workers: [],
+    }));
+    const r = runPact(['status', '--summary'], repo);
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /drive:collecting/);
+    assert.match(r.stdout, /spent:\$?1\.5/);
+  } finally { cleanupRepo(repo); }
+});
+
 test('pact status --summary — 한 줄 요약 (메인 prefix 절감용)', () => {
   const repo = makeRepo();
   try {
