@@ -42,6 +42,7 @@ const HELP = [
   '  --model=NAME    워커 모델 (기본 sonnet)',
   '  --budget=USD    누적 비용 상한 — 넘으면 정지 (기본 10)',
   '  --timeout=SEC   워커 hang 백스톱 (기본 1200 — 작업 안 자름, 진짜 cap 은 budget)',
+  '  (loop task) loop_until.count 가 0 될 때까지 fresh 워커 재투입, 정체·cap·budget 시 위임',
   '',
   '예) pact drive                        # 무료 데모(mock)',
   '    pact drive --real --max=1            # 실제 워커 1개 (SDK 통합 확인)',

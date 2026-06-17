@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Added
+- feat(drive): loop-until-dry — `loop_until` 선언 task는 측정된 진행 중 fresh 워커 자동 재투입 (질식 방지, ADR-057)
 - **`pact status` 에 헤드리스 드라이버 라이브 대시보드 (P5 reader side)** — `bin/cmds/status.js`가 `.pact/driver-state.json`을 읽어 `pact drive` 진행을 **hero 대시보드**로 표시: phase 신호등(🟢 spawning / 🟡 collecting / ✅ done / 🔴 aborted / 💀 죽음), `진행/활성/비용/갱신` 정렬 블록, **비용 진행률 바**(`$3.91 / $5 ▕█████████████░░░▏ 78%` — driver-state 에 `budget` 분모 추가), **상대시간**("3초 전"). `--summary`엔 `drive:<phase> spent:$X`. **`pact status --watch`(2초 폴링) = 둘째 터미널 라이브 모니터** — `pact drive`는 오케스트레이터가 스크립트라 채팅 narration이 없는 관측 공백을 메움. 비종료 phase인데 드라이버 pid 죽으면 stale 경고(`lock.js isAlive` 재사용). 테스트 4 (TDD).
 
 ### Fixed

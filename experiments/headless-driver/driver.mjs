@@ -30,6 +30,10 @@
 //   --flaky=ID,ID     attempt1만 실패, 재시도서 성공 → 회복 시연
 //   --deny=ID,ID      scope 밖 쓰기 시도 → 가드 deny 시연
 //   --cost=USD        mock 워커 1개당 비용 (기본 0.9) — budget 차단 시연용
+//   --loop=ID:N       [MOCK] loop task 시작 카운트(콤마 다수) — loop-until-dry 시연
+//   --loop-step=K     [MOCK] iteration당 감소량 (기본 2)
+//   --loop-max=N      [MOCK] mock loop_until.max_iterations (기본 6)
+//   --loop-stuck=ID   [MOCK] 줄지 않음 → 정체 escalate 시연
 //
 // 예) node driver.mjs --fail=DEMO-002             # 1개 죽어도 나머지 생존
 //     node driver.mjs --flaky=DEMO-001            # 재시도로 회복
