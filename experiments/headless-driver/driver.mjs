@@ -66,6 +66,14 @@ const FAIL = getSet('--fail');
 const FLAKY = getSet('--flaky');
 const DENY = getSet('--deny');
 const MOCK_COST = getNum('--cost', 0.9);
+// loop-until-dry mock 시뮬레이션 (REAL 모드는 measureCount 가 실제 loop_until.count 실행)
+const getLoopMap = (n) => new Map((getStr(n, '') || '').split(',').filter(Boolean)
+  .map((p) => { const [id, v] = p.split(':'); return [id, Math.max(0, Math.floor(Number(v) || 0))]; }));
+const LOOP = getLoopMap('--loop');          // Map<task_id, 시작 카운트>
+const LOOP_STEP = getNum('--loop-step', 2); // mock 워커가 iteration 당 줄이는 양
+const LOOP_MAX = getNum('--loop-max', 6);   // mock loop_until.max_iterations (최소 1; 0 은 기본값 복귀)
+const LOOP_STUCK = getSet('--loop-stuck');  // 줄지 않음 → 정체 시연
+const loopState = new Map(LOOP);            // 가변 남은 카운트
 
 // ---- 토큰 원장 (orchestratorTokens 는 절대 안 늘어남 = 불변식) -------------
 const ledger = { orchestratorTokens: 0, spentUsd: 0, attempts: [], escalations: [], stoppedReason: null };
@@ -113,6 +121,7 @@ function getTasksDemo() {
       task_prompt: `Create a file named poc-${i + 1}.txt in your cwd with one line: "worker ${i + 1} ran". Then stop.`,
       working_dir: wd,
       allowed_paths: ['**'], // 데모: worktree 안 전체 허용 (worker-guard glob 기준)
+      loop_until: LOOP.has(`DEMO-${String(i + 1).padStart(3, '0')}`) ? { count: 'mock', max_iterations: LOOP_MAX } : null,
     };
   });
   return { tasks, readyToCollect: false };
@@ -135,6 +144,10 @@ function getTasksPact() {
 // ---- 워커 러너 (mock) — fault 주입 -----------------------------------------
 async function runWorkerMock(task, attempt) {
   await new Promise((r) => setTimeout(r, 200 + Math.random() * 500));
+  // loop task mock: 진행 시뮬레이션 — stuck 아니면 LOOP_STEP 만큼 남은 카운트 감소
+  if (task.loop_until && loopState.has(task.task_id) && !LOOP_STUCK.has(task.task_id)) {
+    loopState.set(task.task_id, Math.max(0, loopState.get(task.task_id) - LOOP_STEP));
+  }
   // (5) 매번 실패 → escalate 시연
   if (FAIL.has(task.task_id)) throw new Error('의도된 실패(--fail)');
   // (5) attempt1만 실패 → 재시도 회복 시연
@@ -146,6 +159,17 @@ async function runWorkerMock(task, attempt) {
   }
   const usage = { input_tokens: 1200, output_tokens: 3000, cache_read_input_tokens: 800000 + Math.floor(Math.random() * 900000), cache_creation_input_tokens: 40000 };
   return { ok: true, usage, cost: MOCK_COST, turns: 8 + Math.floor(Math.random() * 25), via: 'mock' };
+}
+
+// ---- 진행 신호 측정 (결정적). MOCK: loopState / REAL: loop_until.count stdout 마지막 정수 ----
+function measureCount(task) {
+  if (!REAL) return loopState.has(task.task_id) ? loopState.get(task.task_id) : 0;
+  try {
+    const out = execSync(task.loop_until.count, { cwd: task.working_dir, encoding: 'utf8', shell: '/bin/bash' });
+    const nums = String(out).match(/-?\d+/g);
+    if (!nums) return null;                                  // 정수 없음 → 측정 불가
+    return Math.max(0, parseInt(nums[nums.length - 1], 10)); // 마지막 정수
+  } catch { return null; }                                   // 명령 에러 → 측정 불가
 }
 
 // ---- 워커 러너 (real) — SDK + 타임아웃 + 가드 + 예산 ------------------------
@@ -226,6 +250,29 @@ async function attemptTask(task) {
   return { ...last, status: 'escalated' };
 }
 
+// ---- loop-until-dry: 측정된 진행 중에만 fresh 워커 재투입 (절대 throw 안 함) ----
+// done/progress 판정은 워커 자기보고가 아니라 measureCount(결정적)로만 한다 (ADR-057, ADR-012).
+async function runLoopTask(task) {
+  const MAX_ITER = (task.loop_until && task.loop_until.max_iterations) || 6;
+  let prev = measureCount(task);
+  if (prev === null) return { task_id: task.task_id, status: 'escalated', reason: 'loop 측정 불가(초기)', salvageable: true, attempts: 0, usage: null };
+  if (prev === 0)    return { task_id: task.task_id, status: 'done', via: REAL ? 'real' : 'mock', attempts: 0, usage: null, turns: 0 };
+  let iter = 0, lastUsage = null;
+  while (true) {
+    if (ledger.spentUsd >= BUDGET) return { task_id: task.task_id, status: 'escalated', reason: `budget 소진 ($${ledger.spentUsd.toFixed(2)} ≥ $${BUDGET})`, salvageable: true, attempts: iter, usage: lastUsage };
+    let r;
+    try { r = await runWorker(task, ++iter); } catch (e) { r = { ok: false, reason: (e && e.message) || String(e), cost: 0, usage: null }; }
+    ledger.spentUsd += (r.cost || 0);
+    if (r.usage) lastUsage = r.usage;
+    const cur = measureCount(task);                    // ★ 결정적 재측정 (워커 자기보고 불신)
+    if (cur === null)  return { task_id: task.task_id, status: 'escalated', reason: 'loop 측정 불가', salvageable: true, attempts: iter, usage: lastUsage };
+    if (cur === 0)     return { task_id: task.task_id, status: 'done', via: r.via ?? (REAL ? 'real' : 'mock'), attempts: iter, usage: lastUsage, turns: r.turns ?? 0 };
+    if (cur >= prev)   return { task_id: task.task_id, status: 'escalated', reason: `정체(no-progress) — 남은 ${cur}`, salvageable: true, attempts: iter, usage: lastUsage };
+    if (iter >= MAX_ITER) return { task_id: task.task_id, status: 'escalated', reason: `max_iterations(${MAX_ITER}) — 남은 ${cur}`, salvageable: true, attempts: iter, usage: lastUsage };
+    prev = cur;
+  }
+}
+
 // ---- 메인 루프 (오케스트레이터 = 이 코드 = 토큰 0) -------------------------
 console.log('=== pact 헤드리스 드라이버 PoC v2 (하드닝) ===');
 console.log(`mode: ${REAL ? 'REAL' : 'MOCK'} | ${USE_PACT ? 'PACT' : 'DEMO'} | max=${MAX} cycles=${CYCLES} budget=$${BUDGET}(cap) timeout=${TIMEOUT_MS / 1000}s(backstop) retries=${RETRIES}`);
@@ -274,7 +321,7 @@ for (let c = 1; c <= CYCLES; c++) {
     console.log(`\ncycle ${c}: 워커 ${tasks.length}개 동시 spawn... (오케스트레이터 await = 0 토큰)`);
 
     // (1) ★ allSettled — 한 워커가 터져도 나머지 결과는 보존됨
-    const settled = await Promise.allSettled(tasks.map(attemptTask));
+    const settled = await Promise.allSettled(tasks.map((t) => t.loop_until ? runLoopTask(t) : attemptTask(t)));
     const outcomes = settled.map((s, i) =>
       s.status === 'fulfilled' ? s.value : { task_id: tasks[i].task_id, status: 'escalated', reason: 'driver 예외: ' + s.reason });
 
