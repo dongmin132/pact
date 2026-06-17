@@ -83,6 +83,14 @@
     "retry_count": {
       "type": "integer",
       "minimum": 0
+    },
+    "loop_until": {
+      "type": "object",
+      "required": ["count"],
+      "properties": {
+        "count": { "type": "string", "minLength": 1 },
+        "max_iterations": { "type": "integer", "minimum": 1 }
+      }
     }
   },
   "additionalProperties": true

@@ -1,5 +1,7 @@
 'use strict';
 
+const fs = require('fs');
+const path = require('path');
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { validateTasksAgainstSchema } = require('../scripts/parse-tasks.js');
@@ -56,4 +58,21 @@ test('dependencies kind enum 위반 거부', () => {
     dependencies: [{ task_id: 'PACT-000', kind: 'soft' }],
   }]);
   assert.equal(r.ok, false);
+});
+
+test('task.schema — loop_until 선택 필드 허용 (count + max_iterations)', () => {
+  // 긍정 round-trip: loop_until 포함 task가 실제 validator를 통과하는지 확인
+  const r = validateTasksAgainstSchema([{
+    ...VALID,
+    loop_until: { count: 'rg -c foo src/x.ts', max_iterations: 4 },
+  }]);
+  assert.equal(r.ok, true, JSON.stringify(r.errors));
+
+  // 구조 확인: validator는 loop_until 내부 required를 강제하지 않는(shallow) 커스텀 구현이므로
+  // 스키마 파일에서 직접 선언 구조를 검증한다.
+  const schema = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'schemas', 'task.schema.json'), 'utf8'));
+  assert.ok(schema.properties.loop_until, 'loop_until 프로퍼티 정의되어야 함');
+  assert.equal(schema.properties.loop_until.properties.count.type, 'string');
+  assert.equal(schema.properties.loop_until.properties.max_iterations.type, 'integer');
+  assert.ok(!schema.required.includes('loop_until'), 'loop_until은 선택 필드여야 함');
 });

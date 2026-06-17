@@ -6,6 +6,31 @@
 
 ---
 
+## ADR-057 — loop-until-dry: 측정된 진행 중에만 자동 재투입
+
+- **상태**: 채택
+- **날짜**: 2026-06-17
+- **출처**: bulk cleanup 질식 반복 (CLEANUP-009/026/029), docs/proposals/loop-until-dry.md
+- **관련**: ADR-012(워커 자기보고 불신), headless-driver
+
+### 발견 / 배경
+
+대량 기계적 정리 task에서 워커가 예산/턴 소진으로 절반만 하고 멈추는 질식 반복. 진짜 제약은 컨텍스트 윈도우가 아니라 턴/예산. 현 드라이버는 incomplete를 즉시 escalate. f5b2350(중간 커밋 강제)로 부분작업이 보존되므로 fresh 워커가 이어받으면 새 진행을 만든다.
+
+### 결정
+
+`loop_until.count`(stdout=남은 개수) 신호가 **엄격히 감소하는 동안에만** fresh 워커를 자동 재투입. 정체(cur ≥ prev)·max_iterations·budget 초과·측정 불가 시 즉시 사람 위임. done/progress는 워커 보고가 아니라 결정적 측정(measureCount)으로만 판정(ADR-012 정렬). 머지 게이트·verify는 우회 안 함. "자동 루프 금지"(2회 실패 위임)는 *실패 시 무한 재시도* 금지를 뜻하며, 측정된 단조 진행은 그 예외.
+
+### 트레이드오프
+
+- ✅ 질식 클래스 제거(각 iteration fresh 컨텍스트)
+- ✅ 엄격 감소=무한루프 수학적 차단(+max_iterations+budget 백스톱)
+- ✅ 드라이버 전용, /pact:parallel 무손상
+- ❌ opt-in 측정 신호 필요(의도된 범위)
+- ❌ 측정 명령 오작성 시 오판 → 측정 불가는 즉시 위임으로 방어
+
+---
+
 ## ADR-027 — worker prompt에 `decisions` 형식 예시 + reject 메시지에 schema path + worker self-validate CLI
 
 - **상태**: 채택
