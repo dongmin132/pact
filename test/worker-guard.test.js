@@ -56,3 +56,68 @@ test('allowed_paths 없으면 worktree 안의 쓰기는 allow', () => {
   const r = guardToolUse('Edit', { file_path: path.join(WD, 'anything.ts') }, { workingDir: WD });
   assert.equal(r.allow, true);
 });
+
+// --- Bash 리다이렉션 allowed_paths 우회 차단 (CLEANUP-029 회귀) ---------------
+
+test('Bash 리다이렉션 — allowed_paths 밖(워크트리 내) 쓰기면 deny (029 패턴)', () => {
+  const r = guardToolUse('Bash',
+    { command: 'cat > docs/ui/cleanup-011-review.md <<EOF\nverdict\nEOF' },
+    { workingDir: WD, allowedPaths: ['apps/mobile/components/meetup/**'] });
+  assert.equal(r.allow, false);
+  assert.match(r.reason, /allowed_paths|Bash/);
+});
+
+test('Bash >> append — 범위 밖이면 deny', () => {
+  const r = guardToolUse('Bash', { command: 'echo x >> docs/notes.md' },
+    { workingDir: WD, allowedPaths: ['src/**'] });
+  assert.equal(r.allow, false);
+});
+
+test('Bash tee — 범위 밖이면 deny', () => {
+  const r = guardToolUse('Bash', { command: 'echo x | tee docs/x.md' },
+    { workingDir: WD, allowedPaths: ['src/**'] });
+  assert.equal(r.allow, false);
+});
+
+test('Bash 리다이렉션 — allowed_paths 안이면 allow', () => {
+  const r = guardToolUse('Bash', { command: 'cat > src/foo.ts <<EOF\nx\nEOF' },
+    { workingDir: WD, allowedPaths: ['src/**'] });
+  assert.equal(r.allow, true);
+});
+
+test('Bash — /dev/null 리다이렉션은 쓰기 아님 (allow)', () => {
+  const r = guardToolUse('Bash', { command: 'npm test > /dev/null 2>&1' },
+    { workingDir: WD, allowedPaths: ['src/**'] });
+  assert.equal(r.allow, true);
+});
+
+test('Bash — status.json(워크트리 밖 .pact/runs)은 allow', () => {
+  const r = guardToolUse('Bash',
+    { command: 'cat > /repo/.pact/runs/PROJ-001/status.json <<EOF\n{}\nEOF' },
+    { workingDir: WD, allowedPaths: ['src/**'] });
+  assert.equal(r.allow, true);
+});
+
+test('Bash — 따옴표 안의 > 오탐 안 함 (echo "a > b")', () => {
+  const r = guardToolUse('Bash', { command: 'echo "a > b"' },
+    { workingDir: WD, allowedPaths: ['src/**'] });
+  assert.equal(r.allow, true);
+});
+
+test('Bash — heredoc 본문의 =>·> 오탐 안 함 (in-scope 코드 쓰기)', () => {
+  const r = guardToolUse('Bash',
+    { command: 'cat > src/a.ts <<EOF\nconst f = (x) => x > 1 ? a : b\nEOF' },
+    { workingDir: WD, allowedPaths: ['src/**'] });
+  assert.equal(r.allow, true);
+});
+
+test('Bash — allowed_paths 없으면 리다이렉션 검사 안 함 (allow)', () => {
+  const r = guardToolUse('Bash', { command: 'cat > docs/x.md' }, { workingDir: WD });
+  assert.equal(r.allow, true);
+});
+
+test('Bash — demo allowed_paths(**)면 어떤 쓰기도 allow', () => {
+  const r = guardToolUse('Bash', { command: 'cat > anything/x.md' },
+    { workingDir: WD, allowedPaths: ['**'] });
+  assert.equal(r.allow, true);
+});

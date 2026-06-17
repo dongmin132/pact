@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const { spawnSync } = require('child_process');
 const {
   matchesGlob,
   checkPath,
@@ -13,6 +14,7 @@ const {
   isInsideWorktree,
   isBlockedLongSotRel,
   checkWorkerRead,
+  checkBashWrite,
 } = require('../hooks/pre-tool-guard.js');
 
 test('matchesGlob — 정확 매칭', () => {
@@ -218,4 +220,83 @@ test('checkWorkerRead — 워커의 shard Read 허용', () => {
 test('checkWorkerRead — 메인 worktree에서는 Read 차단하지 않음', () => {
   const r = checkWorkerRead('TASKS.md', '/repo');
   assert.equal(r.allowed, true);
+});
+
+// --- Bash allowed_paths 우회 차단 (parallel hook 패리티, CLEANUP-029 회귀) ------
+
+const WT = '/repo/.pact/worktrees/PROJ-001';
+
+test('checkBashWrite — 범위 밖(워크트리 내) 리다이렉션 deny (029 패턴)', () => {
+  const r = checkBashWrite('cat > docs/ui/cleanup-011-review.md <<EOF\nverdict\nEOF',
+    { worktreeRoot: WT, allowedPaths: ['apps/mobile/components/meetup/**'] });
+  assert.equal(r.allowed, false);
+  assert.match(r.reason, /allowed_paths/);
+});
+
+test('checkBashWrite — 범위 안이면 allow', () => {
+  const r = checkBashWrite('cat > apps/mobile/components/meetup/X.tsx',
+    { worktreeRoot: WT, allowedPaths: ['apps/mobile/components/meetup/**'] });
+  assert.equal(r.allowed, true);
+});
+
+test('checkBashWrite — /dev/null 은 쓰기 아님 (allow)', () => {
+  const r = checkBashWrite('pnpm typecheck > /dev/null 2>&1', { worktreeRoot: WT, allowedPaths: ['apps/**'] });
+  assert.equal(r.allowed, true);
+});
+
+test('checkBashWrite — 워크트리 밖 .pact/runs(status.json) allow', () => {
+  const r = checkBashWrite('cat > /repo/.pact/runs/PROJ-001/status.json <<EOF\n{}\nEOF',
+    { worktreeRoot: WT, allowedPaths: ['apps/**'] });
+  assert.equal(r.allowed, true);
+});
+
+test('checkBashWrite — 따옴표 안 > 오탐 안 함', () => {
+  const r = checkBashWrite('echo "a > b"', { worktreeRoot: WT, allowedPaths: ['apps/**'] });
+  assert.equal(r.allowed, true);
+});
+
+test('checkBashWrite — heredoc 본문 =>·> 오탐 안 함 (in-scope 코드)', () => {
+  const r = checkBashWrite('cat > apps/a.ts <<EOF\nconst f = (x) => x > 1 ? a : b\nEOF',
+    { worktreeRoot: WT, allowedPaths: ['apps/**'] });
+  assert.equal(r.allowed, true);
+});
+
+test('checkBashWrite — allowedPaths 없으면 검사 안 함 (allow)', () => {
+  const r = checkBashWrite('cat > docs/x.md', { worktreeRoot: WT, allowedPaths: [] });
+  assert.equal(r.allowed, true);
+});
+
+// --- hook main() 통합: parallel 워커 Bash 쓰기를 실제로 deny 하는지 (stdin 호출) ---
+
+const HOOK = path.join(__dirname, '..', 'hooks', 'pre-tool-guard.js');
+function runHook(payload) {
+  return spawnSync('node', [HOOK], { input: JSON.stringify(payload), encoding: 'utf8' });
+}
+function makeWtRepo() {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'pact-hook-bash-'));
+  const wt = path.join(repo, '.pact/worktrees/PROJ-001');
+  fs.mkdirSync(wt, { recursive: true });
+  fs.mkdirSync(path.join(repo, '.pact/runs/PROJ-001'), { recursive: true });
+  fs.writeFileSync(path.join(repo, '.pact/runs/PROJ-001/payload.json'),
+    JSON.stringify({ task_id: 'PROJ-001', allowed_paths: ['apps/**'] }));
+  return { repo, wt };
+}
+
+test('hook 통합 — parallel 워커가 Bash로 범위 밖 쓰기 시 deny (parallel 보호 실증)', () => {
+  const { repo, wt } = makeWtRepo();
+  try {
+    const r = runHook({ tool_name: 'Bash', tool_input: { command: 'cat > docs/ui/review.md <<EOF\nx\nEOF' }, cwd: wt });
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /deny/);
+    assert.match(r.stdout, /allowed_paths/);
+  } finally { fs.rmSync(repo, { recursive: true, force: true }); }
+});
+
+test('hook 통합 — 범위 안 Bash 쓰기는 통과 (빈 출력)', () => {
+  const { repo, wt } = makeWtRepo();
+  try {
+    const r = runHook({ tool_name: 'Bash', tool_input: { command: 'echo hi > apps/log.txt' }, cwd: wt });
+    assert.equal(r.status, 0, r.stderr);
+    assert.doesNotMatch(r.stdout, /deny/);
+  } finally { fs.rmSync(repo, { recursive: true, force: true }); }
 });

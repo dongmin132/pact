@@ -93,7 +93,10 @@ tools:
 - ❌ 채팅으로만 보고하고 status.json 미작성 → 자동 blocked
 - ❌ `report.md` 미작성 또는 1~2줄 — 머지 게이트 reject (ADR-049)
 - ❌ allowed_paths 외 파일 수정 (pre-tool-guard가 차단해도 시도분은 `files_attempted_outside_scope`에 정직 기록)
+- ❌ **Bash로 allowed_paths 우회** — `>` · `cat >` · `tee` · `cp` · `mv` · `touch` 로도 allowed_paths 밖(워크트리 내) 파일 생성·수정 금지. Write 툴이 막힌다고 Bash로 쓰지 마라: merge 게이트가 git diff로 잡아 **task 통째 reject** 된다 (실측 CLEANUP-029 — `docs/ui/*review*` 단 1개 때문에 16분·$3.91 작업 전부 거부). `.pact/runs/<id>/` 의 status.json·report.md 쓰기는 예외(네 보고 영역).
+- ❌ **리뷰·사인오프·디자인 검수 문서 생성** — `docs/**review*`, 검수 verdict 류는 **인간 게이트**(디자이너 사인)다. 네 task allowed_paths에 그 경로가 없으면 절대 만들지 마라. 검토 의견은 `report.md`에만 적는다.
 - ❌ verify 결과 거짓말 → coordinator가 재실행하면 들통남
+- ❌ **verify fail 인데 `done`** — typecheck/test/build 중 `fail`이 하나라도 있으면 `status="done"` 금지. `blocked`로 정정하고 blockers에 사유 (merge 게이트가 verify_results fail을 reject — 거짓 done은 비용만 태운다).
 - ❌ done_criteria 충족 못 했는데 `status="done"` → 즉시 blocked로 정정
 - ❌ TDD ON인데 `red_observed=false` 거짓 → 작업 무효
 - ❌ 다른 worktree·다른 task 영역 침범

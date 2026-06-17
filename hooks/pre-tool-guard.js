@@ -151,6 +151,68 @@ function checkWorkerRead(filePath, cwd) {
   return { allowed: true };
 }
 
+// 쉘 명령에서 "파일을 새로 쓰는" 타겟 경로를 휴리스틱 추출.
+// 첫 줄만 검사 → heredoc 본문(=>·> 多)·멀티라인 코드 오탐 방지. 따옴표 안 > 무시.
+// 완벽 X (cp/mv·둘째 줄 redirection 누락) — 최종 백스톱은 merge 게이트 git-diff.
+function extractWriteTargets(cmd) {
+  const line = String(cmd || '').split('\n', 1)[0];
+  const targets = [];
+  const n = line.length;
+  let i = 0;
+  let q = null; // 현재 따옴표 상태
+  while (i < n) {
+    const c = line[i];
+    if (q) { if (c === q) q = null; i++; continue; }
+    if (c === '"' || c === "'") { q = c; i++; continue; }
+    if (c === '>') {
+      i++;
+      if (line[i] === '>') i++;                 // >> append
+      while (i < n && /\s/.test(line[i])) i++;  // 공백 skip
+      let t = '';
+      let tq = null;
+      while (i < n) {                            // 타겟 토큰 (따옴표 존중)
+        const d = line[i];
+        if (tq) { if (d === tq) { tq = null; i++; continue; } t += d; i++; continue; }
+        if (d === '"' || d === "'") { tq = d; i++; continue; }
+        if (/[\s|&;<>]/.test(d)) break;
+        t += d; i++;
+      }
+      if (t) targets.push(t);
+      continue;
+    }
+    i++;
+  }
+  let m;
+  const teeTouch = /\b(?:tee(?:\s+-\S+)*|touch)\s+("[^"]+"|'[^']+'|[^\s|&;<>]+)/g;
+  while ((m = teeTouch.exec(line))) targets.push(m[1].replace(/^['"]|['"]$/g, ''));
+  return targets.filter((t) => t && !t.startsWith('/dev/'));
+}
+
+// Bash 명령이 allowed_paths 밖(워크트리 *안*) 파일을 쓰면 deny.
+// 워크트리 밖(.pact/runs 보고영역·/dev/null)은 미검사 → status.json 쓰기 안 깨짐.
+// drive(worker-guard)·parallel(hook) 단일 소스.
+function checkBashWrite(command, opts = {}) {
+  const { worktreeRoot, allowedPaths } = opts;
+  if (!worktreeRoot || !Array.isArray(allowedPaths) || allowedPaths.length === 0) {
+    return { allowed: true };
+  }
+  const root = path.resolve(worktreeRoot);
+  const base = opts.resolveBase ? path.resolve(opts.resolveBase) : root;
+  for (const tgt of extractWriteTargets(command)) {
+    const abs = path.isAbsolute(tgt) ? tgt : path.resolve(base, tgt);
+    if (!isInsideWorktree(abs, root)) continue; // 워크트리 밖 — 보고영역·임시파일, 미검사
+    const rel = normalizeRel(path.relative(root, abs));
+    if (!allowedPaths.some((g) => matchesGlob(rel, g))) {
+      return {
+        allowed: false,
+        rel,
+        reason: `pact: Bash가 allowed_paths 밖(워크트리 내) 쓰기 — ${rel} (허용: ${allowedPaths.join(', ')})`,
+      };
+    }
+  }
+  return { allowed: true };
+}
+
 function main() {
   let payload;
   try {
@@ -160,6 +222,40 @@ function main() {
   }
 
   const tool = payload.tool_name;
+
+  // Bash: allowed_paths 밖(워크트리 내) 쓰기 리다이렉션 차단 — 워커 worktree 컨텍스트에서만.
+  // Write/Edit 는 막지만 `cat > docs/x.md` 같은 Bash 우회가 게이트를 통째 reject 시키던 구멍(CLEANUP-029).
+  if (tool === 'Bash') {
+    const cwdB = payload.cwd || process.cwd();
+    const command = (payload.tool_input || {}).command || '';
+    const wt = detectWorktreeContext(cwdB);
+    if (wt) {
+      const idx = cwdB.indexOf(`.pact/worktrees/${wt.task_id}`);
+      const repoRoot = cwdB.slice(0, idx);
+      const payloadPath = path.join(repoRoot, '.pact', 'runs', wt.task_id, 'payload.json');
+      if (fs.existsSync(payloadPath)) {
+        try {
+          const wp = JSON.parse(fs.readFileSync(payloadPath, 'utf8'));
+          const allowed = Array.isArray(wp.allowed_paths) ? wp.allowed_paths : null;
+          if (allowed && allowed.length > 0) {
+            const chk = checkBashWrite(command, { worktreeRoot: wt.worktreeRoot, allowedPaths: allowed, resolveBase: cwdB });
+            if (!chk.allowed) {
+              process.stdout.write(JSON.stringify({
+                hookSpecificOutput: {
+                  hookEventName: 'PreToolUse',
+                  permissionDecision: 'deny',
+                  permissionDecisionReason: `pact: 워커 ${wt.task_id} — ${chk.reason}`,
+                },
+              }));
+              process.exit(0);
+            }
+          }
+        } catch { /* payload 깨짐 — skip */ }
+      }
+    }
+    process.exit(0);
+  }
+
   if (!['Read', 'Write', 'Edit', 'MultiEdit'].includes(tool)) {
     process.exit(0);
   }
@@ -286,6 +382,7 @@ module.exports = {
   matchesGlob, checkPath, readOwnership, globToRegex,
   detectWorktreeContext, isInsideWorktree,
   isBlockedLongSotRel, isAllowedReadRel, checkWorkerRead,
+  extractWriteTargets, checkBashWrite,
 };
 
 if (require.main === module) main();
