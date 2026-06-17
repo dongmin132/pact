@@ -5,6 +5,7 @@
 ### Fixed
 - **worker `maxTurns` cap 제거** — `agents/worker.md`의 `maxTurns: 60` 삭제. dense task(컴포넌트 3파일 토큰 매핑 등)에서 워커가 60턴에 잘려 부분완료+미커밋으로 작업 통째 유실되던 패턴(brewdy 028/029, `pact drive --real` 시범에서 재현). 인터랙티브는 사람이 backstop이라 턴 cap을 떼고 자연 완료까지 둔다(제거는 truncation을 완화만 하지 악화 불가). 무인 `pact drive`의 폭주 차단은 budget으로 — 별도. "워크플로우 서브에이전트처럼 끝까지 두고 폭주는 다른 축으로" 방향.
 - **worker 중간 커밋 강제** — 긴 작업을 논리 단위마다 commit하도록 `agents/worker.md`에 명시. 끊겨도 진행분이 worktree 브랜치에 보존돼 재개·검토 가능. 못 끝낼 것 같으면 부분 commit + `status=blocked`.
+- **`pact drive` 턴/시간 cap 완화 + 미완 작업 보존** — `experiments/headless-driver/driver.mjs`: `maxTurns 60→200`(backstop), `--timeout` 기본 `120→1200s`(hang-backstop), **budget을 진짜 cap으로**. (1) 타임아웃 발화 시 `q.close()`로 SDK 워커 실제 종료(abort만으론 zombie 잔존하던 Bug1), (2) 모든 메시지에서 usage/cost 갱신 → 끊겨도 partial 비용 캡처(spent_usd 0 Bug3), (3) budget/시간 소진 워커는 재시도 말고 즉시 escalation + worktree 보존(작업 유실 방지), (4) SIGINT/SIGTERM에 `driver-state.json` finalize(spawning 고착 Bug2). `pact drive --real` 029 시범에서 드러난 버그 3개 대응. 실제 `--real` 재검증은 사용자 환경 필요.
 
 ## v0.8.1 — 2026-06-01
 

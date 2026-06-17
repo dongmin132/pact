@@ -59,7 +59,7 @@ const USE_PACT = has('--pact');
 const MAX = Math.floor(getNum('--max', 3));
 const CYCLES = Math.floor(getNum('--cycles', 1));
 const MODEL = getStr('--model', 'sonnet');
-const TIMEOUT_MS = getNum('--timeout', 120) * 1000;
+const TIMEOUT_MS = getNum('--timeout', 1200) * 1000; // 넉넉한 hang-backstop(작업 안 자름). 진짜 cap 은 budget.
 const BUDGET = getNum('--budget', 10);
 const RETRIES = Math.floor(getNum('--retries', 1));
 const FAIL = getSet('--fail');
@@ -155,36 +155,46 @@ async function runWorkerReal(task /*, attempt */) {
   const wmd = join(PLUGIN_ROOT, 'agents', 'worker.md');
   if (existsSync(wmd)) systemPrompt = stripFrontmatter(readFileSync(wmd, 'utf8'));
 
-  // (3) 타임아웃: abortController + setTimeout
+  // 끝까지 두고 폭주는 budget 으로 막는다(워크플로우 방식). 턴/시간은 작업을 자르지 않는
+  // 넉넉한 backstop. wall-clock 발화 시 abort 만으론 SDK 가 안 죽을 수 있어 q.close()로 실제 종료.
   const ac = new AbortController();
-  const timer = setTimeout(() => ac.abort(), TIMEOUT_MS);
+  let q, timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    try { ac.abort(); } catch { /* noop */ }
+    try { if (q && typeof q.close === 'function') q.close(); } catch { /* noop */ }
+  }, TIMEOUT_MS);
+
+  // usage/cost 는 모든 메시지에서 갱신 — 중간에 끊겨도 마지막 본 값 보존(비용 0 방지).
+  let usage = null, turns = 0, subtype = 'error_during_execution', cost = 0;
   try {
-    const q = query({
+    q = query({
       prompt: task.task_prompt,
       options: {
         model: MODEL,
         cwd: task.working_dir,
         allowedTools: ['Read', 'Write', 'Edit', 'Bash', 'Glob', 'Grep'],
-        canUseTool: makeCanUseTool(task),       // (2) bypass 대신 가드
+        canUseTool: makeCanUseTool(task),
         permissionMode: 'default',
-        maxTurns: 60,
-        maxBudgetUsd: Math.max(0.5, BUDGET - ledger.spentUsd), // (4) 워커별 잔여예산
-        abortController: ac,                     // (3)
+        maxTurns: 200,                                          // 넉넉한 backstop (작업 안 자름)
+        maxBudgetUsd: Math.max(0.5, BUDGET - ledger.spentUsd),  // ★ 진짜 cap = 예산
+        abortController: ac,
         systemPrompt,
       },
     });
-    let usage = null, turns = 0, subtype = 'error_during_execution', cost = 0, denied = false;
     for await (const m of q) {
-      if (m.type === 'result') {
-        usage = m.usage; turns = m.num_turns; subtype = m.subtype; cost = m.total_cost_usd || 0;
-      }
+      if (m && m.usage) usage = m.usage;
+      if (m && typeof m.total_cost_usd === 'number') cost = m.total_cost_usd;
+      if (m && m.type === 'result') { turns = m.num_turns || turns; subtype = m.subtype; }
     }
-    // (6) 에러 subtype 분기
     if (subtype === 'success') return { ok: true, usage, cost, turns, via: 'real' };
-    return { ok: false, reason: subtype, usage, cost, turns, via: 'real' };
+    // budget/turns 한도 도달 = 끊긴 게 아니라 미완 → 부분작업 보존 대상(incomplete)
+    const incomplete = subtype === 'error_max_budget_usd' || subtype === 'error_max_turns';
+    return { ok: false, reason: subtype, usage, cost, turns, via: 'real', incomplete };
   } catch (e) {
-    if (ac.signal.aborted) return { ok: false, reason: 'timeout', usage: null, cost: 0, turns: 0, via: 'real' };
-    throw e;
+    // timeout/예외 — 본 만큼의 cost 보존, worktree 부분작업 보존 대상(incomplete).
+    const reason = (timedOut || ac.signal.aborted) ? 'timeout' : ('error:' + ((e && e.message) || e));
+    return { ok: false, reason, usage, cost, turns, via: 'real', incomplete: true };
   } finally {
     clearTimeout(timer);
   }
@@ -203,10 +213,11 @@ async function attemptTask(task) {
       ledger.spentUsd += r.cost || 0;
       if (r.ok) return { ...r, status: 'done' };
       if (r.denied) return { ...r, status: 'denied' };          // 가드 deny — 재시도 무의미
-      last = r;                                                  // error subtype → 재시도
+      // budget/시간 소진(incomplete) → 재시도해도 또 소진 + 부분작업 손실 위험 → 즉시 위임(보존).
+      if (r.incomplete) return { ...r, status: 'escalated', salvageable: true };
+      last = r;                                                  // 일시 error subtype → 재시도
     } catch (e) {
-      ledger.spentUsd += 0;
-      last = { task_id: task.task_id, ok: false, reason: e.message, attempts: attempt, cost: 0, usage: null };
+      last = { task_id: task.task_id, ok: false, reason: (e && e.message) || String(e), attempts: attempt, cost: 0, usage: null };
     }
     if (attempt <= RETRIES) await new Promise((r) => setTimeout(r, 150)); // 백오프
   }
@@ -216,7 +227,7 @@ async function attemptTask(task) {
 
 // ---- 메인 루프 (오케스트레이터 = 이 코드 = 토큰 0) -------------------------
 console.log('=== pact 헤드리스 드라이버 PoC v2 (하드닝) ===');
-console.log(`mode: ${REAL ? 'REAL' : 'MOCK'} | ${USE_PACT ? 'PACT' : 'DEMO'} | max=${MAX} cycles=${CYCLES} timeout=${TIMEOUT_MS / 1000}s budget=$${BUDGET} retries=${RETRIES}`);
+console.log(`mode: ${REAL ? 'REAL' : 'MOCK'} | ${USE_PACT ? 'PACT' : 'DEMO'} | max=${MAX} cycles=${CYCLES} budget=$${BUDGET}(cap) timeout=${TIMEOUT_MS / 1000}s(backstop) retries=${RETRIES}`);
 
 // 가드 self-test (토큰 0, worker-guard 로직 자체 검증)
 const wd0 = '/tmp/wt';
@@ -233,6 +244,14 @@ if (REAL) {
     console.error('✗ SDK 미설치 — cd experiments/headless-driver && npm i @anthropic-ai/claude-agent-sdk (점검: node sdk-check.mjs)');
     process.exit(4);
   }
+}
+
+// 외부 종료(Ctrl-C/SIGTERM)에도 driver-state 를 finalize — "spawning 고착"(Bug2) 방지.
+for (const sig of ['SIGINT', 'SIGTERM']) {
+  process.on(sig, () => {
+    try { writeDriverState({ phase: 'aborted', active_workers: [], stopped_reason: `signal ${sig}` }); } catch { /* noop */ }
+    process.exit(130);
+  });
 }
 
 const tStart = Date.now();
@@ -297,7 +316,7 @@ if (ledger.stoppedReason) console.log(`⏸  정지: ${ledger.stoppedReason}`);
 
 if (ledger.escalations.length) {
   console.log('\n🚨 사람 위임 필요 (헤드리스→인터랙티브 핸드오프):');
-  for (const e of ledger.escalations) console.log(`   - ${e.task_id}: ${e.reason || '2회 실패'} → worktree 보존됨, /pact:resume 로 점검`);
+  for (const e of ledger.escalations) console.log(`   - ${e.task_id}: ${e.reason || '2회 실패'}${e.salvageable ? ' (부분작업 worktree 보존)' : ''} → worktree 보존됨, /pact:resume 로 점검`);
 }
 
 writeDriverState({ phase: 'done', active_workers: [], stopped_reason: ledger.stoppedReason, done: tally.done || 0, escalated: tally.escalated || 0 });
