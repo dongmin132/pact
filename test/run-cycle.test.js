@@ -57,6 +57,12 @@ function writeTasks(dir, tasks) {
     md.push(`work: [${t.work || 'do'}]`);
     md.push(`done_criteria: [${t.done_criteria || 'exists'}]`);
     md.push(`tdd: ${t.tdd ?? false}`);
+    if (t.loop_until) {
+      md.push('loop_until:');
+      for (const [k, v] of Object.entries(t.loop_until)) {
+        md.push(`  ${k}: ${v}`);
+      }
+    }
     md.push('```\n');
   }
   fs.writeFileSync(path.join(dir, 'TASKS.md'), md.join('\n'));
@@ -653,5 +659,85 @@ test('run-cycle prepare — already_prepared + 일부만 done이면 ready_to_col
     fs.writeFileSync(path.join(dir, tp.status_path), mkStatus('PROJ-001', 'src/a.ts'));
     const r2 = JSON.parse(runPact(['run-cycle', 'prepare'], dir).stdout);
     assert.equal(r2.ready_to_collect, false);
+  } finally { cleanupProject(dir); }
+});
+
+// ─── loop_until passthrough (fresh emit path) ────────────
+// writeTasks가 multi-line nested YAML을 emit하면 yaml-mini가 올바른 객체로 파싱한다.
+// 이 테스트는 FRESH prepare (cycle 1) 경로에서 loop_until이 task_prompts로 전달됨을 검증한다.
+test('prepare — task의 loop_until을 task_prompts로 전달 (fresh path)', () => {
+  const dir = makeProject();
+  try {
+    const loopUntil = { count: 'echo 0', max_iterations: 4 };
+    writeTasks(dir, [{ id: 'LOOP-002', allowed_paths: ['src/**'], loop_until: loopUntil }]);
+
+    const r = runPact(['run-cycle', 'prepare', '--max=1'], dir);
+    assert.equal(r.status, 0, `stderr: ${r.stderr}\nstdout: ${r.stdout}`);
+    const out = JSON.parse(r.stdout);
+    assert.equal(out.ok, true);
+    const tp = (out.task_prompts || []).find(t => t.task_id === 'LOOP-002');
+    assert.ok(tp, `LOOP-002 task_prompt 존재: ${r.stdout}`);
+    assert.deepEqual(tp.loop_until, loopUntil);
+  } finally { cleanupProject(dir); }
+});
+
+// ─── loop_until passthrough (rebuild emit path) ──────────
+// rebuildTaskPrompts 는 payload.json(plain JSON)을 그대로 읽어 task_prompts로 전달하므로
+// YAML 파서를 거치지 않는다. 이 경로가 loop_until 전달을 검증하는 별도 단위다.
+test('prepare — task의 loop_until을 task_prompts로 전달 (rebuild path)', () => {
+  const dir = makeProject();
+  try {
+    const id = 'LOOP-001';
+    const loopUntil = { count: 'echo 0', max_iterations: 4 };
+
+    // rebuildTaskPrompts 가 읽는 파일들을 픽스처로 직접 생성:
+    // 1. .pact/current_batch.json
+    fs.mkdirSync(path.join(dir, '.pact'), { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, '.pact/current_batch.json'),
+      JSON.stringify({ task_ids: [id], prepared_at: new Date().toISOString(), coordinator_review_needed: false }),
+    );
+
+    // 2. .pact/runs/<id>/payload.json — loop_until 포함
+    const runsDir = path.join(dir, '.pact/runs', id);
+    fs.mkdirSync(runsDir, { recursive: true });
+    const payload = {
+      task_id: id,
+      title: 'loop test',
+      allowed_paths: ['src/**'],
+      forbidden_paths: [],
+      done_criteria: [],
+      verify_commands: [],
+      contracts: {},
+      context_refs: [],
+      tdd: false,
+      educational_mode: false,
+      prd_reference: null,
+      working_dir: `.pact/worktrees/${id}`,
+      branch_name: `pact/${id}`,
+      base_branch: 'main',
+      context_budget_tokens: 20000,
+      loop_until: loopUntil,
+    };
+    fs.writeFileSync(path.join(runsDir, 'payload.json'), JSON.stringify(payload, null, 2));
+
+    // 3. prompt.md, context.md (isAlreadyPrepared + rebuildTaskPrompts 가 경로 참조)
+    fs.writeFileSync(path.join(runsDir, 'prompt.md'), `# Task ${id}\n`);
+    fs.writeFileSync(path.join(runsDir, 'context.md'), `# Context ${id}\n`);
+
+    // 4. .pact/worktrees/<id> — isAlreadyPrepared 체크용
+    const wtDir = path.join(dir, `.pact/worktrees/${id}`);
+    fs.mkdirSync(wtDir, { recursive: true });
+
+    // TASKS.md가 없으면 preflight가 실패하므로 빈 task list로 작성
+    writeTasks(dir, []);
+
+    const r = runPact(['run-cycle', 'prepare', '--max=1'], dir);
+    const j = JSON.parse(r.stdout);
+    // already_prepared 경로 → rebuildTaskPrompts 호출
+    assert.ok(j.already_prepared, `already_prepared 여야: ${r.stdout}`);
+    const tp = (j.task_prompts || []).find(t => t.task_id === id);
+    assert.ok(tp, `LOOP-001 task_prompt 존재: ${r.stdout}`);
+    assert.deepEqual(tp.loop_until, loopUntil);
   } finally { cleanupProject(dir); }
 });

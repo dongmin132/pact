@@ -118,6 +118,7 @@ function rebuildTaskPrompts(cwd) {
       status_path: path.relative(cwd, paths.status_path),
       report_path: path.relative(cwd, paths.report_path),
       working_dir: payload.working_dir,
+      loop_until: payload.loop_until || null,
     });
     let done = false;
     try { done = JSON.parse(fs.readFileSync(paths.status_path, 'utf8')).status === 'done'; } catch { /* 미완 */ }
@@ -282,6 +283,7 @@ function doPrepare(args, opts, cwd, pre) {
       branch_name: wt.branch_name,
       base_branch: baseBranch,
       context_budget_tokens: task.context_budget_tokens || 20000,
+      loop_until: task.loop_until || null,
     };
 
     const r = prepareWorkerSpawn(payload, { cwd, runsRoot: path.join(cwd, '.pact/runs') });
@@ -299,6 +301,7 @@ function doPrepare(args, opts, cwd, pre) {
       status_path: path.relative(cwd, r.status_path),
       report_path: path.relative(cwd, r.report_path),
       working_dir: wt.working_dir,
+      loop_until: payload.loop_until || null,
     });
   }
 
