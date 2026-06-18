@@ -391,17 +391,6 @@ function doCollect(args, opts, cwd, cbPath) {
     statusUpdates.push({ task_id: id, ok: r.ok, action: r.action, file: r.file, error: r.error });
   }
 
-  writeJsonAtomic(path.join(cwd, '.pact/merge-result.json'), {
-    timestamp: new Date().toISOString(),
-    eligible: plan.eligible.length,
-    merged: result.merged,
-    already_merged: alreadyMerged,
-    conflicted: result.conflicted,
-    skipped: result.skipped,
-    rejected: plan.rejected,
-    status_updates: statusUpdates,
-  });
-
   const cleanup = [];
   for (const id of result.merged) {
     const r = removeWorktree(id, { cwd });
@@ -431,6 +420,23 @@ function doCollect(args, opts, cwd, cbPath) {
       }
     } catch { /* skip malformed */ }
   }
+
+  // merge-result.json = 사이클 deterministic SOT. decisions/verification/failures 가 다 계산된 이 시점에
+  // 한 번에 기록 → drive 후 /pact:wrap 가 LLM 없이 이 파일만 읽어 PROGRESS/DECISIONS 서사 갱신 가능.
+  writeJsonAtomic(path.join(cwd, '.pact/merge-result.json'), {
+    timestamp: new Date().toISOString(),
+    eligible: plan.eligible.length,
+    merged: result.merged,
+    already_merged: alreadyMerged,
+    conflicted: result.conflicted,
+    skipped: result.skipped,
+    rejected: plan.rejected,
+    status_updates: statusUpdates,
+    cleanup,
+    failures,
+    verification_summary: verification,
+    decisions_to_record: decisions,
+  });
 
   // 무인 멀티사이클: status 변경 자동커밋 (--commit-status). 다음 cycle preflight(isClean) 통과용.
   const statusCommit = args.includes('--commit-status')

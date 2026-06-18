@@ -269,6 +269,14 @@ test('run-cycle E2E — prepare → 워커 시뮬 commit → collect 모두 머�
       lint: 'pass', typecheck: 'pass', test: 'pass', build: 'pass',
     });
 
+    // merge-result.json 파일 = 사이클 deterministic SOT (drive 후 /pact:wrap 입력).
+    // decisions_to_record/verification_summary/failures 까지 persist 돼야 LLM 없이도 문서 rollup 가능.
+    const mr = JSON.parse(fs.readFileSync(path.join(dir, '.pact/merge-result.json'), 'utf8'));
+    assert.deepEqual(mr.merged.sort(), ['PROJ-001', 'PROJ-002']);
+    assert.ok(Array.isArray(mr.failures), 'merge-result.json failures persist');
+    assert.ok('decisions_to_record' in mr, 'merge-result.json decisions_to_record persist');
+    assert.deepEqual(mr.verification_summary, { lint: 'pass', typecheck: 'pass', test: 'pass', build: 'pass' });
+
     // ADR-048 — 머지된 task는 source frontmatter에 status:done 박혀야 한다.
     assert.ok(Array.isArray(colOut.status_updates), 'status_updates 필드 존재');
     assert.equal(colOut.status_updates.length, 2);
