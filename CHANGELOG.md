@@ -1,8 +1,11 @@
 # Changelog
 
-## Unreleased
+## 0.9.0 — 2026-06-18
 
 ### Added
+- **`/pact:wrap` — drive 후 1턴 LLM 문서 갱신 스킬** (`commands/wrap.md`) + **`merge-result.json` = 사이클 deterministic SOT 강화** (`bin/cmds/run-cycle.js`가 `decisions_to_record`·`verification_summary`·`failures`·`cleanup`까지 persist). `pact drive`(0토큰 grind)는 머지·status·report·merge-result 까지 결정적으로 남기지만 PROGRESS/DECISIONS 서사 갱신은 LLM 판단이라 안 했음 → `/pact:wrap`이 merge-result.json만 읽어 PROGRESS.md(Recently Done/Blocked/Verification) + DECISIONS.md(decisions 후보, propose-only) 갱신. parallel 단계7 coordinator와 동일 포맷 → **drive·parallel 둘 다 기록(#4) 유지, 차이는 "parallel이 LLM으로 더 보느냐"뿐.** 테스트(merge-result SOT 필드 검증).
+- **`pact drive --verbose`/`-v` — 내부 동작 실시간 로그** (`experiments/headless-driver/driver.mjs`): 워커 도구 호출(`[task_id] 🔧 Read/Edit/Bash`) + prepare/spawn/collect 단계 스트리밍. 토큰 0(콘솔만). 헤드리스 grind 내부 가시화.
+- **status 대시보드 색 + `--watch` 깜빡임 제거** (`bin/cmds/status.js`): phase 신호등 색 · 비용 바 임계색(70%/90%) · escalation 빨강 강조 · 라벨 dim (TTY일 때만, 파이프는 평문). `--watch`는 전체 clear 대신 커서 제자리 덮어쓰기(`\x1b[H`+줄별 `\x1b[K`+`\x1b[J`) + 커서 숨김 → 깜빡임 없는 라이브 갱신.
 - feat(drive): loop-until-dry — `loop_until` 선언 task는 측정된 진행 중 fresh 워커 자동 재투입 (질식 방지, ADR-057)
 - **`pact status` 에 헤드리스 드라이버 라이브 대시보드 (P5 reader side)** — `bin/cmds/status.js`가 `.pact/driver-state.json`을 읽어 `pact drive` 진행을 **hero 대시보드**로 표시: phase 신호등(🟢 spawning / 🟡 collecting / ✅ done / 🔴 aborted / 💀 죽음), `진행/활성/비용/갱신` 정렬 블록, **비용 진행률 바**(`$3.91 / $5 ▕█████████████░░░▏ 78%` — driver-state 에 `budget` 분모 추가), **상대시간**("3초 전"). `--summary`엔 `drive:<phase> spent:$X`. **`pact status --watch`(2초 폴링) = 둘째 터미널 라이브 모니터** — `pact drive`는 오케스트레이터가 스크립트라 채팅 narration이 없는 관측 공백을 메움. 비종료 phase인데 드라이버 pid 죽으면 stale 경고(`lock.js isAlive` 재사용). 테스트 4 (TDD).
 
