@@ -83,6 +83,17 @@ const loopState = new Map(LOOP);            // 가변 남은 카운트
 const ledger = { orchestratorTokens: 0, spentUsd: 0, attempts: [], escalations: [], stoppedReason: null };
 const tokOf = (u) => u ? (u.input_tokens || 0) + (u.output_tokens || 0) + (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0) : 0;
 
+// ---- (verbose) 내부 동작 로그 — 토큰 0 (콘솔만). 워커 도구 호출·사이클 단계 가시화 -------
+const VERBOSE = has('--verbose') || has('-v');
+const vlog = (...a) => { if (VERBOSE) console.log(...a); };
+const toolBrief = (name, input) => {
+  input = input || {};
+  if (['Read', 'Write', 'Edit'].includes(name)) return `${name}(${String(input.file_path || input.path || input.notebook_path || '?').split('/').pop()})`;
+  if (name === 'Bash') return `Bash(${JSON.stringify(String(input.command || '').slice(0, 56))})`;
+  if (['Glob', 'Grep'].includes(name)) return `${name}(${input.pattern || ''})`;
+  return name;
+};
+
 // ---- (2) 안전 가드: worker-guard 단일 소스 (pre-tool-guard 로직 재사용) -------
 // 헤드리스 워커가 인터랙티브 워커(서브에이전트)와 "같은 안전 규칙"을 받게 한다.
 const nodeRequire = createRequire(import.meta.url);
@@ -215,6 +226,12 @@ async function runWorkerReal(task /*, attempt */) {
       if (m && m.usage) usage = m.usage;
       if (m && typeof m.total_cost_usd === 'number') cost = m.total_cost_usd;
       if (m && m.type === 'result') { turns = m.num_turns || turns; subtype = m.subtype; }
+      // (verbose) 워커가 부르는 도구를 실시간 스트리밍 — 내부 동작 가시화
+      if (VERBOSE && m && m.type === 'assistant') {
+        for (const b of (m.message && m.message.content) || []) {
+          if (b.type === 'tool_use') vlog(`  [${task.task_id}] 🔧 ${toolBrief(b.name, b.input)}`);
+        }
+      }
     }
     if (subtype === 'success') return { ok: true, usage, cost, turns, via: 'real' };
     // budget/turns 한도 도달 = 끊긴 게 아니라 미완 → 부분작업 보존 대상(incomplete)
@@ -323,6 +340,7 @@ for (let c = 1; c <= CYCLES; c++) {
 
   if (tasks.length) {
     console.log(`\ncycle ${c}: 워커 ${tasks.length}개 동시 spawn... (오케스트레이터 await = 0 토큰)`);
+    if (VERBOSE) for (const t of tasks) vlog(`  [spawn] ${t.task_id} → worktree ${t.working_dir}`);
 
     // (1) ★ allSettled — 한 워커가 터져도 나머지 결과는 보존됨
     const settled = await Promise.allSettled(tasks.map((t) => t.loop_until ? runLoopTask(t) : attemptTask(t)));
@@ -351,6 +369,11 @@ for (let c = 1; c <= CYCLES; c++) {
     const cj = JSON.parse(out);
     const committed = cj.status_commit && cj.status_commit.committed ? 'committed' : 'no-commit';
     console.log(`  collect: merged=${(cj.merged || []).length} conflicted=${cj.conflicted ? 'YES' : 'no'} failures=${(cj.failures || []).length} status=${committed}`);
+    if (VERBOSE) {
+      vlog(`  [collect] merged=${JSON.stringify(cj.merged || [])}`);
+      for (const r of cj.rejected || []) vlog(`  [collect] ✗ ${r.task_id}: ${r.reason}`);
+      for (const f of cj.failures || []) vlog(`  [collect] ⚠ ${f.task_id}: ${f.status} ${(f.blockers || []).join('; ')}`);
+    }
     if (cj.conflicted) { ledger.stoppedReason = '머지 충돌 — 자동해결 안 함, 사람 위임(/pact:resolve-conflict)'; break; }
   }
 }

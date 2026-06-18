@@ -42,31 +42,43 @@ function progressBar(pct, width = 16) {
 
 const PHASE_DOT = { spawning: '🟢', collecting: '🟡', done: '✅', aborted: '🔴' };
 
-// pact drive 진행을 hero 대시보드로 렌더 (watch 모니터 가독성). 줄 배열 반환.
+// ANSI 색 — TTY 일 때만 (파이프·리다이렉트·테스트는 평문 유지 → 출력 안 깨짐, 기존 assert 보존).
+const COLOR = !!process.stdout.isTTY;
+const C = COLOR
+  ? { dim: '\x1b[2m', red: '\x1b[31m', grn: '\x1b[32m', yel: '\x1b[33m', bold: '\x1b[1m', rst: '\x1b[0m' }
+  : { dim: '', red: '', grn: '', yel: '', bold: '', rst: '' };
+const paint = (s, code) => (code ? code + s + C.rst : String(s));
+const PHASE_COLOR = { spawning: C.grn, collecting: C.yel, done: C.grn, aborted: C.red };
+
+// pact drive 진행을 hero 대시보드로 렌더 (watch 모니터 가독성 — 색·신호등·비용바). 줄 배열 반환.
 function renderDriverDashboard(drv, isAlive) {
-  const rule = '─'.repeat(50);
+  const rule = paint('─'.repeat(50), C.dim);
   const terminal = TERMINAL_PHASES.has(drv.phase);
   // 비종료 phase 인데 드라이버 pid 가 죽었으면 = 크래시, 마지막 상태만 남음.
   const stale = drv.pid != null && !isAlive(drv.pid) && !terminal;
   const dot = stale ? '💀' : (PHASE_DOT[drv.phase] || '⚪');
+  const phaseCol = stale ? C.red : (PHASE_COLOR[drv.phase] || C.dim);
+  const L = (s) => paint(s, C.dim); // 라벨 dim → 값이 두드러짐
 
   const done = drv.done ?? 0;
   const esc = drv.escalated ?? drv.escalations ?? 0;
   const activeN = (drv.active_workers || []).length;
 
   const out = [rule];
-  out.push(`  🤖 pact drive        ${dot} ${drv.phase}${stale ? ' (죽음·마지막 상태)' : ''}`);
+  out.push(`  🤖 ${paint('pact drive', C.bold)}        ${dot} ${paint(drv.phase, phaseCol + C.bold)}${stale ? paint(' (죽음·마지막 상태)', C.red + C.bold) : ''}`);
   out.push(rule);
-  out.push(`  진행   사이클 ${drv.cycle ?? '-'} · 완료 ${done} · 진행중 ${activeN} · escalation ${esc}`);
-  if (activeN > 0) out.push(`  활성   ${drv.active_workers.join('  ')}`);
+  const escTxt = esc > 0 ? paint(`escalation ${esc}`, C.red + C.bold) : `escalation ${esc}`;
+  out.push(`  ${L('진행')}   사이클 ${drv.cycle ?? '-'} · 완료 ${paint(done, C.grn)} · 진행중 ${activeN} · ${escTxt}`);
+  if (activeN > 0) out.push(`  ${L('활성')}   ${drv.active_workers.join('  ')}`);
   if (drv.budget) {
     const pct = drv.budget > 0 ? (drv.spent_usd ?? 0) / drv.budget * 100 : 0;
-    out.push(`  비용   $${drv.spent_usd ?? 0} / $${drv.budget}  ${progressBar(pct)} ${Math.round(pct)}%`);
+    const barCol = pct >= 90 ? C.red : pct >= 70 ? C.yel : C.grn; // 예산 임계 70/90%
+    out.push(`  ${L('비용')}   $${drv.spent_usd ?? 0} / $${drv.budget}  ${paint(progressBar(pct), barCol)} ${paint(Math.round(pct) + '%', barCol)}`);
   } else {
-    out.push(`  비용   $${drv.spent_usd ?? 0}`);
+    out.push(`  ${L('비용')}   $${drv.spent_usd ?? 0}`);
   }
-  if (drv.stopped_reason) out.push(`  정지   ${drv.stopped_reason}`);
-  out.push(`  갱신   ${relTime(drv.updated_at)}${drv.pid != null ? ` · pid ${drv.pid}` : ''}`);
+  if (drv.stopped_reason) out.push(`  ${L('정지')}   ${paint(drv.stopped_reason, C.red)}`);
+  out.push(`  ${L('갱신')}   ${paint(relTime(drv.updated_at) + (drv.pid != null ? ` · pid ${drv.pid}` : ''), C.dim)}`);
   out.push(rule);
   return out;
 }
@@ -153,13 +165,26 @@ module.exports = function status(args) {
     return;
   }
 
-  // --watch 모드: 주기 폴링. Ctrl+C로 종료.
+  // --watch 모드: 깜빡임 없는 제자리 갱신. Ctrl+C로 종료.
+  // 매 틱 전체 clear(\x1b[2J)는 화면이 한 번 비었다 다시 차서 깜빡임 → 대신 커서만 홈으로
+  // 보내 덮어쓰고, 줄끝(\x1b[K)·아래(\x1b[J)만 지워 잔상 제거. 첫 프레임만 전체 clear.
+  const isTTY = !!process.stdout.isTTY;
+  let first = true;
   const tick = () => {
-    process.stdout.write('\x1b[2J\x1b[H'); // clear + home (스크롤백 보존)
-    process.stdout.write(`pact status · --watch ${watchSecs}s · ${new Date().toLocaleTimeString()} · Ctrl+C 종료\n\n`);
-    process.stdout.write(render({ summary }));
+    const header = `pact status · --watch ${watchSecs}s · ${new Date().toLocaleTimeString()} · Ctrl+C 종료`;
+    const frame = `${header}\n\n${render({ summary })}`;
+    if (!isTTY) { process.stdout.write(frame + '\n'); return; } // 파이프/리다이렉트: 그냥 프레임
+    const lines = frame.split('\n');
+    const out = (first ? '\x1b[2J' : '') + '\x1b[H'      // 첫 프레임만 전체 clear, 이후 커서 홈만
+      + lines.map((l) => l + '\x1b[K').join('\n')        // 각 줄 끝까지 지움(이전 더 긴 줄 잔상 제거)
+      + '\x1b[J';                                        // 커서 아래 잔여 줄 제거(프레임이 짧아졌을 때)
+    process.stdout.write(out);
+    first = false;
   };
+  if (isTTY) process.stdout.write('\x1b[?25l'); // 커서 숨김 — 깜빡이는 커서 자체도 시각 노이즈
   tick();
   const t = setInterval(tick, watchSecs * 1000);
-  process.on('SIGINT', () => { clearInterval(t); process.exit(0); });
+  const stop = () => { clearInterval(t); if (isTTY) process.stdout.write('\x1b[?25h'); process.stdout.write('\n'); process.exit(0); };
+  process.on('SIGINT', stop);
+  process.on('SIGTERM', stop);
 };
