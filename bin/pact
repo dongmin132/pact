@@ -25,6 +25,7 @@ const commands = {
   'edit-lock': () => require('./cmds/edit-lock.js')(args),
   'edit-release': () => require('./cmds/edit-release.js')(args),
   'validate-status': () => require('./cmds/validate-status.js')(args),
+  metrics: () => require('./cmds/metrics.js')(args),
 };
 
 if (!cmd || !commands[cmd]) {
@@ -46,6 +47,7 @@ if (!cmd || !commands[cmd]) {
   console.error('  edit-lock <target> [--session <label>]  자유 수정 단계 멀티세션 안전망');
   console.error('  edit-release <target> [--session <label>] [--force]  edit-lock 해제 + drift 알림');
   console.error('  validate-status <path/to/status.json>   worker self-validate (issue #3)');
+  console.error('  metrics [--project <path>] [--json] [--cycle <prefix>]  사이클 계측기 (read-only 스코어카드)');
   process.exit(cmd ? 1 : 0);
 }
 
