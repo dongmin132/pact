@@ -66,6 +66,7 @@ const MODEL = getStr('--model', 'sonnet');
 const TIMEOUT_MS = getNum('--timeout', 1200) * 1000; // 넉넉한 hang-backstop(작업 안 자름). 진짜 cap 은 budget.
 const BUDGET = getNum('--budget', 10);
 const RETRIES = Math.floor(getNum('--retries', 1));
+const MAX_RESUME = Math.floor(getNum('--max-resume', 2)); // (2.2) 턴소진 시 fresh 워커 재개 cap
 const FAIL = getSet('--fail');
 const FLAKY = getSet('--flaky');
 const DENY = getSet('--deny');
@@ -99,6 +100,7 @@ const toolBrief = (name, input) => {
 const nodeRequire = createRequire(import.meta.url);
 const { guardToolUse } = nodeRequire(join(PLUGIN_ROOT, 'scripts', 'lib', 'worker-guard.js'));
 const { writeJsonAtomic } = nodeRequire(join(PLUGIN_ROOT, 'scripts', 'lib', 'atomic-write.js'));
+const { shouldResume, withContinuation } = nodeRequire(join(PLUGIN_ROOT, 'scripts', 'worker-completion', 'resume.js'));
 
 // ---- (P5) 관측성: driver-state.json 단일 writer (atomic) -------------------
 // 드라이버가 죽어도 디스크에 마지막 상태가 남아 사람이 pact status / 파일로 진행 파악.
@@ -271,6 +273,24 @@ async function attemptTask(task) {
   return { ...last, status: 'escalated' };
 }
 
+// ---- (2.2) 일반 task: 턴/예산 소진(incomplete) 시 같은 worktree 에 fresh 워커 재투입 ----
+// 같은 워커 재시도는 무의미하지만 부분작업이 worktree 에 보존되므로, FRESH 워커가 "처음부터"
+// 가 아니라 "이어서" 마저 끝낼 수 있다(사람 salvage 제거). resume-cap·예산 초과 시 위임(보존).
+async function runResumableTask(task) {
+  let cur = task;
+  for (let resume = 0; ; resume++) {
+    const r = await attemptTask(cur);
+    // 미완(턴/예산 소진)이 아니면 그대로 (done/denied/일반 escalate) — 기존 동작 불변
+    if (!(r.status === 'escalated' && r.incomplete)) return { ...r, resumes: resume };
+    if (ledger.spentUsd >= BUDGET)
+      return { ...r, status: 'escalated', salvageable: true, resumes: resume, reason: `${r.reason || '미완'} — 예산 소진으로 resume 중단` };
+    if (!shouldResume(r, resume, MAX_RESUME))
+      return { ...r, status: 'escalated', salvageable: true, resumes: resume, reason: `${r.reason || '턴 소진'} — fresh 워커 ${resume}회 재개 후 위임` };
+    if (VERBOSE) vlog(`  [${task.task_id}] 🔁 미완 → fresh 워커 resume ${resume + 1}/${MAX_RESUME} (같은 worktree, 이어서)`);
+    cur = withContinuation(task, resume + 1);
+  }
+}
+
 // ---- loop-until-dry: 측정된 진행 중에만 fresh 워커 재투입 (절대 throw 안 함) ----
 // done/progress 판정은 워커 자기보고가 아니라 measureCount(결정적)로만 한다 (ADR-057, ADR-012).
 async function runLoopTask(task) {
@@ -343,7 +363,7 @@ for (let c = 1; c <= CYCLES; c++) {
     if (VERBOSE) for (const t of tasks) vlog(`  [spawn] ${t.task_id} → worktree ${t.working_dir}`);
 
     // (1) ★ allSettled — 한 워커가 터져도 나머지 결과는 보존됨
-    const settled = await Promise.allSettled(tasks.map((t) => t.loop_until ? runLoopTask(t) : attemptTask(t)));
+    const settled = await Promise.allSettled(tasks.map((t) => t.loop_until ? runLoopTask(t) : runResumableTask(t)));
     const outcomes = settled.map((s, i) =>
       s.status === 'fulfilled' ? s.value : { task_id: tasks[i].task_id, status: 'escalated', reason: 'driver 예외: ' + s.reason });
 
