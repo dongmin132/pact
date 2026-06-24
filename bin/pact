@@ -26,6 +26,7 @@ const commands = {
   'edit-release': () => require('./cmds/edit-release.js')(args),
   'validate-status': () => require('./cmds/validate-status.js')(args),
   metrics: () => require('./cmds/metrics.js')(args),
+  prelude: () => require('./cmds/prelude.js')(args),
 };
 
 if (!cmd || !commands[cmd]) {
@@ -48,6 +49,7 @@ if (!cmd || !commands[cmd]) {
   console.error('  edit-release <target> [--session <label>] [--force]  edit-lock 해제 + drift 알림');
   console.error('  validate-status <path/to/status.json>   worker self-validate (issue #3)');
   console.error('  metrics [--project <path>] [--json] [--cycle <prefix>]  사이클 계측기 (read-only 스코어카드)');
+  console.error('  prelude [--project <path>] [--min=N] [--json]  공유표면 freeze 추출 제안 (propose-only)');
   process.exit(cmd ? 1 : 0);
 }
 
