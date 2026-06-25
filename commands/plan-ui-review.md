@@ -71,9 +71,13 @@ Task tool:
 
 ## 단계 3: 결과 + 다음 액션
 
+**리뷰는 propose-only** (철학 5번) — reviewer는 권장만, 자동 반영 X (무승인 적용만 금지, 승인 후 적용은 정상). 워커는 `tasks/*.md`만 보므로 `/pact:parallel` 전에 반영 필요: 작은 fix는 **메인이 승인 후 `tasks/<domain>.md` 직접 `Edit`**, 구조 변경은 `/pact:plan` 재분해.
+
 ```
 다음:
   /pact:plan-task-review     # 분해 품질
   /pact:plan-arch-review     # 아키텍처
-  /pact:plan                 # UI task 재분해 (디자인 fix 반영)
+반영:
+  작은 fix   → 메인이 승인 후 tasks/<domain>.md 해당 task Edit
+  구조 변경  → /pact:plan 재분해
 ```
