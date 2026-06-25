@@ -8,6 +8,8 @@ description: 워커 N개 동시 spawn (worktree 격리) → 머지 → PROGRESS 
 
 한국어로 묻기: plan-task-review / plan-arch-review / plan-ui-review 중 어디까지 했는지. 답 [검토 없이] 시 PROGRESS.md에 `risk_acknowledged: true` + ts.
 
+리뷰를 했다면 추가 확인: **권장 액션을 `tasks/*.md`에 반영했는지.** 리뷰는 propose-only(철학 5번) — prepare는 `tasks/*.md`만 읽으므로 미반영이면 리뷰 **전** 원본 task가 워커에 넘어감. 미반영이면: 작은 fix는 **메인이 사용자 승인 후 `tasks/<domain>.md` 해당 task를 직접 `Edit`**, 구조 변경은 `/pact:plan` 재분해 — 그 후 다시 호출하도록 한국어 안내.
+
 ## 단계 2: prepare 호출
 
 ```bash
@@ -80,6 +82,18 @@ CLI는 자동으로 머지 → merge-result.json 작성 → 성공 worktree clea
 ## 단계 5.5: 워커 실패 시 메인 fallback (ADR-053)
 
 `merge-result.json`의 `rejected` 발생 시 메인은 다음 **4종 시나리오만** 처리한다 (추측·자동수정 X, 메인이 의도 검증 후 수동).
+
+### 0. 워커 미완(턴소진)이면 — 직접 salvage 전에 fresh 서브에이전트 재투입 (워커-완료 2.2)
+
+워커가 턴/budget 소진으로 **미완 종료**(status.json 없음 + worktree에 부분작업 존재, 또는 `clean_for_merge: false`)면 **메인이 직접 끝내지 말 것** — 그게 salvage(= 솔로작업 + ceremony), brewdy의 ~65% 시간을 먹은 그 패턴이다. 대신:
+
+1. **같은 worktree(부분작업 보존)에 fresh worker 서브에이전트를 continuation 프롬프트로 재투입** (`scripts/worker-completion/resume.js`의 `continuationPrompt` 형식 그대로):
+   - prompt 맨 앞에: `[RESUME n] 이전 워커가 턴 소진으로 미완. worktree에 부분작업 보존됨. 처음부터 다시 X — git status로 진행 확인 후 남은 done_criteria만 마저 완료. allowed_paths 동일.` + 원 `task_prompt`
+   - `subagent_type: worker`, working_dir = 그 task의 worktree 그대로
+2. 재투입 종료 후 `pact merge` 재시도.
+3. **회로차단기**: 같은 task 재개 ≤ 2회(`MAX_RESUME`). 초과 시에만 아래 1~4 직접 처리 또는 사용자 위임.
+
+> 헤드리스 `pact drive`는 driver.mjs `runResumableTask`가 이걸 자동으로 한다(토큰 0). 인터랙티브 `/pact:parallel`은 메인이 위 절차로 동일 효과를 낸다.
 
 ### 1. status.json 미작성 (`reason: "status.json missing"`)
 
