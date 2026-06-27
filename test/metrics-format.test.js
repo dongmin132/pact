@@ -4,7 +4,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { buildScorecard, formatHuman, formatJson } = require('../scripts/metrics/format.js');
+const { buildScorecard, formatHuman, formatJson, formatScorecard } = require('../scripts/metrics/format.js');
 
 function sampleCollected() {
   const tasks = [
@@ -58,6 +58,16 @@ test('formatHuman: 핵심 라벨 포함', () => {
   assert.match(out, /워커 결말/);
   assert.match(out, /pact가 대신 안 해준 일/);
   assert.match(out, /커플링 병목/);
+});
+
+test('formatScorecard: 공개 카드 핵심 라벨 + self-reported 정직 라벨', () => {
+  const card = buildScorecard(sampleCollected(), { generatedAt: '2026-06-23T00:00:00Z' });
+  const sc = formatScorecard(card);
+  assert.match(sc, /pact scorecard — brewdy/);
+  assert.match(sc, /워커 자력완료율/);
+  assert.match(sc, /충돌/);
+  assert.match(sc, /self-reported/, '독립 벤치 아님을 정직하게 라벨');
+  assert.doesNotMatch(sc, /병렬 폭/, '부풀린 ideal-width는 공개 카드에서 제외');
 });
 
 test('formatJson: 파싱 가능 + generated_at 유지', () => {

@@ -10,7 +10,7 @@
 const fs = require('fs');
 const path = require('path');
 const { collectAll, computeCalendar } = require('../../scripts/metrics/collect.js');
-const { buildScorecard, formatHuman, formatJson } = require('../../scripts/metrics/format.js');
+const { buildScorecard, formatHuman, formatJson, formatScorecard } = require('../../scripts/metrics/format.js');
 
 const HELP = [
   'pact metrics — 사이클 계측기 (read-only)',
@@ -21,6 +21,7 @@ const HELP = [
   '사용법: pact metrics [옵션]',
   '  --project <path>   대상 프로젝트 (기본: 현재 디렉토리)',
   '  --json             기계용 JSON',
+  '  --scorecard        공개용 마크다운 스코어카드 (README 임베드, self-reported)',
   '  --cycle <prefix>   task-family 드릴다운 (예: --cycle CLEANUP)',
   '  --task <ID>        단일 task 상세 (예: --task STORE-102)',
   '  --out <file>       JSON 을 파일로 (대상 아닌 임의 경로)',
@@ -35,11 +36,12 @@ const HELP = [
 ].join('\n');
 
 function parseArgs(args) {
-  const o = { project: process.cwd(), json: false, cycle: null, task: null, out: null, help: false };
+  const o = { project: process.cwd(), json: false, scorecard: false, cycle: null, task: null, out: null, help: false };
   const val = (a, i, key, len) => (a.includes('=') ? a.slice(len) : args[++i.v]);
   for (const ctr = { v: 0 }; ctr.v < args.length; ctr.v++) {
     const a = args[ctr.v];
     if (a === '--json') o.json = true;
+    else if (a === '--scorecard') o.scorecard = true;
     else if (a === '--help' || a === '-h') o.help = true;
     else if (a.startsWith('--project')) o.project = val(a, ctr, 'project', 10);
     else if (a.startsWith('--cycle')) o.cycle = val(a, ctr, 'cycle', 8);
@@ -90,5 +92,6 @@ module.exports = function metrics(args) {
     process.stdout.write(`JSON → ${o.out}\n`);
     return;
   }
-  process.stdout.write((o.json ? formatJson(card) : formatHuman(card)) + '\n');
+  const text = o.scorecard ? formatScorecard(card) : o.json ? formatJson(card) : formatHuman(card);
+  process.stdout.write(text + '\n');
 };
