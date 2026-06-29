@@ -28,6 +28,7 @@ const commands = {
   metrics: () => require('./cmds/metrics.js')(args),
   prelude: () => require('./cmds/prelude.js')(args),
   sizecheck: () => require('./cmds/sizecheck.js')(args),
+  testguard: () => require('./cmds/testguard.js')(args),
 };
 
 if (!cmd || !commands[cmd]) {
@@ -52,6 +53,7 @@ if (!cmd || !commands[cmd]) {
   console.error('  metrics [--project <path>] [--json] [--cycle <prefix>]  사이클 계측기 (read-only 스코어카드)');
   console.error('  prelude [--project <path>] [--min=N] [--json]  공유표면 freeze 추출 제안 (propose-only)');
   console.error('  sizecheck [--project <path>] [--max-files=N] [--json]  턴소진 위험 task 사이징 (propose-only)');
+  console.error('  testguard [--project <path>] [--json]  test-as-law — 자기검증 테스트 수정 가능 task 플래그 (propose-only)');
   process.exit(cmd ? 1 : 0);
 }
 
