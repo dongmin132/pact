@@ -149,6 +149,9 @@ function getTasksPact() {
   const out = execSync(`node ${PACT_BIN} run-cycle prepare --max=${MAX}`, { encoding: 'utf8' });
   const j = JSON.parse(out);
   if (j.ok === false) throw new Error('prepare 실패: ' + JSON.stringify(j.stage || j.errors));
+  // P1-1 · SPD-4: 슬로우니스 경고는 헤드리스(사람 부재)라 행동에 못 옮김 → 로그 1줄만.
+  const warnN = (j.size_warnings || []).length + (j.scope_warnings || []).length + (j.bundle_warnings || []).length;
+  if (warnN > 0) console.log(`  ⚠️ 슬로우니스 경고 ${warnN}건 (size:${(j.size_warnings || []).length} scope:${(j.scope_warnings || []).length} bundle:${(j.bundle_warnings || []).length}) — 분해는 인터랙티브 /pact:plan 에서.`);
   if (j.empty) return { tasks: [], readyToCollect: false };
   if (j.ready_to_collect) {
     console.log('  (already_prepared + 모든 워커 done — spawn 스킵, collect 로)');
