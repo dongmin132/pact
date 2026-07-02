@@ -10,7 +10,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const { renderContextBundle, readContextRef } = require('../scripts/context-bundle.js');
+const { renderContextBundle, readContextRef, writeContextBundle } = require('../scripts/context-bundle.js');
 
 function tmpWith(files) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pact-ctx-'));
@@ -68,4 +68,46 @@ test('readContextRef — anchor 없고 task_id 매칭 시 auto_sliced 플래그'
   assert.equal(r.auto_sliced, true);
   assert.match(r.content, /AAA-only-marker/);
   assert.doesNotMatch(r.content, /BBB-other-task-marker/);
+});
+
+// ─── TOK-4: context_refs 3중 나열 제거 — Slices 를 canonical SOT 로 ───
+
+test('TOK-4 — 잉여 "## Context refs" 리스트 제거, Slices canonical 유지', () => {
+  const dir = tmpWith({ 'tasks/cleanup.md': TASKS_MD });
+  const out = renderContextBundle(
+    { task_id: 'CLEANUP-029', context_refs: ['tasks/cleanup.md'] },
+    { cwd: dir });
+  assert.doesNotMatch(out, /## Context refs/); // 잉여 리스트 블록 삭제
+  assert.match(out, /## Slices/);              // canonical 위치는 유지
+  assert.match(out, /### tasks\/cleanup\.md/); // ref 는 Slices 헤딩에 1회만
+  assert.match(out, /AAA-only-marker/);        // 슬라이스 내용 손실 없음
+});
+
+// ─── TOK-3(1부): anchor 없는 대형 shard 를 bundle_warnings 로 가시화 ───
+
+const BIG_SHARD = ['# Big Contract'].concat(
+  Array.from({ length: 250 }, (_, i) => `line ${i}`)).join('\n');
+
+test('TOK-3 — anchor 없이 통째 포함된 대형 shard 는 bundle_warnings 에 집계', () => {
+  const dir = tmpWith({ 'contracts/api/big.md': BIG_SHARD });
+  const outPath = path.join(dir, 'out', 'context.md');
+  const res = writeContextBundle(
+    { task_id: 'CLEANUP-029', context_refs: ['contracts/api/big.md'] },
+    outPath, { cwd: dir });
+  assert.ok(Array.isArray(res.bundle_warnings));
+  assert.equal(res.bundle_warnings.length, 1);
+  assert.equal(res.bundle_warnings[0].ref, 'contracts/api/big.md');
+  assert.equal(res.bundle_warnings[0].reason, 'no_anchor_full_include');
+  assert.ok(res.bundle_warnings[0].lines > 200);
+});
+
+test('TOK-3 — 자동 슬라이스/앵커 ref 는 bundle_warnings 없음 (비파괴 반환)', () => {
+  const dir = tmpWith({ 'tasks/cleanup.md': TASKS_MD });
+  const outPath = path.join(dir, 'out', 'context.md');
+  const res = writeContextBundle(
+    { task_id: 'CLEANUP-029', context_refs: ['tasks/cleanup.md'] },
+    outPath, { cwd: dir });
+  assert.equal(res.path, outPath);       // 기존 필드 유지
+  assert.equal(typeof res.content, 'string');
+  assert.deepEqual(res.bundle_warnings, []);
 });
