@@ -77,7 +77,9 @@ tools:
 3. `<runs_dir>/status.json` 작성. **JSON Schema 강제** — `schemas/worker-status.schema.json`, validate-status.js가 자동 검증, 형식 위반 시 자동 blocked.
 
    필수 필드: `task_id`, `status` (`done`|`failed`|`blocked`), `branch_name`, `commits_made`, `clean_for_merge`, `files_changed`, `files_attempted_outside_scope`, `verify_results` (lint/typecheck/test/build = `pass`|`fail`|`skip`), `tdd_evidence` (red_observed·green_observed), `decisions`, `blockers`, `tokens_used`, `completed_at` (ISO 8601).
-4. `<runs_dir>/report.md` (사람용 prose, **머지 게이트 ADR-049**): 무엇을 했나 / 마주친 문제와 해결 / 핵심 결정 / 메인·coordinator가 알아야 할 것. **비공백 10줄 이상 필수** — 미만이면 `pact merge` 게이트가 reject 한다.
+
+   **`summary` 필드(2~4문장 자유 서술)를 충실히 채워라** — 무엇을 했나 / 마주친 문제와 해결 / 메인·coordinator가 알아야 할 것. 이 서사는 아래 report.md 로 렌더되니 성의껏 쓴다. (report.md 를 손으로 쓰지 마라 — CLI 가 status.json 에서 렌더한다.)
+4. **report.md 는 손으로 쓰지 않는다** — `pact report-gen`(collect 가 머지 직전 자동 호출)이 status.json 의 구조화 필드 + `summary` 를 결정적으로 `<runs_dir>/report.md` 로 렌더한다(0토큰). 네가 채운 `summary`·`decisions`·`blockers`·`verify_results` 가 그 품질을 결정하므로 status.json 을 충실히 작성하라. (예외: 렌더로 담기 어려운 특수 서사가 있으면 직접 report.md 를 쓸 수 있고, 그 경우 report-gen 이 존중해 덮어쓰지 않는다.)
 5. **self-validate (강력 권장, issue #3)**: status.json 작성 직후 다음을 호출해 schema 위반을 머지 전에 잡는다 (`decisions`를 `string[]`으로 적는 사고 등):
 
    ```bash
@@ -101,7 +103,7 @@ tools:
 ## 절대 안 하는 것
 
 - ❌ 채팅으로만 보고하고 status.json 미작성 → 자동 blocked
-- ❌ `report.md` 미작성 또는 1~2줄 — 머지 게이트 reject (ADR-049)
+- ❌ status.json `summary` 를 비우거나 1줄로 때우기 — report.md 서사가 빈다 (report.md 는 CLI 렌더라 손으로 쓸 필요 없지만 `summary` 는 반드시 충실히)
 - ❌ allowed_paths 외 파일 수정 (pre-tool-guard가 차단해도 시도분은 `files_attempted_outside_scope`에 정직 기록)
 - ❌ **Bash로 allowed_paths 우회** — `>` · `cat >` · `tee` · `cp` · `mv` · `touch` 로도 allowed_paths 밖(워크트리 내) 파일 생성·수정 금지. Write 툴이 막힌다고 Bash로 쓰지 마라: merge 게이트가 git diff로 잡아 **task 통째 reject** 된다 (실측 CLEANUP-029 — `docs/ui/*review*` 단 1개 때문에 16분·$3.91 작업 전부 거부). `.pact/runs/<id>/` 의 status.json·report.md 쓰기는 예외(네 보고 영역).
 - ❌ **리뷰·사인오프·디자인 검수 문서 생성** — `docs/**review*`, 검수 verdict 류는 **인간 게이트**(디자이너 사인)다. 네 task allowed_paths에 그 경로가 없으면 절대 만들지 마라. 검토 의견은 `report.md`에만 적는다.

@@ -59,6 +59,10 @@ decisions: ["mobile-shared-ui로 통합 결정", "auth 토큰은 secure-storage"
 
 결정이 없으면 빈 배열 `decisions: []`. 작성 직후 self-validate (worker.md §5) 권장.
 
+## status.json `summary` (2~4문장 자유 서술 — SPD-5)
+
+report.md 는 손으로 쓰지 않는다 — collect 가 `pact report-gen` 으로 status.json 에서 결정적으로 렌더한다(0토큰). 대신 status.json 의 `summary` 필드에 **무엇을 했나 / 마주친 문제와 해결 / 메인·coordinator가 알아야 할 것**을 2~4문장 자유 서술로 충실히 채워라. 이 `summary` 가 렌더된 report.md 요약이 되고 회고(reflect)가 소비한다.
+
 ## 계약 (contracts) — 이 영역의 endpoint/table만 다룸
 
 {{contracts}}
