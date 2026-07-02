@@ -19,6 +19,10 @@
     "branch_name": {
       "type": ["string", "null"]
     },
+    "summary": {
+      "type": "string",
+      "description": "2~4문장 자유 서술 — 무엇을/문제/핵심 결정의 서사. report-gen 이 report.md 요약으로 렌더. (SPD-5)"
+    },
     "commits_made": {
       "type": "integer",
       "minimum": 0

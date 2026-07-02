@@ -42,6 +42,10 @@ function validateStatus(obj) {
   if ('branch_name' in obj && obj.branch_name !== null && typeof obj.branch_name !== 'string') {
     errors.push(err('/branch_name', 'must be string or null', 'type'));
   }
+  // SPD-5 — free-text 서사 필드. 선택. 있으면 string 이어야(비-string 이면 report-gen 렌더가 어색).
+  if ('summary' in obj && typeof obj.summary !== 'string') {
+    errors.push(err('/summary', 'must be string', 'type'));
+  }
   if ('commits_made' in obj && (!Number.isInteger(obj.commits_made) || obj.commits_made < 0)) {
     errors.push(err('/commits_made', 'must be integer ≥ 0', 'type'));
   }

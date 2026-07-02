@@ -64,6 +64,24 @@ test('completed_at이 ISO 형식 아닐 때 거부', () => {
   assert.equal(r.ok, false);
 });
 
+// ─── SPD-5: summary 자유 서술 필드 ───
+
+test('SPD-5 — summary(string) 있으면 통과 (거부 X)', () => {
+  const r = validateStatus({ ...VALID, summary: '로그인 검증 추가. 엣지케이스 2건 해결.' });
+  assert.equal(r.ok, true, JSON.stringify(r.errors));
+});
+
+test('SPD-5 — summary 누락 허용(선택 필드)', () => {
+  const r = validateStatus(VALID);
+  assert.equal(r.ok, true, JSON.stringify(r.errors));
+});
+
+test('SPD-5 — summary 비-string 거부', () => {
+  const r = validateStatus({ ...VALID, summary: ['a', 'b'] });
+  assert.equal(r.ok, false);
+  assert.ok(r.errors.some(e => e.path === '/summary'));
+});
+
 // ─── ADR-056: required 완화 (task_id + status 2개만 필수) ───
 
 test('ADR-056 — task_id + status만으로 통과 (구버전 워커 산출물 호환)', () => {
