@@ -137,20 +137,13 @@ function planMerge(opts = {}) {
       continue;
     }
 
-    // ADR-049 — report.md 강제 게이트 (마지막 — 보안 게이트 ADR-012 통과 후 입력 품질 검증).
-    // status.json은 게이트라 100% 작성되지만 report.md는 선택으로 인식돼 5/12 작성률.
-    // 회고/coordinator 통합 입력이 비므로 머지 전에 강제. self-report 아닌 파일 존재로 검증.
+    // ADR-049 — report.md 존재 게이트 (마지막 — 보안 게이트 ADR-012 통과 후 입력 품질 검증).
+    // SPD-5(P1-4): collect 가 머지 직전 report-gen(status.json→report.md)을 결정적으로 렌더하므로
+    // report.md 존재는 보장된다 → "비공백 10줄" 검사는 이제 템플릿이 자동 충족하는 tautology 라 제거.
+    // 존재 검사만 유지: standalone `pact merge` 경로(collect 미경유)의 회귀 안전망.
     const reportPath = path.join(runsRoot, taskId, 'report.md');
     if (!fs.existsSync(reportPath)) {
       rejected.push({ task_id: taskId, reason: 'report.md missing' });
-      continue;
-    }
-    const reportLines = fs.readFileSync(reportPath, 'utf8')
-      .split('\n')
-      .filter(l => l.trim().length > 0)
-      .length;
-    if (reportLines < 10) {
-      rejected.push({ task_id: taskId, reason: `report.md too short (${reportLines} non-blank lines, min 10)` });
       continue;
     }
 

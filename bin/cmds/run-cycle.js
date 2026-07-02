@@ -29,6 +29,7 @@ const { collectLongDocs, DEFAULT_MAX_LINES } = require(path.join(PLUGIN_ROOT, 'b
 const { assessTasks: assessSizes } = require(path.join(PLUGIN_ROOT, 'scripts', 'sizecheck.js'));
 const { assessTasks: assessScopes, assessOwnership } = require(path.join(PLUGIN_ROOT, 'scripts', 'scopecheck.js'));
 const { planMerge } = require(path.join(PLUGIN_ROOT, 'bin', 'cmds', 'merge.js'));
+const { generateAll: generateReports } = require(path.join(PLUGIN_ROOT, 'scripts', 'report-gen.js'));
 const { mergeAll, abortMerge } = require(path.join(PLUGIN_ROOT, 'scripts', 'merge-coordinator.js'));
 const { acquireCycleLock, releaseCycleLock, cleanStaleLocks } = require(path.join(PLUGIN_ROOT, 'scripts', 'lock.js'));
 const { setTaskStatus } = require(path.join(PLUGIN_ROOT, 'scripts', 'task-sources.js'));
@@ -402,6 +403,11 @@ function doCollect(args, opts, cwd, cbPath) {
     started_at: new Date().toISOString(),
   });
 
+  // SPD-5 (P1-4): status.json → report.md 결정적 렌더를 머지 게이트 이전에. 없는 report.md 만
+  // 생성(워커 수기본 존중). report.md 존재가 보장되므로 merge 게이트의 report 검사가 tautology 화 —
+  // 과소작성 reject/rewrite 사이클 소거. 워커는 status.json.summary(자유 서술)만 채우면 된다.
+  const reportGen = generateReports({ cwd, taskIds: currentBatch.task_ids });
+
   const plan = planMerge({ cwd, taskIds: currentBatch.task_ids });
   const result = mergeAll(plan.eligible, { cwd });
 
@@ -484,6 +490,7 @@ function doCollect(args, opts, cwd, cbPath) {
     status_commit: statusCommit,
     verification_summary: verification,
     decisions_to_record: decisions,
+    report_gen: reportGen, // SPD-5: report.md 결정적 렌더 결과(rendered/skipped/실패) — 관찰용.
   });
 }
 
