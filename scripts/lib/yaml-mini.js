@@ -10,7 +10,7 @@
 //   - block array of objects: `\n  - key: val\n    other: val`
 //   - nested mapping
 //   - inline array `[a, b]` / inline object `{k: v}`
-//   - 줄 끝 # 주석
+//   - 줄 끝 # 주석 (따옴표/flow 안 # 은 값의 일부로 보존)
 // 미지원: anchors, multi-doc, |·> 블록 스칼라, complex flow
 
 function parseScalar(s) {
@@ -68,10 +68,42 @@ function indent(line) {
   return line.length - line.trimStart().length;
 }
 
+/**
+ * 한 줄에서 # 주석을 제거 — quote/flow 인지형 문자 스캔.
+ * (pre-tool-guard.js extractWriteTargets 의 따옴표 추적 방식 재사용)
+ *
+ * 규칙:
+ *   - # 은 "줄 시작이거나 바로 앞이 공백"일 때만 주석 시작 (YAML 선행공백 규칙).
+ *     → "a: C#" 처럼 값에 붙은 # 은 주석이 아니라 값의 일부로 보존.
+ *   - 홑/쌍따옴표 안, flow([...] {...}) 안의 # 은 언제나 값의 일부로 보존.
+ *   - **절대 throw 하지 않는다.** unterminated quote 등 애매한 입력은 원문을 그대로
+ *     돌려준다(관대). readOwnership 등이 파싱 예외를 catch → allow-all(fail-open)로
+ *     삼키는 경로가 있어, 여기서 던지면 조용한 전체 허용이 되기 때문.
+ */
+function stripComment(line) {
+  const n = line.length;
+  let q = null;   // 현재 따옴표 문자 (" 또는 ') 또는 null
+  let depth = 0;  // flow 깊이 — [ { 안이면 > 0
+  for (let i = 0; i < n; i++) {
+    const c = line[i];
+    if (q) {                                // 따옴표 안: 닫는 따옴표만 감지, # 은 값
+      if (c === q) q = null;
+      continue;
+    }
+    if (c === '"' || c === "'") { q = c; continue; }
+    if (c === '[' || c === '{') { depth++; continue; }
+    if (c === ']' || c === '}') { if (depth > 0) depth--; continue; }
+    if (c === '#' && depth === 0 && (i === 0 || /\s/.test(line[i - 1]))) {
+      return line.slice(0, i);
+    }
+  }
+  return line;  // 주석 없음 (닫히지 않은 따옴표 포함 — 원문 유지, throw X)
+}
+
 /** 주석 제거 + 빈 줄 제거 + 끝 공백 trim */
 function preprocess(text) {
   return text.split(/\r?\n/)
-    .map(l => l.replace(/(^|\s)#.*$/, '').trimEnd())
+    .map(l => stripComment(l).trimEnd())
     .filter(l => l.length > 0);
 }
 

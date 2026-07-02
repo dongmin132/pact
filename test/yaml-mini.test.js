@@ -55,6 +55,41 @@ test('주석 제거', () => {
   assert.deepEqual(load('a: 1   # 코멘트\nb: 2 # x'), { a: 1, b: 2 });
 });
 
+test('기존 주석 동작 회귀 — key: val # comment (STAB-8)', () => {
+  assert.deepEqual(load('key: val # comment'), { key: 'val' });
+  // 전체 줄 주석, flow 값 뒤 주석
+  assert.deepEqual(load('# full line comment\nk: v'), { k: 'v' });
+  assert.deepEqual(load('db_tables: []  # none'), { db_tables: [] });
+});
+
+test('따옴표 안 # 은 값의 일부로 보존 (STAB-8)', () => {
+  // allowed_paths 류 glob 안의 # (공백 없이 붙은 경우)
+  assert.deepEqual(load('a: "src/**/*.c#"'), { a: 'src/**/*.c#' });
+  // 공백 뒤 # 라도 따옴표 안이면 절단 금지 (기존 regex 는 여기서 오염)
+  assert.deepEqual(load('a: "foo # bar"'), { a: 'foo # bar' });
+  // block sequence 아이템 안의 따옴표 # 도 보존
+  assert.deepEqual(load('allowed_paths:\n  - "a/b #c/d.ts"'), {
+    allowed_paths: ['a/b #c/d.ts'],
+  });
+});
+
+test('공백 없이 붙은 # 은 주석 아님 — 값 보존 (STAB-8)', () => {
+  // "a: C#" — # 앞이 공백이 아니므로 주석이 아니라 값
+  assert.deepEqual(load('a: C#'), { a: 'C#' });
+  assert.deepEqual(load('lang: C#'), { lang: 'C#' });
+});
+
+test('flow([...]) 안 # 은 값의 일부로 보존 (STAB-8)', () => {
+  // 기존 regex 는 여기서 ` # y", z]` 를 잘라 unclosed inline array 로 throw
+  assert.deepEqual(load('a: ["x # y", z]'), { a: ['x # y', 'z'] });
+});
+
+test('unterminated quote 에서 throw 안 함 — fail-open 방지 (STAB-8)', () => {
+  // readOwnership catch 와 결합 시 allow-all 되므로 stripComment 는 절대 throw X.
+  // 애매한 입력이라도 관대하게 원문 유지 방향.
+  assert.doesNotThrow(() => load('a: "unterminated # x'));
+});
+
 test('실제 task 블록', () => {
   const yaml = `priority: P0
 dependencies:
