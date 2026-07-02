@@ -9,7 +9,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { writeJsonAtomic } = require('./lib/atomic-write.js');
+const { writeFileExclusive } = require('./lib/atomic-write.js');
 
 function lockPath(cwd, taskId) {
   return path.join(cwd, '.pact', 'runs', taskId, 'lock.pid');
@@ -63,12 +63,17 @@ function acquireLock(taskId, opts = {}) {
   }
 
   let action = 'fresh';
+  let stalePath = null;
   if (fs.existsSync(file)) {
     const holder = readLock(file);
     if (holder && isAlive(holder.pid)) {
       return { ok: false, error: `이미 점유 중 (pid=${holder.pid}${holder.session_label ? `, session=${holder.session_label}` : ''})`, holder };
     }
+    // stale(죽은 PID) — 기존 파일을 옆으로 치우고 배타적으로 재공개.
+    // rename 은 원자적이라 동시 takeover 자여도 단일 승자로 수렴한다(STAB-2).
     action = 'takeover';
+    stalePath = `${file}.stale.${pid}.${Date.now()}`;
+    try { fs.renameSync(file, stalePath); } catch { stalePath = null; }
   }
 
   const payload = {
@@ -77,7 +82,18 @@ function acquireLock(taskId, opts = {}) {
     session_label: opts.sessionLabel || null,
     acquired_at: new Date().toISOString(),
   };
-  writeJsonAtomic(file, payload); // 원자적 — 절단된 lock 파일 방지
+  // 배타적 공개 — check-then-write TOCTOU 대신 link 기반 원자 획득(STAB-2).
+  const won = writeFileExclusive(file, JSON.stringify(payload, null, 2) + '\n');
+  if (stalePath) { try { fs.unlinkSync(stalePath); } catch { /* best-effort */ } }
+  if (!won) {
+    // 그 찰나 다른 세션이 이미 획득 — 기존과 동일한 실패 반환.
+    const holder = readLock(file);
+    return {
+      ok: false,
+      error: `이미 점유 중 (pid=${holder ? holder.pid : '?'}${holder && holder.session_label ? `, session=${holder.session_label}` : ''})`,
+      holder: holder || undefined,
+    };
+  }
   return { ok: true, file, action };
 }
 
@@ -185,6 +201,7 @@ function acquireCycleLock(opts = {}) {
   if (!fs.existsSync(pactDir)) fs.mkdirSync(pactDir, { recursive: true });
 
   let action = 'fresh';
+  let stalePath = null;
   if (fs.existsSync(file)) {
     const holder = readLock(file);
     if (holder && isAlive(holder.pid)) {
@@ -194,7 +211,10 @@ function acquireCycleLock(opts = {}) {
         holder,
       };
     }
+    // stale — 기존 파일을 치우고 배타적 재공개(단일 승자 수렴, STAB-2).
     action = 'takeover';
+    stalePath = `${file}.stale.${pid}.${Date.now()}`;
+    try { fs.renameSync(file, stalePath); } catch { stalePath = null; }
   }
 
   const payload = {
@@ -202,7 +222,17 @@ function acquireCycleLock(opts = {}) {
     stage: opts.stage || null,
     acquired_at: new Date().toISOString(),
   };
-  writeJsonAtomic(file, payload); // 원자적 — 절단된 cycle.lock 방지
+  // 배타적 공개 — link 기반 원자 획득(STAB-2).
+  const won = writeFileExclusive(file, JSON.stringify(payload, null, 2) + '\n');
+  if (stalePath) { try { fs.unlinkSync(stalePath); } catch { /* best-effort */ } }
+  if (!won) {
+    const holder = readLock(file);
+    return {
+      ok: false,
+      error: `사이클이 다른 세션에서 진행 중 (pid=${holder ? holder.pid : '?'}${holder && holder.stage ? `, stage=${holder.stage}` : ''})`,
+      holder: holder || undefined,
+    };
+  }
   return { ok: true, file, action };
 }
 

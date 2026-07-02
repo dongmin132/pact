@@ -14,6 +14,7 @@
 const fs = require('fs');
 const path = require('path');
 const { isAlive } = require('./lock.js');
+const { writeFileExclusive } = require('./lib/atomic-write.js');
 const yaml = require('./lib/yaml-mini.js');
 
 function editLocksDir(cwd) {
@@ -118,6 +119,7 @@ function acquireEditLock(target, opts = {}) {
 
   const file = lockFile(cwd, target);
   let action = 'fresh';
+  let stalePath = null;
 
   if (fs.existsSync(file)) {
     const holder = readLockFile(file);
@@ -129,6 +131,10 @@ function acquireEditLock(target, opts = {}) {
       };
     }
     action = holder && holder.session_label === sessionLabel ? 're-acquire' : 'takeover';
+    // 내 락(재획득)이거나 stale(takeover) — 기존 파일을 치우고 배타적 재공개.
+    // rename 원자성으로 동시 획득자여도 단일 승자 수렴(STAB-2).
+    stalePath = `${file}.stale.${pid}.${Date.now()}`;
+    try { fs.renameSync(file, stalePath); } catch { stalePath = null; }
   }
 
   // kind에 따라 파일 경로 결정
@@ -156,7 +162,18 @@ function acquireEditLock(target, opts = {}) {
     session_label: sessionLabel,
     acquired_at: new Date().toISOString(),
   };
-  fs.writeFileSync(file, JSON.stringify(payload, null, 2) + '\n');
+  // 배타적 공개 — check-then-write TOCTOU 대신 link 기반 원자 획득(STAB-2).
+  const won = writeFileExclusive(file, JSON.stringify(payload, null, 2) + '\n');
+  if (stalePath) { try { fs.unlinkSync(stalePath); } catch { /* best-effort */ } }
+  if (!won) {
+    // 그 찰나 다른 세션이 이미 획득 — 기존과 동일한 실패 반환.
+    const holder = readLockFile(file);
+    return {
+      ok: false,
+      error: `이미 점유 중 (pid=${holder ? holder.pid : '?'}, session=${holder ? (holder.session_label || 'unknown') : 'unknown'})`,
+      holder: holder || undefined,
+    };
+  }
   return { ok: true, file, action, kind, paths };
 }
 

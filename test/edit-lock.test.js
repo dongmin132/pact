@@ -99,6 +99,26 @@ test('acquireEditLock — 같은 session은 재획득 OK', () => {
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
+test('acquireEditLock — stale(죽은 PID) lock은 takeover + .stale 잔재 없음 (STAB-2)', () => {
+  const dir = tmpProject();
+  try {
+    // 죽은 세션이 잡아둔 lock
+    acquireEditLock('PROGRESS.md', { cwd: dir, sessionLabel: 'dead', pid: DEAD_PID });
+    // 살아있는 다른 세션이 takeover
+    const r = acquireEditLock('PROGRESS.md', { cwd: dir, sessionLabel: 's-new', pid: ALIVE_PID });
+    assert.equal(r.ok, true);
+    assert.equal(r.action, 'takeover');
+
+    const locks = listEditLocks({ cwd: dir });
+    assert.equal(locks.length, 1);
+    assert.equal(locks[0].session_label, 's-new');
+
+    // takeover 시 rename 한 .stale.* 잔재 없음 (.lock 만 남아야)
+    const litter = fs.readdirSync(editLocksDir(dir)).filter(n => n.includes('.stale.'));
+    assert.deepEqual(litter, [], `stale 잔재: ${litter}`);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('releaseEditLock — 자기 session만 해제', () => {
   const dir = tmpProject();
   try {

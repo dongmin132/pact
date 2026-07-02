@@ -86,6 +86,30 @@ test('acquireLock — stale lock(죽은 PID)은 takeover', () => {
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
+test('acquireLock — stale takeover는 단일 승자로 수렴 + .stale 잔재 없음 (STAB-2)', () => {
+  const dir = tmpProject();
+  try {
+    // 죽은 PID 락을 박아두고 takeover
+    fs.writeFileSync(
+      lockPath(dir, 'TASK-001'),
+      JSON.stringify({ pid: DEAD_PID, task_id: 'TASK-001', acquired_at: '2020' }),
+    );
+    const r1 = acquireLock('TASK-001', { cwd: dir, pid: ALIVE_PID });
+    assert.equal(r1.ok, true);
+    assert.equal(r1.action, 'takeover');
+
+    // 승자가 살아있는 락을 쥐었으니 재획득은 거부(단일 승자)
+    const r2 = acquireLock('TASK-001', { cwd: dir, pid: ALIVE_PID });
+    assert.equal(r2.ok, false);
+    assert.match(r2.error, /이미 점유/);
+
+    // takeover 시 rename 한 .stale.* 파일은 뒤에 남지 않는다
+    const runDir = path.dirname(lockPath(dir, 'TASK-001'));
+    const litter = fs.readdirSync(runDir).filter(n => n.includes('.stale.'));
+    assert.deepEqual(litter, [], `stale 잔재: ${litter}`);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('acquireLock — run dir 없으면 거부', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pact-lock-no-'));
   try {
