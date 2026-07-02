@@ -19,7 +19,7 @@
 // 모드/플래그:
 //   --real            실제 Agent SDK spawn (없으면 MOCK)
 //   --pact            태스크를 pact CLI에서 + collect (없으면 DEMO)
-//   --max=N           사이클당 워커 수 (기본 3)
+//   --max=N           사이클당 워커 수 (기본 5, prepare 상한과 동일)
 //   --cycles=N        사이클 반복 (기본 1)
 //   --model=NAME      실제 워커 모델 (기본 sonnet)
 //   --timeout=SEC     워커 hang 백스톱 (기본 1200 — 작업 안 자름, cap 은 budget)
@@ -60,7 +60,7 @@ const getSet = (n) => new Set((getStr(n, '') || '').split(',').filter(Boolean));
 
 const REAL = has('--real');
 const USE_PACT = has('--pact');
-const MAX = Math.floor(getNum('--max', 3));
+const MAX = Math.floor(getNum('--max', 5));
 const CYCLES = Math.floor(getNum('--cycles', 1));
 const MODEL = getStr('--model', 'sonnet');
 const TIMEOUT_MS = getNum('--timeout', 1200) * 1000; // 넉넉한 hang-backstop(작업 안 자름). 진짜 cap 은 budget.

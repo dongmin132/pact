@@ -26,6 +26,13 @@ test('pact drive (mock demo) — 오케스트레이터 토큰 0 으로 동작', 
   assert.match(r.stdout, /오케스트레이터 토큰: 0/);
 });
 
+test('drive — 기본 병렬폭 5 (--max 미지정, prepare 상한과 정합)', () => {
+  const r = runPact(['drive']);        // --max 없음 → 기본값 사용
+  assert.equal(r.status, 0, `${r.stdout}\n${r.stderr}`);
+  assert.match(r.stdout, /max=5/);     // 헤더가 기본 병렬폭 5 를 보고
+  assert.match(r.stdout, /오케스트레이터 토큰: 0/);
+});
+
 test('pact (인자 없음) usage 에 drive 노출', () => {
   const r = runPact([]);
   assert.match(r.stderr, /drive/);
