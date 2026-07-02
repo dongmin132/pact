@@ -27,6 +27,24 @@ fi
 
 planner에 이 결과를 전달 (아래 prompt에 inline).
 
+## 단계 1.6: 사이클 요약 추출 (Bash)
+
+`merge-result.json`은 사이클 deterministic SOT다. `run-cycle collect` 경로는 `failures`·`verification_summary`·`decisions_to_record`를 이미 계산해 담고 있으므로, planner가 done task의 status.json을 통째 읽지 않도록 이 요약만 뽑아 inline 주입한다 ("결정적=CLI, 판단=LLM"):
+
+```bash
+MR=.pact/merge-result.json
+STANDALONE_MERGE=0
+if [ -f "$MR" ]; then
+  FAILURES=$(jq -c '.failures // empty' "$MR" 2>/dev/null)
+  VERIFY=$(jq -c '.verification_summary // empty' "$MR" 2>/dev/null)
+  DECISIONS=$(jq -c '.decisions_to_record // empty' "$MR" 2>/dev/null)
+  # standalone `pact merge` 경로엔 위 세 필드가 없음 → status.json 폴백 신호
+  if [ -z "$VERIFY$FAILURES$DECISIONS" ]; then STANDALONE_MERGE=1; fi
+fi
+```
+
+`FAILURES` / `VERIFY` / `DECISIONS`를 아래 planner prompt에 inline. `STANDALONE_MERGE=1`이면 요약 필드가 없으니 planner가 status.json(소용량)으로 폴백한다.
+
 ## 단계 2: planner 서브에이전트 호출 (회고 모드)
 
 Task tool:
@@ -50,11 +68,13 @@ Task tool:
   
   domain 매핑은 `contracts/manifest.md` 또는 `ls contracts/api/ contracts/db/` 로 먼저 확인할 것.
   
-  입력:
-  - .pact/runs/*/status.json 들 (이번 cycle)
-  - .pact/merge-result.json
+  입력 (요약은 inline 주입 · 전문은 lazy read):
+  - 사이클 요약 (단계 1.6에서 추출, inline): FAILURES / VERIFY / DECISIONS
+    → done task의 status.json은 이 요약에 이미 반영됨. **개별 status.json 전량 read 금지.**
   - PROGRESS.md
-  - 워커 보고서들 (.pact/runs/*/report.md)
+  - 워커 보고서 report.md — **lazy**: `FAILURES`에 든 task + ADR 승격을 실제로 논할 task만 `.pact/runs/<id>/report.md`를 그때 read. N개 전문 통째 로드 금지.
+  - standalone `pact merge` 경로(단계 1.6에서 STANDALONE_MERGE=1)면 요약 3필드가 없으니, 필요한 task의 status.json(소용량)으로 폴백. report.md 게이트·lazy 기준은 동일.
+  - .pact/merge-result.json — 요약은 위에 inline됨. merged/conflicted/rejected 카운트가 더 필요하면 이 단일 파일만 read (소용량 SOT).
   - 단계 1.5의 CODE_CHANGED / DOCS_CHANGED 목록
   
   출력은 채팅 prose로:
