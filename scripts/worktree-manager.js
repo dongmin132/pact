@@ -160,8 +160,9 @@ function removeWorktree(taskId, opts = {}) {
  * prepare 재진입 시 stale worktree 정리 (데이터 안전). createWorktree 계약은 그대로 두고
  * 그 직전에 호출해 "worktree 이미 존재" cruft 를 안전하게 회수한다.
  * - git worktree prune (이미 삭제된 dir 의 admin 메타 정리)
- * - 대상 dir 이 남아있으면: base 대비 미머지 커밋이 없을 때만 제거(reclaimed),
- *   미머지 커밋이 있으면 보존하고 ok:false (자동 파괴 금지 — 5철학).
+ * - 대상 dir 이 남아있으면: (a) 미커밋 작업물(untracked 포함)이 있으면 보존,
+ *   (b) base 대비 미머지 커밋이 있으면 보존, (c) 둘 다 없을(clean AND 미머지 없음) 때만 제거(reclaimed).
+ *   회수는 데이터 손실이 확실히 없을 때만 — 커밋 안 된 워커 편집물 force-remove 금지(fresh-resume 전제·5철학).
  * @returns {{ok:true, action:'clean'|'reclaimed'} | {ok:false, preserved?:boolean, error:string}}
  */
 function reconcileWorktree(taskId, baseBranch, opts = {}) {
@@ -179,18 +180,29 @@ function reconcileWorktree(taskId, baseBranch, opts = {}) {
     return { ok: true, action: 'clean' };
   }
 
-  // 미머지 커밋 검사 — 브랜치 없으면 git status!=0 → 미머지 없음으로 간주(안전 회수).
+  // 데이터 안전 게이트 (1) — 미커밋 작업물 보존. 미머지 커밋 검사보다 먼저.
+  // isClean 재사용: worktree 디렉토리를 cwd 로 git status --porcelain(untracked 포함) 실행.
+  // 워커가 아직 커밋하지 않은 편집물이 있으면 회수하지 않는다(force-remove 시 손실 → fresh-resume 전제 붕괴).
+  if (!isClean({ cwd: absPath })) {
+    return {
+      ok: false,
+      preserved: true,
+      error: `worktree 이미 존재 + 미커밋 작업물 있음 (보존): ${wtPath} — 워커가 커밋 안 한 편집물 손실 방지. 확인 후 회수하려면 수동으로 'git worktree remove --force ${wtPath}'`,
+    };
+  }
+
+  // 데이터 안전 게이트 (2) — 미머지 커밋 보존. 브랜치 없으면 git status!=0 → 미머지 없음으로 간주(안전 회수).
   const log = git(['log', '--oneline', `${baseBranch}..${branchName}`], opts);
   const hasUnmerged = log.status === 0 && (log.stdout || '').trim() !== '';
   if (hasUnmerged) {
     return {
       ok: false,
       preserved: true,
-      error: `worktree 이미 존재 + 미머지 커밋 있음 (보존): ${wtPath} — /pact:resume 또는 수동 정리`,
+      error: `worktree 이미 존재 + 미머지 커밋 있음 (보존): ${wtPath} — /pact:resume 또는 수동으로 'git worktree remove --force ${wtPath}'`,
     };
   }
 
-  // 미머지 작업 없음 → 안전하게 회수 (worktree remove + branch -D + 잔재 rm)
+  // clean AND 미머지 없음 → 안전하게 회수 (worktree remove + branch -D + 잔재 rm)
   removeWorktree(taskId, { ...opts, force: true });
   if (fs.existsSync(absPath)) {
     try { fs.rmSync(absPath, { recursive: true, force: true }); } catch { /* ignore */ }

@@ -242,5 +242,41 @@ test('reconcileWorktree — 미머지 커밋 있는 worktree는 보존하고 ok:
     assert.equal(r.ok, false, '미머지 커밋 있으면 회수 거부');
     assert.equal(r.preserved, true);
     assert.ok(fs.existsSync(path.join(wtAbs, 'work.txt')), '미머지 작업 보존돼야');
+    // 미머지(commit) 메시지는 dirty 메시지와 분리돼야 — "미머지"를 명시
+    assert.match(r.error, /미머지/, '미머지 메시지여야');
+  } finally { cleanup(repo); }
+});
+
+test('reconcileWorktree — 미커밋 작업물(untracked)만 있어도 보존 (STAB-3, 데이터 안전)', () => {
+  const repo = makeRepo();
+  try {
+    const first = createWorktree('PROJ-003', 'main', { cwd: repo });
+    const wtAbs = path.join(repo, first.working_dir);
+    // 워커가 아직 커밋하지 않은 새 파일 — force-remove되면 손실되던 케이스
+    fs.writeFileSync(path.join(wtAbs, 'wip.txt'), 'work-in-progress\n');
+    const r = reconcileWorktree('PROJ-003', 'main', { cwd: repo });
+    assert.equal(r.ok, false, '미커밋 작업물 있으면 회수 거부해야');
+    assert.equal(r.preserved, true);
+    assert.ok(fs.existsSync(path.join(wtAbs, 'wip.txt')), '미커밋 작업물 보존돼야');
+    // dirty 메시지는 unmerged와 분리 + 수동 탈출구(git worktree remove --force) 안내
+    assert.match(r.error, /미커밋/, 'dirty 메시지여야');
+    assert.match(r.error, /git worktree remove --force/, '수동 탈출구 안내해야');
+  } finally { cleanup(repo); }
+});
+
+test('reconcileWorktree — 추적파일 수정(미커밋)만 있어도 보존 (STAB-3)', () => {
+  const repo = makeRepo();
+  try {
+    const first = createWorktree('PROJ-004', 'main', { cwd: repo });
+    const wtAbs = path.join(repo, first.working_dir);
+    fs.writeFileSync(path.join(wtAbs, 'README.md'), '# test\nlocal uncommitted edit\n');
+    const r = reconcileWorktree('PROJ-004', 'main', { cwd: repo });
+    assert.equal(r.ok, false, '미커밋 수정 있으면 회수 거부해야');
+    assert.equal(r.preserved, true);
+    assert.equal(
+      fs.readFileSync(path.join(wtAbs, 'README.md'), 'utf8'),
+      '# test\nlocal uncommitted edit\n',
+      '미커밋 수정 내용 보존돼야',
+    );
   } finally { cleanup(repo); }
 });
