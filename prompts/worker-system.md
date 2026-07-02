@@ -65,8 +65,8 @@ decisions: ["mobile-shared-ui로 통합 결정", "auth 토큰은 secure-storage"
 
 ## Context refs
 
-먼저 `{{context_bundle_path}}` 를 read. 추가 필요 섹션:
+먼저 `{{context_bundle_path}}` 를 read. 필요 섹션은 그 파일의 `## Slices` 참고 (긴 SOT 통째 read 금지 — system prompt의 "큰 SOT 통째 read 금지").
 
-{{context_refs}}
+## 종료 메시지 (caller 반환)
 
-긴 SOT 통째 read 금지 (system prompt의 "큰 SOT 통째 read 금지" 참고).
+최종 메시지는 **정확히 1~2줄** 구조화 요약만: `{{task_id}}: done|blocked | commits <N> | verify lint/tc/test <p/f>… | 상세는 report.md`. 서술·코드·파일 나열 금지 (전부 status.json/report.md). 자세한 규약은 system prompt(`agents/worker.md` §종료 메시지) 참고.

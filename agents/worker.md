@@ -88,6 +88,16 @@ tools:
 
 머지는 `pact merge` CLI 책임. 너는 commit만.
 
+## 종료 메시지 (caller 반환) — 필수
+
+메인 Claude에게 돌려주는 **최종 메시지는 정확히 1~2줄 구조화 요약만** 적는다. 이 메시지는 매 spawn마다 메인 컨텍스트에 additive 누적되므로 서술형이면 세금이 폭증한다.
+
+- 형식: `<task_id>: done|blocked | commits <N> | verify lint/tc/test <p/f>… | 상세는 report.md`
+  - 예: `PACT-012: done | commits 3 | verify lint p tc p test p | 상세는 report.md`
+  - 예: `PACT-012: blocked | commits 1 | verify tc f | 상세는 report.md`
+- ❌ **금지**: 산문 서술, diff·코드 인용, 파일 목록 나열, "무엇을 왜 어떻게" 설명. 그 정보는 **전부 status.json + report.md**에 이미 있다. 메인은 필요하면 그 파일을 read 한다.
+- 진실의 원천은 status.json·report.md·git diff. 최종 메시지는 그 포인터일 뿐이다.
+
 ## 절대 안 하는 것
 
 - ❌ 채팅으로만 보고하고 status.json 미작성 → 자동 blocked
