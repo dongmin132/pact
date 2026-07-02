@@ -10,6 +10,7 @@ const {
   matchesGlob,
   checkPath,
   readOwnership,
+  countOwnershipParseErrors,
   detectWorktreeContext,
   isInsideWorktree,
   isBlockedLongSotRel,
@@ -139,6 +140,54 @@ owner_paths:
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
+});
+
+// ─── STAB-9: 손상 ownership fail-open 진단 ───
+
+test('countOwnershipParseErrors — 손상 yaml은 parseErrors>0 + ownerCount 0', () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pact-hook-'));
+  try {
+    // duplicate key → yaml-mini throw → 블록 skip → owner_paths 0건
+    fs.writeFileSync(path.join(tmpDir, 'MODULE_OWNERSHIP.md'), `## auth
+
+\`\`\`yaml
+module: auth
+module: dup
+owner_paths:
+  - src/auth/**
+\`\`\`
+`);
+    const diag = countOwnershipParseErrors(tmpDir);
+    assert.equal(diag.sources, 1);
+    assert.ok(diag.parseErrors > 0, `parseErrors=${diag.parseErrors}`);
+    assert.equal(diag.ownerCount, 0);
+  } finally { fs.rmSync(tmpDir, { recursive: true, force: true }); }
+});
+
+test('countOwnershipParseErrors — 정상 파일은 parseErrors 0 + ownerCount>0', () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pact-hook-'));
+  try {
+    fs.writeFileSync(path.join(tmpDir, 'MODULE_OWNERSHIP.md'), `## auth
+\`\`\`yaml
+module: auth
+owner_paths:
+  - src/auth/**
+\`\`\`
+`);
+    const diag = countOwnershipParseErrors(tmpDir);
+    assert.equal(diag.parseErrors, 0);
+    assert.ok(diag.ownerCount > 0);
+  } finally { fs.rmSync(tmpDir, { recursive: true, force: true }); }
+});
+
+test('countOwnershipParseErrors — 소스 없으면 sources 0', () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pact-hook-'));
+  try {
+    const diag = countOwnershipParseErrors(tmpDir);
+    assert.equal(diag.sources, 0);
+    assert.equal(diag.parseErrors, 0);
+    assert.equal(diag.ownerCount, 0);
+  } finally { fs.rmSync(tmpDir, { recursive: true, force: true }); }
 });
 
 test('detectWorktreeContext — worktree 안에서 task_id 추출', () => {
@@ -298,5 +347,63 @@ test('hook 통합 — 범위 안 Bash 쓰기는 통과 (빈 출력)', () => {
     const r = runHook({ tool_name: 'Bash', tool_input: { command: 'echo hi > apps/log.txt' }, cwd: wt });
     assert.equal(r.status, 0, r.stderr);
     assert.doesNotMatch(r.stdout, /deny/);
+  } finally { fs.rmSync(repo, { recursive: true, force: true }); }
+});
+
+// --- STAB-9: 손상 ownership → 비차단 경고 (조용한 fail-open 방지, 차단은 안 함) ---
+
+test('hook 통합 — 손상 MODULE_OWNERSHIP는 경고만 표면화하고 차단 안 함 (STAB-9)', () => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'pact-hook-own-'));
+  try {
+    fs.writeFileSync(path.join(repo, 'MODULE_OWNERSHIP.md'), `## auth
+
+\`\`\`yaml
+module: auth
+module: dup
+owner_paths:
+  - src/auth/**
+\`\`\`
+`);
+    const r = runHook({ tool_name: 'Write', tool_input: { file_path: 'src/auth/login.ts' }, cwd: repo });
+    assert.equal(r.status, 0, r.stderr);
+    // 차단은 안 함
+    assert.doesNotMatch(r.stdout, /deny/);
+    // 경고 신호가 stdout(systemMessage) 또는 stderr 에 표면화
+    const surfaced = r.stdout + r.stderr;
+    assert.match(surfaced, /MODULE_OWNERSHIP|fail-open|파싱|owner_paths/);
+  } finally { fs.rmSync(repo, { recursive: true, force: true }); }
+});
+
+test('hook 통합 — 정상 ownership + 소유 경로 편집은 경고/차단 없음 (STAB-9 회귀)', () => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'pact-hook-own-'));
+  try {
+    fs.writeFileSync(path.join(repo, 'MODULE_OWNERSHIP.md'), `## auth
+\`\`\`yaml
+module: auth
+owner_paths:
+  - src/auth/**
+\`\`\`
+`);
+    const r = runHook({ tool_name: 'Write', tool_input: { file_path: 'src/auth/login.ts' }, cwd: repo });
+    assert.equal(r.status, 0, r.stderr);
+    assert.doesNotMatch(r.stdout, /deny/);
+    assert.doesNotMatch(r.stdout + r.stderr, /fail-open/);
+  } finally { fs.rmSync(repo, { recursive: true, force: true }); }
+});
+
+test('hook 통합 — 정상 ownership + 비소유 경로 편집은 여전히 deny (STAB-9 회귀)', () => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'pact-hook-own-'));
+  try {
+    fs.writeFileSync(path.join(repo, 'MODULE_OWNERSHIP.md'), `## auth
+\`\`\`yaml
+module: auth
+owner_paths:
+  - src/api/**
+\`\`\`
+`);
+    const r = runHook({ tool_name: 'Write', tool_input: { file_path: 'src/components/x.ts' }, cwd: repo });
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /deny/);
+    assert.match(r.stdout, /MODULE_OWNERSHIP/);
   } finally { fs.rmSync(repo, { recursive: true, force: true }); }
 });

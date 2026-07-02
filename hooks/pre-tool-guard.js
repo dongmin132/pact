@@ -39,7 +39,9 @@ function matchesGlob(filePath, glob) {
   return globToRegex(glob).test(filePath);
 }
 
-function readOwnership(cwd) {
+// ownership 소스(legacy + shard)를 한 번 훑어 owner_paths 와 파싱 진단을 함께 수집.
+// readOwnership(소비자 shape 유지)과 countOwnershipParseErrors(STAB-9 진단)의 공용.
+function collectOwnership(cwd) {
   // ADR-018: legacy MODULE_OWNERSHIP.md + contracts/modules/*.md shard 합집합.
   const sources = [];
   const legacy = path.join(cwd, 'MODULE_OWNERSHIP.md');
@@ -50,22 +52,63 @@ function readOwnership(cwd) {
       if (f.endsWith('.md')) sources.push(path.join(shardDir, f));
     }
   }
-  if (sources.length === 0) return null;
 
   const owners = [];
+  let blocks = 0;
+  let parseErrors = 0;
   for (const src of sources) {
-    const content = fs.readFileSync(src, 'utf8');
-    const blocks = [...content.matchAll(/```yaml\s*\n([\s\S]*?)\n```/g)];
-    for (const m of blocks) {
+    let content;
+    try {
+      content = fs.readFileSync(src, 'utf8');
+    } catch {
+      parseErrors++;  // 소스 읽기 실패도 "정의됐으나 못 읽음"으로 계상
+      continue;
+    }
+    const matched = [...content.matchAll(/```yaml\s*\n([\s\S]*?)\n```/g)];
+    for (const m of matched) {
+      blocks++;
       try {
         const parsed = yaml.load(m[1]);
         if (parsed && Array.isArray(parsed.owner_paths)) {
           owners.push(...parsed.owner_paths);
         }
-      } catch { /* skip bad yaml */ }
+      } catch {
+        parseErrors++;  // 손상 yaml — 조용히 삼키지 말고 카운트해 표면화
+      }
     }
   }
+  return { sources, owners, blocks, parseErrors };
+}
+
+function readOwnership(cwd) {
+  const { sources, owners } = collectOwnership(cwd);
+  if (sources.length === 0) return null;  // 소스 없음 → 강제 X (기존 shape 유지)
   return owners;
+}
+
+// STAB-9: "소스는 있는데 owner_paths 0건 + yaml 파싱 실패"를 구분하기 위한 진단.
+// 손상 ownership 이 readOwnership 을 []로 만들어 조용한 fail-open(전체 허용)이 되는
+// 경로를, 소비부(pre-tool-guard main)가 비차단 경고로 표면화할 수 있게 노출.
+function countOwnershipParseErrors(cwd) {
+  const { sources, owners, blocks, parseErrors } = collectOwnership(cwd);
+  return {
+    sources: sources.length,
+    blocks,
+    parseErrors,
+    ownerCount: owners.length,
+  };
+}
+
+// 손상 ownership 경고를 비차단으로 표면화 (stderr + systemMessage). 차단(deny) X.
+function emitOwnershipParseWarning(diag) {
+  const msg =
+    `pact 경고: ownership 정의 소스 ${diag.sources}개를 읽었으나 owner_paths 0건 + ` +
+    `yaml 파싱 실패 ${diag.parseErrors}건. 손상된 MODULE_OWNERSHIP 은 조용한 ` +
+    `fail-open(전체 파일 허용)을 유발합니다 — 안전을 위해 차단하지 않고 통과시키되 경고합니다. ` +
+    `MODULE_OWNERSHIP.md / contracts/modules/*.md 의 yaml 블록을 점검하세요.`;
+  try { process.stderr.write(`${msg}\n`); } catch { /* ignore */ }
+  // permissionDecision 없이 systemMessage 만 — 강제 allow/deny 아님(정상 권한 흐름 유지).
+  process.stdout.write(JSON.stringify({ systemMessage: msg }));
 }
 
 function checkPath(filePath, ownerPaths) {
@@ -360,7 +403,16 @@ function main() {
   // 프로젝트 루트 밖이면 ownership 검사 대상 X (메인이 /tmp, ~/.claude/plugins 등 만질 때)
   if (rel.startsWith('..') || path.isAbsolute(rel)) process.exit(0);
   const owners = readOwnership(cwd);
-  if (!owners) process.exit(0);  // ownership 미정의 → 통과
+  if (!owners) process.exit(0);  // ownership 미정의(소스 없음) → 통과
+
+  // STAB-9: 소스는 있는데 owner_paths 0건이고 yaml 파싱 실패가 있으면,
+  // checkPath 가 빈 목록을 전체 허용으로 처리해 조용한 fail-open 이 된다.
+  // fail-closed 는 데드락·회귀 위험이라 채택 X — 대신 비차단 경고만 표면화하고 allow 유지.
+  if (owners.length === 0) {
+    const diag = countOwnershipParseErrors(cwd);
+    if (diag.parseErrors > 0) emitOwnershipParseWarning(diag);
+    process.exit(0);  // allow 유지
+  }
 
   const r = checkPath(rel, owners);
   if (r.allowed) process.exit(0);
@@ -379,7 +431,7 @@ function main() {
 }
 
 module.exports = {
-  matchesGlob, checkPath, readOwnership, globToRegex,
+  matchesGlob, checkPath, readOwnership, countOwnershipParseErrors, globToRegex,
   detectWorktreeContext, isInsideWorktree,
   isBlockedLongSotRel, isAllowedReadRel, checkWorkerRead,
   extractWriteTargets, checkBashWrite,
