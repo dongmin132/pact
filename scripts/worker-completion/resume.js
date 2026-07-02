@@ -12,6 +12,21 @@ function shouldResume(result, resumeCount, maxResume = DEFAULT_MAX_RESUME) {
   return !!(result && result.incomplete) && resumeCount < maxResume;
 }
 
+// 실 SDK 워커 결과를 {ok, incomplete, reason}로 분류한다.
+// incomplete=true = "실패 아니라 미완(부분작업 보존·resume 대상)". incomplete=false = 일시에러(retry).
+//
+// ⚠️ 라이브 --real 로 발견한 실버그: SDK 는 abort/timeout 시 throw 하지 않고
+// subtype='error_during_execution' 인 result 를 **반환**한다 → runWorkerReal 의 catch(=timeout→
+// incomplete 의도)가 우회되고, subtype 기반 조건(error_max_*)에도 안 걸려 incomplete=false 로
+// 오분류 → resume 대신 retry(같은 timeout 반복) + 부분작업 미보존. 따라서 timedOut/aborted 를
+// subtype 보다 우선해 incomplete 로 잡는다.
+function classifyRealResult({ subtype, timedOut = false, aborted = false } = {}) {
+  if (subtype === 'success') return { ok: true, incomplete: false, reason: 'success' };
+  if (timedOut || aborted) return { ok: false, incomplete: true, reason: 'timeout' };
+  const incomplete = subtype === 'error_max_budget_usd' || subtype === 'error_max_turns';
+  return { ok: false, incomplete, reason: subtype };
+}
+
 // fresh 워커용 연속 프롬프트 — "처음부터 다시 X, 부분작업 이어서".
 function continuationPrompt(task, n) {
   const orig = task.task_prompt || '';
@@ -30,4 +45,4 @@ function withContinuation(task, n) {
   return { ...task, task_prompt: continuationPrompt(task, n), _resume: n };
 }
 
-module.exports = { shouldResume, continuationPrompt, withContinuation, DEFAULT_MAX_RESUME };
+module.exports = { shouldResume, classifyRealResult, continuationPrompt, withContinuation, DEFAULT_MAX_RESUME };

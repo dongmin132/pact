@@ -4,7 +4,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { shouldResume, continuationPrompt, withContinuation } = require('../scripts/worker-completion/resume.js');
+const { shouldResume, continuationPrompt, withContinuation, classifyRealResult } = require('../scripts/worker-completion/resume.js');
 
 test('shouldResume: 미완(incomplete) + cap 미만이면 재개', () => {
   assert.equal(shouldResume({ incomplete: true }, 0, 2), true);
@@ -32,4 +32,38 @@ test('withContinuation: task_prompt 교체, 원본 불변', () => {
   assert.match(c.task_prompt, /ORIG/);
   assert.equal(c._resume, 1);
   assert.equal(task.task_prompt, 'ORIG', '원본 task 불변');
+});
+
+// classifyRealResult — 실 SDK 워커 결과를 {ok, incomplete, reason}로 분류.
+// 핵심: abort/timeout 시 SDK 가 throw 아니라 subtype='error_during_execution' result 를
+// 반환하는 실제 동작(라이브 --real 로 발견) → incomplete 로 안 잡혀 resume 대신 retry 되던 버그.
+
+test('classifyRealResult: success → ok, 미완 아님', () => {
+  const r = classifyRealResult({ subtype: 'success' });
+  assert.equal(r.ok, true);
+  assert.equal(r.incomplete, false);
+});
+
+test('classifyRealResult: timeout/abort 는 error_during_execution 이어도 incomplete (실버그 회귀)', () => {
+  // SDK 가 abort 시 throw 안 하고 error_during_execution result 를 반환 → catch 우회.
+  const r = classifyRealResult({ subtype: 'error_during_execution', timedOut: true });
+  assert.equal(r.ok, false);
+  assert.equal(r.incomplete, true, 'timeout 은 미완(보존·resume) — 일시에러 retry 아님');
+  assert.equal(r.reason, 'timeout');
+});
+
+test('classifyRealResult: aborted signal 도 incomplete', () => {
+  const r = classifyRealResult({ subtype: 'error_during_execution', aborted: true });
+  assert.equal(r.incomplete, true);
+});
+
+test('classifyRealResult: budget/turn 소진 → incomplete', () => {
+  assert.equal(classifyRealResult({ subtype: 'error_max_budget_usd' }).incomplete, true);
+  assert.equal(classifyRealResult({ subtype: 'error_max_turns' }).incomplete, true);
+});
+
+test('classifyRealResult: timeout 아닌 일시 에러 → incomplete 아님(retry 대상)', () => {
+  const r = classifyRealResult({ subtype: 'error_during_execution' });
+  assert.equal(r.ok, false);
+  assert.equal(r.incomplete, false, 'timeout/abort 아니면 일시에러 → retry');
 });

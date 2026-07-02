@@ -100,7 +100,7 @@ const toolBrief = (name, input) => {
 const nodeRequire = createRequire(import.meta.url);
 const { guardToolUse } = nodeRequire(join(PLUGIN_ROOT, 'scripts', 'lib', 'worker-guard.js'));
 const { writeJsonAtomic } = nodeRequire(join(PLUGIN_ROOT, 'scripts', 'lib', 'atomic-write.js'));
-const { shouldResume, withContinuation } = nodeRequire(join(PLUGIN_ROOT, 'scripts', 'worker-completion', 'resume.js'));
+const { shouldResume, classifyRealResult, withContinuation } = nodeRequire(join(PLUGIN_ROOT, 'scripts', 'worker-completion', 'resume.js'));
 
 // ---- (P5) 관측성: driver-state.json 단일 writer (atomic) -------------------
 // 드라이버가 죽어도 디스크에 마지막 상태가 남아 사람이 pact status / 파일로 진행 파악.
@@ -235,10 +235,12 @@ async function runWorkerReal(task /*, attempt */) {
         }
       }
     }
-    if (subtype === 'success') return { ok: true, usage, cost, turns, via: 'real' };
-    // budget/turns 한도 도달 = 끊긴 게 아니라 미완 → 부분작업 보존 대상(incomplete)
-    const incomplete = subtype === 'error_max_budget_usd' || subtype === 'error_max_turns';
-    return { ok: false, reason: subtype, usage, cost, turns, via: 'real', incomplete };
+    // ⚠️ SDK 는 abort/timeout 시 throw 하지 않고 subtype='error_during_execution' result 를
+    // 반환할 수 있다(라이브 --real 로 발견) → timedOut/aborted 를 subtype 보다 우선해 incomplete
+    // 로 분류(안 그러면 resume 대신 retry + 부분작업 미보존). 단일소스 resume.js.
+    const cls = classifyRealResult({ subtype, timedOut, aborted: ac.signal.aborted });
+    if (cls.ok) return { ok: true, usage, cost, turns, via: 'real' };
+    return { ok: false, reason: cls.reason, usage, cost, turns, via: 'real', incomplete: cls.incomplete };
   } catch (e) {
     // timeout/예외 — 본 만큼의 cost 보존, worktree 부분작업 보존 대상(incomplete).
     const reason = (timedOut || ac.signal.aborted) ? 'timeout' : ('error:' + ((e && e.message) || e));
