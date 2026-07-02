@@ -8,7 +8,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 
-const { writeFileAtomic, writeJsonAtomic } = require('../scripts/lib/atomic-write.js');
+const { writeFileAtomic, writeJsonAtomic, writeFileExclusive } = require('../scripts/lib/atomic-write.js');
 
 function tmpDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'pact-aw-'));
@@ -38,6 +38,40 @@ test('writeFileAtomic — 성공 후 .tmp 잔재 없음', () => {
   try {
     writeFileAtomic(path.join(dir, 'a.txt'), 'x');
     const leftovers = fs.readdirSync(dir).filter(n => n.includes('.tmp'));
+    assert.deepEqual(leftovers, [], `tmp 잔재: ${leftovers}`);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+// ─── writeFileExclusive (STAB-2: 락 O_EXCL/link 기반 배타 공개) ───
+
+test('writeFileExclusive — 새 파일이면 true + 내용 정확', () => {
+  const dir = tmpDir();
+  try {
+    const f = path.join(dir, 'lock.pid');
+    const won = writeFileExclusive(f, 'first\n');
+    assert.equal(won, true);
+    assert.equal(fs.readFileSync(f, 'utf8'), 'first\n');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('writeFileExclusive — 이미 존재하면 false(EEXIST) + 기존 내용 보존', () => {
+  const dir = tmpDir();
+  try {
+    const f = path.join(dir, 'lock.pid');
+    assert.equal(writeFileExclusive(f, 'first\n'), true);
+    // 두 번째 획득자는 원자적으로 패배 — 기존 내용 절대 훼손 X
+    assert.equal(writeFileExclusive(f, 'second\n'), false);
+    assert.equal(fs.readFileSync(f, 'utf8'), 'first\n');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('writeFileExclusive — 성공/패배 모두 tmp 잔재 없음', () => {
+  const dir = tmpDir();
+  try {
+    const f = path.join(dir, 'lock.pid');
+    writeFileExclusive(f, 'first\n');   // 성공
+    writeFileExclusive(f, 'second\n');  // 패배(EEXIST)
+    const leftovers = fs.readdirSync(dir).filter(n => n.includes('.xtmp') || n.includes('.tmp'));
     assert.deepEqual(leftovers, [], `tmp 잔재: ${leftovers}`);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
