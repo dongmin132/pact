@@ -15,7 +15,12 @@ const { spawnSync } = require('child_process');
 const PLUGIN_ROOT = path.join(__dirname, '..', '..');
 
 const { discoverTaskFiles, parseTaskFiles } = require(path.join(PLUGIN_ROOT, 'scripts', 'task-sources.js'));
-const { buildBatches } = require(path.join(PLUGIN_ROOT, 'batch-builder.js'));
+const {
+  buildBatches,
+  pathsOverlap,
+  depTaskId,
+  allDependenciesMet,
+} = require(path.join(PLUGIN_ROOT, 'batch-builder.js'));
 const {
   checkEnvironment,
   createWorktree,
@@ -94,9 +99,35 @@ function isAlreadyPrepared(cwd) {
 }
 
 /**
+ * 디스크의 기존 payload.json 하나로부터 task_prompt 원소를 재구성한다(per-task 판정).
+ * fresh prepare 와 동일한 makeTaskPrompt 단일 소스를 써서 drift 를 원천 제거.
+ * already_prepared(rebuildTaskPrompts) 와 admit 멱등 경로가 공유한다.
+ */
+function rebuildOneTaskPrompt(cwd, id) {
+  const runs = path.join(cwd, '.pact/runs', id);
+  const payload = JSON.parse(fs.readFileSync(path.join(runs, 'payload.json'), 'utf8'));
+  const paths = {
+    prompt_path: path.join(runs, 'prompt.md'),
+    context_path: path.join(runs, 'context.md'),
+    status_path: path.join(runs, 'status.json'),
+    report_path: path.join(runs, 'report.md'),
+  };
+  return {
+    task_id: id,
+    title: payload.title || '',
+    task_prompt: makeTaskPrompt(payload, paths),
+    prompt_path: path.relative(cwd, paths.prompt_path),
+    context_path: path.relative(cwd, paths.context_path),
+    status_path: path.relative(cwd, paths.status_path),
+    report_path: path.relative(cwd, paths.report_path),
+    working_dir: payload.working_dir,
+    loop_until: payload.loop_until || null,
+  };
+}
+
+/**
  * already_prepared 시 디스크의 기존 batch 로부터 task_prompts 를 재구성한다.
- * fresh prepare 와 동일한 makeTaskPrompt 단일 소스를 써서 drift 를 원천 제거
- * (드라이버가 자체 reconstruct 할 필요 없음). 각 task status.json 으로 done 여부도 판정.
+ * 각 task status.json 으로 done 여부도 판정.
  */
 function rebuildTaskPrompts(cwd) {
   const cb = JSON.parse(fs.readFileSync(path.join(cwd, CURRENT_BATCH_FILE), 'utf8'));
@@ -104,31 +135,104 @@ function rebuildTaskPrompts(cwd) {
   const taskPrompts = [];
   let allDone = ids.length > 0;
   for (const id of ids) {
-    const runs = path.join(cwd, '.pact/runs', id);
-    const payload = JSON.parse(fs.readFileSync(path.join(runs, 'payload.json'), 'utf8'));
-    const paths = {
-      prompt_path: path.join(runs, 'prompt.md'),
-      context_path: path.join(runs, 'context.md'),
-      status_path: path.join(runs, 'status.json'),
-      report_path: path.join(runs, 'report.md'),
-    };
-    taskPrompts.push({
-      task_id: id,
-      title: payload.title || '',
-      task_prompt: makeTaskPrompt(payload, paths),
-      prompt_path: path.relative(cwd, paths.prompt_path),
-      context_path: path.relative(cwd, paths.context_path),
-      status_path: path.relative(cwd, paths.status_path),
-      report_path: path.relative(cwd, paths.report_path),
-      working_dir: payload.working_dir,
-      loop_until: payload.loop_until || null,
-    });
+    taskPrompts.push(rebuildOneTaskPrompt(cwd, id));
     let done = false;
-    try { done = JSON.parse(fs.readFileSync(paths.status_path, 'utf8')).status === 'done'; } catch { /* 미완 */ }
+    try {
+      done = JSON.parse(fs.readFileSync(path.join(cwd, '.pact/runs', id, 'status.json'), 'utf8')).status === 'done';
+    } catch { /* 미완 */ }
     if (!done) allDone = false;
   }
   // coordinator_review_needed 는 pre-spawn 검토 제거(P1-3)로 deprecated — 항상 false.
   return { task_prompts: taskPrompts, ready_to_collect: allDone, coordinator_review_needed: false };
+}
+
+/** task 하나가 이미 준비됨(worktree + payload + prompt 존재)인지 per-task 판정. admit 멱등용. */
+function isTaskPrepared(cwd, id) {
+  return fs.existsSync(path.join(cwd, '.pact', 'worktrees', id))
+    && fs.existsSync(path.join(cwd, '.pact', 'runs', id, 'prompt.md'))
+    && fs.existsSync(path.join(cwd, '.pact', 'runs', id, 'payload.json'));
+}
+
+/** batch0 task 와 admit task 가 공유하는 worker payload 구성(중복 구현 방지). */
+function buildTaskPayload(task, wt, baseBranch, parsed) {
+  return {
+    task_id: task.id,
+    title: task.title || '',
+    allowed_paths: task.allowed_paths || [],
+    forbidden_paths: task.forbidden_paths || [],
+    done_criteria: task.done_criteria || [],
+    verify_commands: task.verify_commands || [],
+    contracts: task.contracts || {},
+    context_refs: task.context_refs || [],
+    tdd: !!task.tdd,
+    educational_mode: !!(parsed.frontmatter && parsed.frontmatter.educational_mode),
+    prd_reference: task.prd_reference || null,
+    working_dir: wt.working_dir,
+    branch_name: wt.branch_name,
+    base_branch: baseBranch,
+    context_budget_tokens: task.context_budget_tokens || 20000,
+    loop_until: task.loop_until || null,
+  };
+}
+
+/** prepareWorkerSpawn 결과 → prepare 의 task_prompts 원소 shape. prepare/admit 공용. */
+function buildTaskPromptEntry(r, wt, payload, cwd) {
+  return {
+    task_id: payload.task_id,
+    title: payload.title || '',
+    task_prompt: r.task_prompt,
+    prompt_path: path.relative(cwd, r.prompt_path),
+    context_path: path.relative(cwd, r.context_path),
+    status_path: path.relative(cwd, r.status_path),
+    report_path: path.relative(cwd, r.report_path),
+    working_dir: wt.working_dir,
+    loop_until: payload.loop_until || null,
+  };
+}
+
+/**
+ * task 1개의 worktree 생성 + payload/context 렌더 (doPrepare 루프 · admit 공통 per-task 로직).
+ * reconcile(stale 자가치유) → createWorktree → payload → prepareWorkerSpawn → task_prompt 원소.
+ * @returns {{ok:true, entry, bundle_warnings:Array}
+ *   | {ok:false, stage:string, error:string, worktreeCreated:boolean}}
+ */
+function prepareOneTask(task, baseBranch, parsed, cwd) {
+  const rec = reconcileWorktree(task.id, baseBranch, { cwd });
+  if (!rec.ok) return { ok: false, stage: 'worktree', error: rec.error, worktreeCreated: false };
+
+  const wt = createWorktree(task.id, baseBranch, { cwd });
+  if (!wt.ok) return { ok: false, stage: 'worktree', error: wt.error, worktreeCreated: false };
+
+  const payload = buildTaskPayload(task, wt, baseBranch, parsed);
+  const r = prepareWorkerSpawn(payload, { cwd, runsRoot: path.join(cwd, '.pact/runs') });
+  if (!r.ok) {
+    return { ok: false, stage: 'spawn-prepare', error: (r.errors || []).join('; '), worktreeCreated: true };
+  }
+  return { ok: true, entry: buildTaskPromptEntry(r, wt, payload, cwd), bundle_warnings: r.bundle_warnings || [] };
+}
+
+/**
+ * 전체 task DAG 를 드라이버가 소비할 그래프로 emit (P2-1 · SPD-2, --graph 뒤에서만).
+ * batch0 밖 pending task 만 담아 슬롯 파이프라인이 pull 대상을 알게 한다.
+ * ready = 그 중 완료 task 로 의존 충족된 것(overflow 이지만 즉시 admit 가능한 후보).
+ * 실제 admit 은 pathsOverlap 재검사를 거치므로 ready 는 dependency-readiness 만 의미한다.
+ */
+function buildTaskGraph(tasks, batch0) {
+  const batch0Ids = new Set(batch0.map(t => t.id));
+  const completedIds = new Set(tasks.filter(t => t.status === 'done').map(t => t.id));
+  const graph = { ready: [], tasks: {} };
+  for (const t of tasks) {
+    if (t.status === 'done' || t.status === 'failed') continue; // pending 만
+    if (batch0Ids.has(t.id)) continue;                          // batch0 밖
+    graph.tasks[t.id] = {
+      deps: (t.dependencies || []).map(depTaskId),
+      allowed_paths: t.allowed_paths || [],
+      status: t.status || 'todo',
+      title: t.title || '',
+    };
+    if (allDependenciesMet(t, completedIds)) graph.ready.push(t.id);
+  }
+  return graph;
 }
 
 function preflight(cwd) {
@@ -267,61 +371,19 @@ function doPrepare(args, opts, cwd, pre) {
   // base branch 자동 감지 (master 기반 repo 지원, 'main' 하드코딩 제거)
   const baseBranch = detectBaseBranch({ cwd });
 
+  // P2-1 · SPD-2: prepare 는 batch0 만 upfront 생성(인터랙티브 Task-tool 배리어 호환). 나머지
+  // DAG 는 --graph 뒤로만 emit 하고, 드라이버가 슬롯이 빌 때 admit 으로 per-task on-demand 생성.
   for (const task of batch0) {
-    // 재진입 stale 자가치유 — 미머지 커밋 없는 cruft 회수 (있으면 보존하고 실패).
-    const rec = reconcileWorktree(task.id, baseBranch, { cwd });
-    if (!rec.ok) {
+    const res = prepareOneTask(task, baseBranch, parsed, cwd);
+    if (!res.ok) {
+      // 현재 task 의 worktree 가 이미 만들어졌으면(spawn-prepare 실패) 그것부터 롤백.
+      if (res.worktreeCreated) removeWorktree(task.id, { cwd });
       for (const c of created) removeWorktree(c.task_id, { cwd });
-      return fail('worktree', [{ task_id: task.id, message: rec.error }]);
-    }
-
-    const wt = createWorktree(task.id, baseBranch, { cwd });
-    if (!wt.ok) {
-      for (const c of created) removeWorktree(c.task_id, { cwd });
-      return fail('worktree', [{ task_id: task.id, message: wt.error }]);
+      return fail(res.stage, [{ task_id: task.id, message: res.error }]);
     }
     created.push({ task_id: task.id });
-
-    const payload = {
-      task_id: task.id,
-      title: task.title || '',
-      allowed_paths: task.allowed_paths || [],
-      forbidden_paths: task.forbidden_paths || [],
-      done_criteria: task.done_criteria || [],
-      verify_commands: task.verify_commands || [],
-      contracts: task.contracts || {},
-      context_refs: task.context_refs || [],
-      tdd: !!task.tdd,
-      educational_mode: !!(parsed.frontmatter && parsed.frontmatter.educational_mode),
-      prd_reference: task.prd_reference || null,
-      working_dir: wt.working_dir,
-      branch_name: wt.branch_name,
-      base_branch: baseBranch,
-      context_budget_tokens: task.context_budget_tokens || 20000,
-      loop_until: task.loop_until || null,
-    };
-
-    const r = prepareWorkerSpawn(payload, { cwd, runsRoot: path.join(cwd, '.pact/runs') });
-    if (!r.ok) {
-      for (const c of created) removeWorktree(c.task_id, { cwd });
-      return fail('spawn-prepare', [{ task_id: task.id, message: (r.errors || []).join('; ') }]);
-    }
-
-    for (const w of r.bundle_warnings || []) {
-      bundleWarnings.push({ task_id: task.id, ...w });
-    }
-
-    taskPrompts.push({
-      task_id: task.id,
-      title: task.title || '',
-      task_prompt: r.task_prompt,
-      prompt_path: path.relative(cwd, r.prompt_path),
-      context_path: path.relative(cwd, r.context_path),
-      status_path: path.relative(cwd, r.status_path),
-      report_path: path.relative(cwd, r.report_path),
-      working_dir: wt.working_dir,
-      loop_until: payload.loop_until || null,
-    });
+    for (const w of res.bundle_warnings) bundleWarnings.push({ task_id: task.id, ...w });
+    taskPrompts.push(res.entry);
   }
 
   fs.mkdirSync(path.join(cwd, '.pact'), { recursive: true });
@@ -330,7 +392,7 @@ function doPrepare(args, opts, cwd, pre) {
     prepared_at: new Date().toISOString(),
   });
 
-  emit({
+  const out = {
     ok: true,
     task_prompts: taskPrompts,
     // deprecated (P1-3): pre-spawn coordinator 검토 삭제 — 검토 4항목은 결정적 게이트가 커버
@@ -344,6 +406,133 @@ function doPrepare(args, opts, cwd, pre) {
     bundle_warnings: bundleWarnings,      // anchor 없는 대형 shard 통째 번들 — freeze/anchor 제안
     ownership_warnings: ownershipWarnings, // allowed_paths ⊄ MODULE_OWNERSHIP 오너 영역 침범 — 경계 수정 제안
     next_action: '메인이 Task tool로 위 task_prompts들을 한 메시지에서 동시 spawn (subagent_type: worker)',
+  };
+
+  // P2-1 · SPD-2: --graph 옵트인일 때만 전체 DAG 를 추가. 인터랙티브 메인 컨텍스트 오염 방지를
+  // 위해 기본 emit 은 100% 불변으로 두고, 드라이버(슬롯 파이프라인)만 이 필드를 소비한다.
+  if (args.includes('--graph')) {
+    out.task_graph = buildTaskGraph(parsed.tasks, batch0);
+  }
+
+  emit(out);
+}
+
+/**
+ * P2-1 · SPD-2 — admit: 슬롯이 빌 때 드라이버가 다음 task 1개를 온디맨드 투입.
+ * 그 순간의 CURRENT base(직전 머지 반영)에서 worktree 생성 + payload/context 렌더.
+ * in-flight 워커들의 allowed_paths 와 pathsOverlap 재검사(겹치면 거부, 자동해결 X).
+ * 멱등: 이미 준비된 task 는 재생성 없이 기존 payload 반환.
+ */
+function admit(args, opts = {}) {
+  const cwd = opts.cwd || process.cwd();
+  cleanStaleLocks({ cwd });
+
+  const taskId = args.find(a => !a.startsWith('--'));
+  if (!taskId) {
+    emit({ ok: false, stage: 'admit', errors: [{ message: 'admit <task_id> 필요 (예: admit PROJ-002 --in-flight=PROJ-001)' }] });
+    process.exit(1);
+  }
+
+  // 사이클 lock — 다른 세션의 prepare/collect/admit 과 current_batch.json 경쟁 차단.
+  const lock = acquireCycleLock({ cwd, stage: 'admit' });
+  if (!lock.ok) {
+    emit({ ok: false, stage: 'cycle-busy', errors: [{ message: lock.error, fix: '다른 세션 종료 대기 또는 pact status' }] });
+    process.exit(1);
+  }
+
+  try {
+    doAdmit(args, taskId, cwd);
+  } catch (e) {
+    if (e.pactStage) emitFail(e);
+    else throw e;
+  } finally {
+    releaseCycleLock({ cwd });
+  }
+}
+
+/** admit 된 task 를 current_batch.json 에 추가 기록(멱등 append). collect 가 함께 처리하게. */
+function recordAdmitted(cwd, taskId) {
+  const cbPath = path.join(cwd, CURRENT_BATCH_FILE);
+  let cb = {};
+  try { cb = JSON.parse(fs.readFileSync(cbPath, 'utf8')); } catch { cb = {}; }
+  const ids = Array.isArray(cb.task_ids) ? cb.task_ids.slice() : [];
+  if (!ids.includes(taskId)) ids.push(taskId);
+  fs.mkdirSync(path.join(cwd, '.pact'), { recursive: true });
+  writeJsonAtomic(cbPath, {
+    ...cb,
+    task_ids: ids,
+    prepared_at: cb.prepared_at || new Date().toISOString(),
+    last_admitted_at: new Date().toISOString(),
+  });
+}
+
+function parseInFlight(args) {
+  const i = args.findIndex(a => a === '--in-flight' || a.startsWith('--in-flight='));
+  if (i < 0) return [];
+  const raw = args[i].startsWith('--in-flight=') ? args[i].slice('--in-flight='.length) : args[i + 1];
+  if (!raw) return [];
+  return raw.split(',').map(s => s.trim()).filter(Boolean);
+}
+
+function doAdmit(args, taskId, cwd) {
+  const taskFiles = discoverTaskFiles({ cwd });
+  if (taskFiles.length === 0) {
+    return fail('admit', [{ message: 'task source(TASKS.md 또는 tasks/*.md) 없음', fix: '/pact:plan 먼저' }]);
+  }
+  const parsed = parseTaskFiles(taskFiles, { cwd });
+  if (parsed.errors.length > 0) {
+    return fail('task-parse', parsed.errors.map(e => ({ message: `${e.file || '?'} ${e.taskId || ''}: ${e.error}` })));
+  }
+  const task = parsed.tasks.find(t => t.id === taskId);
+  if (!task) {
+    return fail('admit', [{ message: `task ${taskId} 를 task source 에서 찾을 수 없음` }]);
+  }
+
+  // 멱등/재개: 이미 worktree+payload 가 있으면 재생성하지 않고 기존 payload 반환(per-task 판정).
+  // 진행 중 워커 작업물을 재베이스로 날리지 않기 위해 idempotency 가 overlap 재검사보다 우선.
+  if (isTaskPrepared(cwd, taskId)) {
+    recordAdmitted(cwd, taskId);
+    emit({ ok: true, admitted: true, already_prepared: true, task_prompt: rebuildOneTaskPrompt(cwd, taskId) });
+    return;
+  }
+
+  // in-flight 워커들의 allowed_paths 와 pathsOverlap 재검사 — 겹치면 admit 거부(정지, 자동해결 X).
+  const inFlight = parseInFlight(args);
+  const admitPaths = task.allowed_paths || [];
+  const conflicts = [];
+  for (const id of inFlight) {
+    if (id === taskId) continue;
+    const other = parsed.tasks.find(t => t.id === id);
+    const otherPaths = other ? (other.allowed_paths || []) : [];
+    if (otherPaths.length && pathsOverlap(admitPaths, otherPaths)) conflicts.push(id);
+  }
+  if (conflicts.length > 0) {
+    // 정상적 admission 거절(에러 아님, exit 0) — 드라이버는 다른 ready task 를 시도한다.
+    emit({
+      ok: false,
+      reason: 'path_overlap',
+      task_id: taskId,
+      conflicts,
+      message: `admit 거부 — in-flight task 와 allowed_paths 겹침: ${conflicts.join(', ')}`,
+    });
+    return;
+  }
+
+  // CURRENT base(직전 머지 반영)에서 worktree 생성 + payload/context 렌더(공통 per-task 로직).
+  const baseBranch = detectBaseBranch({ cwd });
+  const res = prepareOneTask(task, baseBranch, parsed, cwd);
+  if (!res.ok) {
+    if (res.worktreeCreated) removeWorktree(taskId, { cwd });
+    return fail(res.stage, [{ task_id: taskId, message: res.error }]);
+  }
+
+  recordAdmitted(cwd, taskId);
+  emit({
+    ok: true,
+    admitted: true,
+    base_branch: baseBranch,
+    task_prompt: res.entry,
+    bundle_warnings: res.bundle_warnings.map(w => ({ task_id: taskId, ...w })),
   });
 }
 
@@ -499,9 +688,12 @@ module.exports = function runCycle(args) {
   const rest = args.slice(1);
   if (sub === 'prepare') return prepare(rest);
   if (sub === 'collect') return collect(rest);
-  console.error('Usage: pact run-cycle <prepare|collect> [--max=N]');
+  if (sub === 'admit') return admit(rest);
+  console.error('Usage: pact run-cycle <prepare|collect|admit> [--max=N] [--graph]');
+  console.error('  admit <task_id> --in-flight=id1,id2   슬롯이 빌 때 다음 task 온디맨드 투입 (P2-1)');
   process.exit(1);
 };
 
 module.exports.prepare = prepare;
 module.exports.collect = collect;
+module.exports.admit = admit;

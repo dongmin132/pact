@@ -369,6 +369,8 @@ module.exports = {
   validateInput,
   depTaskId,
   depKind,
+  // P2-1 · SPD-2 — run-cycle 의 task_graph/admit 이 readiness 판정을 단일 소스로 재사용.
+  allDependenciesMet,
 };
 
 

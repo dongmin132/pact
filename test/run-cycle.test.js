@@ -787,6 +787,151 @@ test('run-cycle prepare — already_prepared + 일부만 done이면 ready_to_col
   } finally { cleanupProject(dir); }
 });
 
+// ─── P2-1 · SPD-2: prepare --graph 전체 DAG emit + admit 온디맨드 ──────
+
+test('prepare --graph — batch0 밖 pending task + ready-set 를 task_graph 로 emit', () => {
+  const dir = makeProject();
+  try {
+    writeTasks(dir, [
+      { id: 'GRAPH-001', allowed_paths: ['src/a.ts'] },
+      { id: 'GRAPH-002', allowed_paths: ['src/b.ts'] },
+      { id: 'GRAPH-003', allowed_paths: ['src/c.ts'], dependencies: ['GRAPH-002'] },
+    ]);
+    const r = runPact(['run-cycle', 'prepare', '--max=1', '--graph'], dir);
+    assert.equal(r.status, 0, `stderr: ${r.stderr}\nstdout: ${r.stdout}`);
+    const out = JSON.parse(r.stdout);
+    assert.equal(out.ok, true);
+    // --max=1 → batch0 = [GRAPH-001]
+    assert.deepEqual(out.task_prompts.map(t => t.task_id), ['GRAPH-001']);
+    assert.ok(out.task_graph, 'task_graph 필드 존재');
+    // batch0 task 는 graph 에서 제외, 나머지 pending 만 포함
+    assert.ok(!('GRAPH-001' in out.task_graph.tasks), 'batch0 task 는 graph.tasks 에서 제외');
+    assert.ok('GRAPH-002' in out.task_graph.tasks, 'overflow ready task 포함');
+    assert.ok('GRAPH-003' in out.task_graph.tasks, 'dep-blocked task 포함');
+    // GRAPH-002 는 deps 없음 → ready. GRAPH-003 은 GRAPH-002 미완 → not ready.
+    assert.deepEqual(out.task_graph.ready, ['GRAPH-002']);
+    assert.deepEqual(out.task_graph.tasks['GRAPH-003'].deps, ['GRAPH-002']);
+    assert.deepEqual(out.task_graph.tasks['GRAPH-002'].allowed_paths, ['src/b.ts']);
+    assert.equal(out.task_graph.tasks['GRAPH-002'].status, 'todo');
+    assert.equal(out.task_graph.tasks['GRAPH-003'].title, 'GRAPH-003');
+  } finally { cleanupProject(dir); }
+});
+
+test('prepare (--graph 없음) — task_graph 미출력 (기존 출력 100% 불변)', () => {
+  const dir = makeProject();
+  try {
+    writeTasks(dir, [
+      { id: 'NG-001', allowed_paths: ['src/a.ts'] },
+      { id: 'NG-002', allowed_paths: ['src/b.ts'] },
+    ]);
+    const r = runPact(['run-cycle', 'prepare'], dir);
+    assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+    const out = JSON.parse(r.stdout);
+    assert.equal(out.ok, true);
+    assert.equal(out.task_graph, undefined, '--graph 없으면 task_graph 필드 없음');
+    assert.equal(out.task_prompts.length, 2);
+  } finally { cleanupProject(dir); }
+});
+
+test('admit — 신규 task worktree + payload 생성 + task_prompt 반환 + current_batch 추가', () => {
+  const dir = makeProject();
+  try {
+    writeTasks(dir, [
+      { id: 'ADM-001', allowed_paths: ['src/a.ts'] },
+      { id: 'ADM-002', allowed_paths: ['src/b.ts'] },
+    ]);
+    const prep = runPact(['run-cycle', 'prepare', '--max=1'], dir);
+    assert.equal(prep.status, 0, prep.stderr);
+    const prepOut = JSON.parse(prep.stdout);
+    assert.deepEqual(prepOut.task_prompts.map(t => t.task_id), ['ADM-001']);
+
+    // ADM-002 를 in-flight=ADM-001 과 함께 admit — 경로 안 겹침 → 성공
+    const adm = runPact(['run-cycle', 'admit', 'ADM-002', '--in-flight=ADM-001'], dir);
+    assert.equal(adm.status, 0, `stderr: ${adm.stderr}\nstdout: ${adm.stdout}`);
+    const admOut = JSON.parse(adm.stdout);
+    assert.equal(admOut.ok, true);
+    // task_prompt 는 prepare 의 task_prompts 원소와 동일 shape
+    assert.equal(admOut.task_prompt.task_id, 'ADM-002');
+    assert.match(admOut.task_prompt.task_prompt, /ADM-002/);
+    assert.ok(admOut.task_prompt.prompt_path && admOut.task_prompt.context_path);
+    assert.ok(admOut.task_prompt.status_path && admOut.task_prompt.report_path);
+
+    assert.ok(fs.existsSync(path.join(dir, admOut.task_prompt.working_dir)), 'admit worktree 생성');
+    assert.ok(fs.existsSync(path.join(dir, admOut.task_prompt.prompt_path)), 'admit prompt.md 생성');
+    assert.ok(fs.existsSync(path.join(dir, '.pact/runs/ADM-002/payload.json')), 'admit payload.json 생성');
+
+    const cb = JSON.parse(fs.readFileSync(path.join(dir, '.pact/current_batch.json'), 'utf8'));
+    assert.ok(cb.task_ids.includes('ADM-001'), 'batch0 task 유지');
+    assert.ok(cb.task_ids.includes('ADM-002'), 'admit task 가 current_batch 에 추가됨');
+  } finally { cleanupProject(dir); }
+});
+
+test('admit — in-flight 과 allowed_paths 겹치면 path_overlap 거부 (worktree 미생성)', () => {
+  const dir = makeProject();
+  try {
+    writeTasks(dir, [
+      { id: 'OVL-001', allowed_paths: ['src/shared.ts'] },
+      { id: 'OVL-002', allowed_paths: ['src/shared.ts'] },
+    ]);
+    const prep = runPact(['run-cycle', 'prepare', '--max=1'], dir);
+    const prepOut = JSON.parse(prep.stdout);
+    // 경로 겹쳐 어차피 batch0 는 1개
+    assert.equal(prepOut.task_prompts.length, 1);
+    const inflight = prepOut.task_prompts[0].task_id;
+    const other = inflight === 'OVL-001' ? 'OVL-002' : 'OVL-001';
+
+    const adm = runPact(['run-cycle', 'admit', other, `--in-flight=${inflight}`], dir);
+    assert.equal(adm.status, 0, `path_overlap 은 정상 거절(에러 아님): ${adm.stdout}`);
+    const admOut = JSON.parse(adm.stdout);
+    assert.equal(admOut.ok, false);
+    assert.equal(admOut.reason, 'path_overlap');
+    assert.ok((admOut.conflicts || []).includes(inflight), 'conflicts 에 in-flight id');
+    assert.equal(
+      fs.existsSync(path.join(dir, `.pact/worktrees/${other}`)),
+      false,
+      'path_overlap 거부 시 worktree 미생성',
+    );
+  } finally { cleanupProject(dir); }
+});
+
+test('admit — 멱등: 이미 준비된 task 재admit 은 재생성 없이 기존 payload 반환', () => {
+  const dir = makeProject();
+  try {
+    writeTasks(dir, [
+      { id: 'RADM-001', allowed_paths: ['src/a.ts'] },
+      { id: 'RADM-002', allowed_paths: ['src/b.ts'] },
+    ]);
+    runPact(['run-cycle', 'prepare', '--max=1'], dir); // batch0 = [RADM-001]
+    const adm1 = JSON.parse(runPact(['run-cycle', 'admit', 'RADM-002', '--in-flight=RADM-001'], dir).stdout);
+    assert.equal(adm1.ok, true);
+    assert.notEqual(adm1.already_prepared, true, '첫 admit 은 신규 생성');
+
+    const payloadPath = path.join(dir, '.pact/runs/RADM-002/payload.json');
+    const before = fs.readFileSync(payloadPath, 'utf8');
+
+    const adm2 = JSON.parse(runPact(['run-cycle', 'admit', 'RADM-002', '--in-flight=RADM-001'], dir).stdout);
+    assert.equal(adm2.ok, true);
+    assert.equal(adm2.already_prepared, true, '재admit 은 멱등(already_prepared)');
+    assert.equal(adm2.task_prompt.task_id, 'RADM-002');
+    assert.equal(fs.readFileSync(payloadPath, 'utf8'), before, 'payload 재생성 안 됨');
+
+    const cb = JSON.parse(fs.readFileSync(path.join(dir, '.pact/current_batch.json'), 'utf8'));
+    assert.equal(cb.task_ids.filter(id => id === 'RADM-002').length, 1, 'current_batch 중복 추가 없음');
+  } finally { cleanupProject(dir); }
+});
+
+test('admit — 존재하지 않는 task_id 는 실패(exit 1)', () => {
+  const dir = makeProject();
+  try {
+    writeTasks(dir, [{ id: 'REAL-001', allowed_paths: ['src/a.ts'] }]);
+    runPact(['run-cycle', 'prepare', '--max=1'], dir);
+    const adm = runPact(['run-cycle', 'admit', 'GHOST-999', '--in-flight=REAL-001'], dir);
+    assert.equal(adm.status, 1, adm.stdout);
+    const admOut = JSON.parse(adm.stdout);
+    assert.equal(admOut.ok, false);
+  } finally { cleanupProject(dir); }
+});
+
 // ─── loop_until passthrough (fresh emit path) ────────────
 // writeTasks가 multi-line nested YAML을 emit하면 yaml-mini가 올바른 객체로 파싱한다.
 // 이 테스트는 FRESH prepare (cycle 1) 경로에서 loop_until이 task_prompts로 전달됨을 검증한다.
