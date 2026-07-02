@@ -1,0 +1,160 @@
+'use strict';
+
+// ============================================================================
+// pact 헤드리스 드라이버 — K-슬롯 워커 풀 스케줄러 (P2-2 · SPD-1 + SPD-3).
+// ----------------------------------------------------------------------------
+// 사이클-배리어(Promise.allSettled 로 배치 전원 종료 대기)를 K-슬롯 파이프라인으로 교체한다.
+//   - 슬롯이 비면 ready 큐에서 (a)deps 전부 done (b)in-flight 와 pathsOverlap=false 인
+//     다음 task 를 pull → admit(worktree/payload 확보) → 워커 투입.
+//   - 워커 완료 즉시 그 task 1개만 단건 머지(게이트 경유) → 다른 워커와 겹침.
+//   - cycle time Σmax(batch) → ≈ total_work/K 로 수렴.
+//
+// 순수 스케줄러 — 부수효과(admit/runTask/mergeOne/overlaps)는 전부 주입받는다.
+// 그래서 mock 으로 단위 테스트가 가능하고, 드라이버는 실제 구현을 꽂아 쓴다.
+// (충돌 자동해결 절대 없음: mergeOne 이 conflicted 를 반환하면 dispatch 중단 + 정지.)
+//
+// runPipeline(cfg) → { outcomes, merges, stoppedReason, conflicted, skipped }
+//
+// cfg:
+//   slots        K (동시 워커 수)
+//   tasks        Map<id, { deps:string[], allowed_paths:string[], size:number }>
+//                 — 이번 라운드 전체 task 집합(batch0 ∪ graph). batch0 은 deps:[] 로 넣는다.
+//   admit        async (id, inFlightIds[]) => { ok:true, task } | { ok:false, reason }
+//                 — worktree/payload 확보. batch0 은 캐시 반환, graph 는 run-cycle admit CLI.
+//                   ok:false reason='path_overlap' 이면 재큐(다른 in-flight 해소 후 재시도).
+//   runTask      async (task) => outcome   ({ task_id, status:'done'|'escalated'|'denied', ... })
+//   mergeOne     async (id, outcome) => { result:'merged'|'already_merged'|'rejected'|'conflicted', detail }
+//                 | null (데모: 머지 없음 → 워커 done 이 곧 done)
+//   overlaps     (pathsA, pathsB) => boolean   (batch-builder pathsOverlap; 데모 → ()=>false)
+//   fileCountOf  (id) => number   LPT 정렬용(없으면 tasks[id].size 사용)
+//   onEvent      (evt) => void    dispatch/settle 관측(로그·driver-state). best-effort.
+//   shouldStop   () => reason|null  예산 등 정지 신호(있으면 신규 dispatch 중단, in-flight 는 drain)
+// ============================================================================
+
+export async function runPipeline(cfg) {
+  const {
+    slots,
+    tasks,
+    admit,
+    runTask,
+    mergeOne = null,
+    overlaps = () => false,
+    fileCountOf = null,
+    onEvent = () => {},
+    shouldStop = () => null,
+  } = cfg;
+
+  const allRunIds = new Set(tasks.keys());
+  const notStarted = new Set(tasks.keys());
+  const done = new Set();          // 머지 성공(또는 데모 done) — deps 충족 신호
+  const inFlight = new Map();      // id -> { allowed_paths }
+  const running = new Map();       // id -> Promise<{ id, ... }>
+
+  const outcomes = [];
+  const merges = [];
+  let stoppedReason = null;
+  let conflicted = null;
+
+  const sizeOf = (id) => {
+    if (fileCountOf) { const n = fileCountOf(id); if (Number.isFinite(n)) return n; }
+    const t = tasks.get(id);
+    return (t && Number.isFinite(t.size)) ? t.size : 0;
+  };
+  const pathsOf = (id) => (tasks.get(id) && tasks.get(id).allowed_paths) || [];
+
+  // dep 하나가 아직 안 끝났나: 이번 라운드 소속(allRunIds)인데 done 에 없으면 blocking.
+  // 라운드 밖 dep = 이미 done(외부/이전 사이클)로 간주(prepare 가 그렇게 ready 를 계산).
+  const depsMet = (id) => {
+    const deps = (tasks.get(id) && tasks.get(id).deps) || [];
+    return deps.every((d) => done.has(d) || !allRunIds.has(d));
+  };
+  const overlapsInFlight = (id) => {
+    const p = pathsOf(id);
+    for (const [, v] of inFlight) {
+      if (overlaps(p, v.allowed_paths)) return true;
+    }
+    return false;
+  };
+
+  // 다음 투입 대상: deps 충족 + in-flight 무겹침 중 LPT(가장 큰 task 우선)로 1개.
+  const pickDispatchable = () => {
+    let best = null;
+    for (const id of notStarted) {
+      if (!depsMet(id)) continue;
+      if (overlapsInFlight(id)) continue;
+      if (best === null) { best = id; continue; }
+      const ds = sizeOf(id) - sizeOf(best);
+      if (ds > 0 || (ds === 0 && id < best)) best = id; // size desc, tie=id asc (결정적)
+    }
+    return best;
+  };
+
+  const inFlightIds = () => [...inFlight.keys()];
+
+  async function dispatch(id) {
+    onEvent({ type: 'dispatch', id, in_flight: inFlightIds() });
+    const admitRes = await admit(id, inFlightIds().filter((x) => x !== id));
+    if (!admitRes || !admitRes.ok) {
+      // path_overlap = 레이스(in-flight 가 pick 이후 변함) → 재큐. 그 외 = admit 실패(escalate).
+      const requeue = admitRes && admitRes.reason === 'path_overlap';
+      return { id, requeue, admitFailed: !requeue, reason: (admitRes && admitRes.reason) || 'admit failed' };
+    }
+    const outcome = await runTask(admitRes.task);
+    let merge = null;
+    if (mergeOne && outcome && outcome.status === 'done') {
+      merge = await mergeOne(id, outcome);
+    }
+    return { id, outcome, merge };
+  }
+
+  while (true) {
+    if (!stoppedReason) { const s = shouldStop(); if (s) stoppedReason = s; }
+
+    // 슬롯 채우기 — 정지/충돌 아니면.
+    while (!stoppedReason && !conflicted && inFlight.size < slots) {
+      const id = pickDispatchable();
+      if (id === null) break;
+      notStarted.delete(id);
+      inFlight.set(id, { allowed_paths: pathsOf(id) });
+      running.set(id, dispatch(id));
+    }
+
+    if (running.size === 0) break; // 더 돌릴 것도, 기다릴 것도 없음 → 종료
+
+    const res = await Promise.race(running.values());
+    running.delete(res.id);
+    inFlight.delete(res.id);
+
+    if (res.requeue) {
+      // in-flight 해소를 기다렸다 재시도 — 다음 루프의 pickDispatchable 이 재검사.
+      notStarted.add(res.id);
+      onEvent({ type: 'requeue', id: res.id });
+      continue;
+    }
+    if (res.admitFailed) {
+      const o = { task_id: res.id, status: 'escalated', reason: `admit 실패: ${res.reason}` };
+      outcomes.push(o);
+      onEvent({ type: 'settle', id: res.id, outcome: o, in_flight: inFlightIds() });
+      continue;
+    }
+
+    outcomes.push(res.outcome);
+    if (res.merge) {
+      merges.push({ id: res.id, ...res.merge });
+      if (res.merge.result === 'merged' || res.merge.result === 'already_merged') {
+        done.add(res.id);
+      } else if (res.merge.result === 'conflicted') {
+        conflicted = res.merge.detail || { task_id: res.id };
+        stoppedReason = stoppedReason || '머지 충돌 — 자동해결 안 함, 사람 위임(/pact:resolve-conflict)';
+      }
+      // rejected → done 아님 → 의존 task 는 계속 blocked(rejected 산출물 위에 못 쌓음).
+    } else if (res.outcome && res.outcome.status === 'done') {
+      done.add(res.id); // 데모(머지 없음): 워커 done 이 곧 done
+    }
+    onEvent({ type: 'settle', id: res.id, outcome: res.outcome, merge: res.merge, in_flight: inFlightIds() });
+  }
+
+  return { outcomes, merges, stoppedReason, conflicted, skipped: [...notStarted] };
+}
+
+export default { runPipeline };
