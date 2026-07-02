@@ -22,15 +22,16 @@ stdout JSON 분기:
 
 - `ok: false` → `stage`별 한국어 안내 후 중단 (`stage`: `preflight` / `task-parse` / `tbd` / `batch` / `worktree` / `spawn-prepare`). 각 errors[i].fix 그대로 사용자에게 표시.
 - `ok: true, empty: true` → "실행 가능 task 없음. /pact:status 또는 /pact:plan." 종료.
-- `ok: true` → 단계 3.
+- `ok: true` → 단계 2.5 이후로 진행 (spawn).
 
 prepare가 반환한 키:
 - `task_prompts: [{task_id, title, task_prompt, status_path, working_dir, ...}]`
-- `coordinator_review_needed: bool`
 - `context_warnings: [...]` — 있으면 한국어 경고 (중단 X)
 - `size_warnings: [{task, risk, reason}]` — 턴소진 위험(oversized/unbounded) task (중단 X)
 - `scope_warnings: [{task, violations}]` — done_criteria ⊄ allowed_paths 계약모순 (중단 X)
 - `bundle_warnings: [{task_id, ref, lines}]` — anchor 없이 통째 번들된 대형 shard (중단 X)
+- `ownership_warnings: [{task, risk, violations}]` — allowed_paths 가 MODULE_OWNERSHIP 오너 영역 밖 (중단 X)
+- `coordinator_review_needed: false` — **deprecated** (pre-spawn 검토 제거, P1-3). 무시.
 
 ## 단계 2.5: 분담 모드 인식 (v0.6.2)
 
@@ -47,30 +48,23 @@ stdout `task_ids`:
 분담 모드에서는 사용자에게 한국어 안내:
 > 🪟 분담 모드: 이 세션이 잡은 N개만 sub-agent로 처리 (다른 세션이 나머지 처리 중).
 
-## 단계 2.6: 슬로우니스 경고 표면 (조건부, propose-only)
+## 단계 2.6: 슬로우니스·계약 경고 표면 (조건부, propose-only)
 
-prepare 결과의 `size_warnings` / `scope_warnings` / `bundle_warnings` 중 **하나라도 비어있지 않으면**, fan-out **전에** 한국어로 요약 표시하고 진행 여부를 확인한다 (`context_warnings`와 동일 패턴 — 자동 수정 X, 철학 5번). 전부 빈 배열이면 이 단계 스킵.
+prepare 결과의 `size_warnings` / `scope_warnings` / `bundle_warnings` / `ownership_warnings` 중 **하나라도 비어있지 않으면**, fan-out **전에** 한국어로 요약 표시하고 진행 여부를 확인한다 (`context_warnings`와 동일 패턴 — 자동 수정 X, 철학 5번). 전부 빈 배열이면 이 단계 스킵.
 
-> ⚠️ fan-out 전 슬로우니스 사전경보 (분해가 아직 무료인 지점):
+> ⚠️ fan-out 전 사전경보 (분해·수정이 아직 무료인 지점):
 > - 🔴 **턴소진 위험** (size_warnings): `<task>` — `<reason>`. 워커가 한 턴에 못 끝내 resume·salvage로 wall-time이 배로 늘 수 있음.
 > - 🔴 **계약모순** (scope_warnings): `<task>` — done_criteria가 allowed_paths 밖 파일 생성을 요구 → merge 게이트가 통째 거부(작업 유실).
+> - 🔴 **오너십 침범** (ownership_warnings): `<task>` — allowed_paths가 MODULE_OWNERSHIP 어느 모듈 오너 영역에도 속하지 않음(`<violations[].path>`). merge 게이트도 못 잡는 계약 경계 위반.
 > - 🟡 **컨텍스트 bloat** (bundle_warnings): `<task_id>` — `<ref>`(`<lines>`줄)가 anchor 없이 K워커에 통째 복제.
 >
 > 어떻게 할까요?
-> 1. **분해/수정 후 재시작** (권장): `/pact:plan` 재분해(oversized) 또는 사용자 승인 후 메인이 `tasks/<domain>.md`의 해당 task를 직접 `Edit`(계약모순=경로 추가/의무 제거, bloat=ref에 anchor 추가) → 다시 `/pact:parallel`.
+> 1. **분해/수정 후 재시작** (권장): `/pact:plan` 재분해(oversized) 또는 사용자 승인 후 메인이 `tasks/<domain>.md`의 해당 task를 직접 `Edit`(계약모순=경로 추가/의무 제거, 오너십=allowed_paths를 오너 영역 안으로 or MODULE_OWNERSHIP 갱신, bloat=ref에 anchor 추가) → 다시 `/pact:parallel`.
 > 2. **경고 무시하고 이대로 진행**: risk 감수하고 fan-out 계속.
 
-사용자가 2를 택하면 그대로 단계 3으로. 1을 택하면 정리 안내(worktree·payload는 이미 생성됨 → `pact run-cycle collect` 또는 수동 cleanup) 후 재분해로 유도.
+사용자가 2를 택하면 그대로 spawn(단계 4)으로. 1을 택하면 정리 안내(worktree·payload는 이미 생성됨 → `pact run-cycle collect` 또는 수동 cleanup) 후 재분해로 유도.
 
-## 단계 3: coordinator 검토 (조건부)
-
-`coordinator_review_needed: true`면 Task tool로 coordinator 검토 모드 spawn:
-- `subagent_type: coordinator`
-- prompt: `검토 모드. .pact/batch.json의 의도·논리·dependency를 점검 후 OK 또는 수정 사유.`
-
-OK → 단계 4. 수정 필요 → 사용자 위임 (worktree·payload는 이미 만들어졌으므로 abort 시 `pact run-cycle collect` 또는 수동 cleanup 안내).
-
-`coordinator_review_needed: false`면 바로 단계 4.
+> **참고 (P1-3)**: 워커 spawn 전 coordinator 검토 단계는 삭제됐다 — 그 검토 4항목(경로충돌·의존·TBD·스코프)은 이미 결정적 게이트(buildBatches/pathsOverlap·allDependenciesMet·parse·merge 게이트)가 커버하고, 유일하게 비중복이던 MODULE_OWNERSHIP 교차검토는 위 `ownership_warnings`로 결정적 승계됐다. 배치 크기 무관 바로 spawn 한다.
 
 ## 단계 4: 워커 N개 동시 spawn (Task tool ×N, **한 메시지**)
 
@@ -153,24 +147,23 @@ CLI는 자동으로 머지 → merge-result.json 작성 → 성공 worktree clea
 
 worktree는 머지 성공한 것만 정리 — 실패·blocked·충돌은 `.pact/worktrees/<id>` 보존 (재개·디버깅).
 
-## 단계 7: coordinator 통합 (큰 batch만)
+## 단계 7: PROGRESS/DECISIONS 갱신
 
-prepare가 `coordinator_review_needed: true`였으면 Task tool로:
-- `subagent_type: coordinator`
-- prompt:
+`collect`가 이미 `.pact/merge-result.json`(사이클 deterministic SOT)에 merged·conflicted·rejected·failures·verification_summary·decisions_to_record를 다 계산해 뒀다. 갱신은 **그 파일 기준**으로 한다 — status.json 전량 재독·validate-status 재실행 X (collect가 이미 소화함, TOK-2).
+
+- **작은 batch(task ≤ 2)**: 메인이 직접 `merge-result.json`(+collect stdout)만으로 PROGRESS.md 짧게 갱신 (Recently Done + Blocked만, ~5줄). coordinator 미소환.
+- **큰 batch(task ≥ 3)**: Task tool로 **축소된** 통합 coordinator 소환 (컨텍스트 절약):
+  - `subagent_type: coordinator`
+  - prompt:
 ```
-통합 모드.
+통합 모드 (축소).
+merge-result.json 만 read. status.json 전량 재독·validate-status 재실행 금지.
 방금 종료 워커: <task_ids>
-머지 결과: 성공 <merged>, 충돌 <yes|no>, 거부 <rejected.length>
-verification_summary: <verification_summary>
-decisions_to_record: <decisions_to_record>
 
-PROGRESS.md를 갱신:
-- Recently Done · Blocked / Waiting · Verification Snapshot
-DECISIONS.md에 decisions_to_record 누적 (사용자 승인 필요한 건 후보로 표시).
+PROGRESS.md 갱신: Recently Done(merged) · Blocked/Waiting(conflicted+failures+rejected, 사유 한 줄) · Verification Snapshot(verification_summary 그대로).
+DECISIONS.md 에 decisions_to_record 누적 (사용자 승인 필요 건은 후보로 표시).
+실패/블록 task 의 report.md 가 갱신에 필요하면 그 지목된 report.md 만 read (전량 X).
 ```
-
-작은 batch였으면 메인이 직접 PROGRESS.md 짧게 갱신 (Recently Done + Blocked만, ~5줄).
 
 ## 단계 8: 결과 보고 (한국어)
 
@@ -197,4 +190,4 @@ charge 부담 적은 짧은 follow-up (예: "lint 결과 보여줘", "방금 머
 
 - 동시 `/pact:parallel` 두 번: G12에 따라 거부, /pact:status·/pact:abort 안내
 - 워커 timeout: 대기 + 진행 보고
-- prepare 후 단계 3에서 abort 결정: `pact run-cycle collect` 호출하면 결정적으로 정리 (status.json 없는 워커는 rejected로 처리됨)
+- prepare 후 fan-out 전(단계 2.6)에서 abort 결정: `pact run-cycle collect` 호출하면 결정적으로 정리 (status.json 없는 워커는 rejected로 처리됨)
