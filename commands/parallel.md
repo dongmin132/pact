@@ -13,14 +13,16 @@ description: 워커 N개 동시 spawn (worktree 격리) → 머지 → PROGRESS 
 ## 단계 2: prepare 호출
 
 ```bash
-node ${CLAUDE_PLUGIN_ROOT}/bin/pact run-cycle prepare
+node ${CLAUDE_PLUGIN_ROOT}/bin/pact run-cycle prepare --owner-pid=$PPID --session=parallel
 ```
 
 `--max=N`(1~5)로 이번 cycle만 batch 크기 줄이기 가능.
 
+`--owner-pid=$PPID`(claim.js 관례와 동일한 세션 pid)는 STAB-1 멀티세션 게이트용 — prepare 가 이 사이클의 owner 로 stamp 한다. 같은 레포에서 `pact drive`(헤드리스)나 다른 인터랙티브 세션이 **살아있는** 소유자로 같은 사이클을 이미 잡고 있으면 재개 시 `cycle-busy` 로 거부돼 워커 이중 spawn 을 막는다(소유자 세션이 죽었으면 크래시 resume 으로 채택). collect 가 사이클을 소비하면 owner 도 함께 해제된다.
+
 stdout JSON 분기:
 
-- `ok: false` → `stage`별 한국어 안내 후 중단 (`stage`: `preflight` / `task-parse` / `tbd` / `batch` / `worktree` / `spawn-prepare`). 각 errors[i].fix 그대로 사용자에게 표시.
+- `ok: false` → `stage`별 한국어 안내 후 중단 (`stage`: `preflight` / `task-parse` / `tbd` / `batch` / `worktree` / `spawn-prepare` / `cycle-busy`). 각 errors[i].fix 그대로 사용자에게 표시. `cycle-busy` 는 다른 세션(pid)이 이 사이클을 소유 중이라는 뜻 — `error` 문구를 그대로 보여주고 종료(그 세션 종료 대기 또는 `pact status`).
 - `ok: true, empty: true` → "실행 가능 task 없음. /pact:status 또는 /pact:plan." 종료.
 - `ok: true` → 단계 2.5 이후로 진행 (spawn).
 

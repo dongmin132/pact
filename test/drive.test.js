@@ -4,12 +4,14 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
 
 const PACT_BIN = path.join(__dirname, '..', 'bin', 'pact');
-function runPact(args) {
-  return spawnSync('node', [PACT_BIN, ...args], { encoding: 'utf8' });
+function runPact(args, opts) {
+  return spawnSync('node', [PACT_BIN, ...args], { encoding: 'utf8', ...opts });
 }
 
 test('pact drive --help — 사용법 출력', () => {
@@ -86,4 +88,33 @@ test('drive --no-pipeline — 레거시 배치-배리어 폴백도 동작(회귀
   assert.doesNotMatch(r.stdout, /K-슬롯 풀/);
   assert.match(r.stdout, /완료 ✓2/);
   assert.match(r.stdout, /오케스트레이터 토큰: 0/);
+});
+
+// ─── STAB-1 belt: 이중 드라이버 실행 차단 ───────────────────────────────
+test('drive --pact — 살아있는 드라이버 소유 중이면 exit 4 (이중 spawn 차단)', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pact-drive-belt-'));
+  try {
+    // 살아있는 드라이버가 이미 소유 중인 상황을 mock — 테스트 러너 pid(항상 alive) 로 스탬프.
+    fs.mkdirSync(path.join(dir, '.pact'), { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, '.pact', 'drive-owner.json'),
+      JSON.stringify({ pid: process.pid, session: 'other', acquired_at: new Date().toISOString() }),
+    );
+    // 두 번째 드라이버(--pact) 는 belt 에서 정지 — prepare 도달 전 exit 4.
+    const r = runPact(['drive', '--pact', '--max=1'], { cwd: dir });
+    assert.equal(r.status, 4, `${r.stdout}\n${r.stderr}`);
+    assert.match(`${r.stdout}\n${r.stderr}`, /드라이버 이미 실행 중/);
+    // 소유권 파일은 그대로(두 번째가 뺏지 않음)
+    const held = JSON.parse(fs.readFileSync(path.join(dir, '.pact', 'drive-owner.json'), 'utf8'));
+    assert.equal(held.pid, process.pid);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('drive (demo, --pact 아님) — belt skip (drive-owner.json 미생성)', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pact-drive-nobelt-'));
+  try {
+    const r = runPact(['drive', '--max=1'], { cwd: dir });
+    assert.equal(r.status, 0, `${r.stdout}\n${r.stderr}`);
+    assert.equal(fs.existsSync(path.join(dir, '.pact', 'drive-owner.json')), false);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });

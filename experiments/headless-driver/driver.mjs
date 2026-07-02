@@ -109,6 +109,8 @@ const toolBrief = (name, input) => {
 const nodeRequire = createRequire(import.meta.url);
 const { guardToolUse } = nodeRequire(join(PLUGIN_ROOT, 'scripts', 'lib', 'worker-guard.js'));
 const { writeJsonAtomic } = nodeRequire(join(PLUGIN_ROOT, 'scripts', 'lib', 'atomic-write.js'));
+// STAB-1 belt: 같은 레포에 두 드라이버 동시 실행 차단(drive-owner.json, isAlive 게이트).
+const { acquireDriveLock, releaseDriveLock } = nodeRequire(join(PLUGIN_ROOT, 'scripts', 'lock.js'));
 const { shouldResume, classifyRealResult, withContinuation } = nodeRequire(join(PLUGIN_ROOT, 'scripts', 'worker-completion', 'resume.js'));
 // P2-2 · SPD-1/3: K-슬롯 풀이 쓰는 결정적 재사용 primitive — 슬롯 overlap 게이팅(pathsOverlap)과
 // LPT 정렬용 file_count 추정(sizecheck). 둘 다 CJS 라 nodeRequire.
@@ -160,7 +162,8 @@ function getTasksPact() {
   // 코어 수정으로 prepare 는 already_prepared 에도 task_prompts 를 항상 반환한다
   // (makeTaskPrompt 단일 소스) → 드라이버 자체 reconstruct 불필요 = drift 근원 제거.
   // P2-2 · SPD-2: --graph 로 batch0 밖 전체 DAG 도 받아 슬롯 풀이 pull 대상을 안다.
-  const out = execSync(`node ${PACT_BIN} run-cycle prepare --max=${MAX} --graph`, { encoding: 'utf8' });
+  // STAB-1: 장수 드라이버 pid 를 owner 로 주입 → 인터랙티브/타 세션이 같은 사이클 재개 시 cycle-busy 거부.
+  const out = execSync(`node ${PACT_BIN} run-cycle prepare --max=${MAX} --graph --owner-pid=${process.pid} --session=drive`, { encoding: 'utf8' });
   const j = JSON.parse(out);
   if (j.ok === false) throw new Error('prepare 실패: ' + JSON.stringify(j.stage || j.errors));
   // P1-1 · SPD-4: 슬로우니스 경고는 헤드리스(사람 부재)라 행동에 못 옮김 → 로그 1줄만.
@@ -373,7 +376,8 @@ function makeAdmit(cachedPayloads) {
     if (!USE_PACT) return { ok: false, reason: 'payload 없음(demo)' }; // demo 는 graph task 없음 — 방어
     const flags = inFlightIds && inFlightIds.length ? ` --in-flight=${inFlightIds.join(',')}` : '';
     let out;
-    try { out = execSync(`node ${PACT_BIN} run-cycle admit ${id}${flags}`, { encoding: 'utf8' }); }
+    // STAB-1: admit 도 드라이버 owner-pid 를 유지해 사이클 소유권이 끊기지 않게 한다.
+    try { out = execSync(`node ${PACT_BIN} run-cycle admit ${id}${flags} --owner-pid=${process.pid} --session=drive`, { encoding: 'utf8' }); }
     catch (e) { out = (e.stdout || '').toString(); } // admit hard-fail 은 exit≠0 이나 stdout 에 JSON 존재
     let j;
     try { j = JSON.parse(out); } catch { return { ok: false, reason: 'admit 응답 파싱 실패' }; }
@@ -444,10 +448,32 @@ if (REAL) {
   }
 }
 
+// STAB-1 belt: 워커 spawn 시작 전에 드라이브 소유권 락을 잡는다. 같은 레포에 또 다른
+// 드라이버(또는 drive+drive)가 살아있으면 exit 4 로 정지 — 같은 worktree 이중 spawn 차단.
+// driver-state.json 은 관측용이라 소유권 판정에 쓰지 않는다(전용 drive-owner.json).
+// PACT 모드에서만(.pact 존재) 의미 있음 — demo 모드는 레포 상태가 없어 skip.
+let driveLockHeld = false;
+function releaseDrive() {
+  if (!driveLockHeld) return;
+  driveLockHeld = false;
+  try { releaseDriveLock({ cwd: process.cwd() }); } catch { /* best-effort */ }
+}
+if (USE_PACT) {
+  const dl = acquireDriveLock({ cwd: process.cwd(), session: 'drive' });
+  if (!dl.ok) {
+    console.error(`✗ ${dl.error} — 드라이버 이미 실행 중. 종료 대기 또는 pact status.`);
+    process.exit(4);
+  }
+  driveLockHeld = true;
+  // 정상/예외/exit 어느 경로든 해제. process.exit()·자연종료 모두 'exit' 발화(동기 unlink OK).
+  process.on('exit', releaseDrive);
+}
+
 // 외부 종료(Ctrl-C/SIGTERM)에도 driver-state 를 finalize — "spawning 고착"(Bug2) 방지.
 for (const sig of ['SIGINT', 'SIGTERM']) {
   process.on(sig, () => {
     try { writeDriverState({ phase: 'aborted', active_workers: [], stopped_reason: `signal ${sig}` }); } catch { /* noop */ }
+    releaseDrive(); // belt 해제 후 종료
     process.exit(130);
   });
 }
