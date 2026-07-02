@@ -69,3 +69,21 @@ test('drive — loop_until 없는 일반 task는 기존 경로(회귀)', () => {
   assert.equal(r.status, 0, `${r.stdout}\n${r.stderr}`);
   assert.match(r.stdout, /DEMO-001.*\[done\]/);
 });
+
+// ─── P2-2 · SPD-1: K-슬롯 풀이 기본 실행 경로 ─────────────────
+test('drive — 기본은 K-슬롯 풀 (배치-배리어 아님)', () => {
+  const r = runPact(['drive', '--max=2']);
+  assert.equal(r.status, 0, `${r.stdout}\n${r.stderr}`);
+  assert.match(r.stdout, /K-슬롯 풀 \(슬롯=2/);       // 파이프라인 경로 로그
+  assert.match(r.stdout, /완료 ✓2/);                  // 두 데모 task 완료
+  assert.match(r.stdout, /오케스트레이터 토큰: 0/);   // 불변식 유지
+});
+
+test('drive --no-pipeline — 레거시 배치-배리어 폴백도 동작(회귀)', () => {
+  const r = runPact(['drive', '--no-pipeline', '--max=2']);
+  assert.equal(r.status, 0, `${r.stdout}\n${r.stderr}`);
+  assert.match(r.stdout, /레거시 배리어/);            // 폴백 경로 로그
+  assert.doesNotMatch(r.stdout, /K-슬롯 풀/);
+  assert.match(r.stdout, /완료 ✓2/);
+  assert.match(r.stdout, /오케스트레이터 토큰: 0/);
+});

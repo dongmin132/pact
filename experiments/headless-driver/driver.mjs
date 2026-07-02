@@ -16,11 +16,18 @@
 // 기계적 에러(타임아웃/네트워크/scope위반/비용초과) → 드라이버가 자동 처리.
 // 판단 에러(2회 실패/머지충돌/모호)               → 멈추고 사람한테 위임(escalate).
 //
+// 실행 구조 (P2-2 · SPD-1/3): 기본이 K-슬롯 워커 풀이다. 사이클-배리어(배치 전원 종료 대기)
+//   대신 슬롯이 비는 즉시 ready 큐에서 (a)deps 충족 (b)in-flight 와 pathsOverlap=false 인 다음
+//   task 를 pull → admit → 투입하고, 워커 완료 즉시 그 task 만 게이트(planMerge) 경유 단건 머지한다.
+//   ready 큐는 LPT(가장 큰 task 우선)로 정렬해 makespan 을 줄인다. cycle time Σmax(batch)→≈total/K.
+//   충돌은 절대 자동해결 안 함 — 정지+사람 위임. 레거시 배치-배리어는 --no-pipeline 로 복귀 가능.
+//
 // 모드/플래그:
 //   --real            실제 Agent SDK spawn (없으면 MOCK)
 //   --pact            태스크를 pact CLI에서 + collect (없으면 DEMO)
-//   --max=N           사이클당 워커 수 (기본 5, prepare 상한과 동일)
-//   --cycles=N        사이클 반복 (기본 1)
+//   --no-pipeline     레거시 배치-배리어(Promise.allSettled → 직렬 collect)로 복귀
+//   --max=N           동시 슬롯 수 K (기본 5, prepare 상한과 동일)
+//   --cycles=N        graph 소진 후 재-prepare 라운드 수 (기본 1)
 //   --model=NAME      실제 워커 모델 (기본 sonnet)
 //   --timeout=SEC     워커 hang 백스톱 (기본 1200 — 작업 안 자름, cap 은 budget)
 //   --budget=USD      누적 비용 상한 — 넘으면 정지 (기본 10)
@@ -46,6 +53,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createRequire } from 'node:module';
+import { runPipeline } from './pool.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PLUGIN_ROOT = join(__dirname, '..', '..');
@@ -60,6 +68,7 @@ const getSet = (n) => new Set((getStr(n, '') || '').split(',').filter(Boolean));
 
 const REAL = has('--real');
 const USE_PACT = has('--pact');
+const PIPELINE = !has('--no-pipeline'); // P2-2 · SPD-1: K-슬롯 풀이 기본. 레거시 배치-배리어는 --no-pipeline 로 복귀.
 const MAX = Math.floor(getNum('--max', 5));
 const CYCLES = Math.floor(getNum('--cycles', 1));
 const MODEL = getStr('--model', 'sonnet');
@@ -101,6 +110,10 @@ const nodeRequire = createRequire(import.meta.url);
 const { guardToolUse } = nodeRequire(join(PLUGIN_ROOT, 'scripts', 'lib', 'worker-guard.js'));
 const { writeJsonAtomic } = nodeRequire(join(PLUGIN_ROOT, 'scripts', 'lib', 'atomic-write.js'));
 const { shouldResume, classifyRealResult, withContinuation } = nodeRequire(join(PLUGIN_ROOT, 'scripts', 'worker-completion', 'resume.js'));
+// P2-2 · SPD-1/3: K-슬롯 풀이 쓰는 결정적 재사용 primitive — 슬롯 overlap 게이팅(pathsOverlap)과
+// LPT 정렬용 file_count 추정(sizecheck). 둘 다 CJS 라 nodeRequire.
+const { pathsOverlap } = nodeRequire(join(PLUGIN_ROOT, 'batch-builder.js'));
+const { assessTask: sizeAssess } = nodeRequire(join(PLUGIN_ROOT, 'scripts', 'sizecheck.js'));
 
 // ---- (P5) 관측성: driver-state.json 단일 writer (atomic) -------------------
 // 드라이버가 죽어도 디스크에 마지막 상태가 남아 사람이 pact status / 파일로 진행 파악.
@@ -141,24 +154,26 @@ function getTasksDemo() {
       loop_until: LOOP.has(`DEMO-${String(i + 1).padStart(3, '0')}`) ? { count: 'mock', max_iterations: LOOP_MAX } : null,
     };
   });
-  return { tasks, readyToCollect: false };
+  return { tasks, readyToCollect: false, graph: { ready: [], tasks: {} } };
 }
 function getTasksPact() {
   // 코어 수정으로 prepare 는 already_prepared 에도 task_prompts 를 항상 반환한다
   // (makeTaskPrompt 단일 소스) → 드라이버 자체 reconstruct 불필요 = drift 근원 제거.
-  const out = execSync(`node ${PACT_BIN} run-cycle prepare --max=${MAX}`, { encoding: 'utf8' });
+  // P2-2 · SPD-2: --graph 로 batch0 밖 전체 DAG 도 받아 슬롯 풀이 pull 대상을 안다.
+  const out = execSync(`node ${PACT_BIN} run-cycle prepare --max=${MAX} --graph`, { encoding: 'utf8' });
   const j = JSON.parse(out);
   if (j.ok === false) throw new Error('prepare 실패: ' + JSON.stringify(j.stage || j.errors));
   // P1-1 · SPD-4: 슬로우니스 경고는 헤드리스(사람 부재)라 행동에 못 옮김 → 로그 1줄만.
   const warnN = (j.size_warnings || []).length + (j.scope_warnings || []).length + (j.bundle_warnings || []).length;
   if (warnN > 0) console.log(`  ⚠️ 슬로우니스 경고 ${warnN}건 (size:${(j.size_warnings || []).length} scope:${(j.scope_warnings || []).length} bundle:${(j.bundle_warnings || []).length}) — 분해는 인터랙티브 /pact:plan 에서.`);
-  if (j.empty) return { tasks: [], readyToCollect: false };
+  const graph = j.task_graph || { ready: [], tasks: {} };
+  if (j.empty) return { tasks: [], readyToCollect: false, graph };
   if (j.ready_to_collect) {
     console.log('  (already_prepared + 모든 워커 done — spawn 스킵, collect 로)');
-    return { tasks: [], readyToCollect: true };
+    return { tasks: [], readyToCollect: true, graph };
   }
   if (j.already_prepared) console.log('  (already_prepared — 미완료 task 재개)');
-  return { tasks: j.task_prompts || [], readyToCollect: false };
+  return { tasks: j.task_prompts || [], readyToCollect: false, graph };
 }
 
 // ---- 워커 러너 (mock) — fault 주입 -----------------------------------------
@@ -319,6 +334,95 @@ async function runLoopTask(task) {
   }
 }
 
+// ---- P2-2 · SPD-1/3: K-슬롯 풀 배선 (pool.mjs 스케줄러에 부수효과 주입) --------
+// 스케줄러는 순수(pool.mjs). 여기서 admit/runTask/mergeOne/overlaps 를 mode 별로 꽂는다.
+
+// LPT 정렬용 task 크기(파일 수 추정) — sizecheck 재사용(비교자 1개, 거의 무료).
+function sizeOfTask(id, allowedPaths) {
+  try { return sizeAssess({ id, allowed_paths: allowedPaths || [] }).file_count || 0; }
+  catch { return 0; }
+}
+
+// 워커 산출 1건 콘솔 보고(파이프라인/레거시 공용).
+function reportOutcome(o) {
+  const icon = { done: '✓', failed: '✗', denied: '⛔', escalated: '🚨' }[o.status] || '?';
+  const tok = o.usage ? (tokOf(o.usage) / 1e6).toFixed(2) + 'M' : '—';
+  const extra = o.status === 'done' ? `${o.turns}턴 ${tok}` : (o.reason || '');
+  console.log(`  ${icon} ${o.task_id}  [${o.status}]  시도 ${o.attempts || '?'}회  ${extra}`);
+}
+
+// 배치 collect(레거시 배리어 + ready_to_collect resume 경로 공용). 'conflict'|'ok' 반환.
+function collectBatch() {
+  const out = execSync(`node ${PACT_BIN} run-cycle collect --commit-status`, { encoding: 'utf8' });
+  const cj = JSON.parse(out);
+  const committed = cj.status_commit && cj.status_commit.committed ? 'committed' : 'no-commit';
+  console.log(`  collect: merged=${(cj.merged || []).length} conflicted=${cj.conflicted ? 'YES' : 'no'} failures=${(cj.failures || []).length} status=${committed}`);
+  if (VERBOSE) {
+    vlog(`  [collect] merged=${JSON.stringify(cj.merged || [])}`);
+    for (const r of cj.rejected || []) vlog(`  [collect] ✗ ${r.task_id}: ${r.reason}`);
+    for (const f of cj.failures || []) vlog(`  [collect] ⚠ ${f.task_id}: ${f.status} ${(f.blockers || []).join('; ')}`);
+  }
+  if (cj.conflicted) { ledger.stoppedReason = '머지 충돌 — 자동해결 안 함, 사람 위임(/pact:resolve-conflict)'; return 'conflict'; }
+  return 'ok';
+}
+
+// PACT 슬롯 admit — batch0 은 캐시 payload, graph task 는 run-cycle admit CLI(그 순간 base 에서 worktree 생성).
+function makeAdmit(cachedPayloads) {
+  return async (id, inFlightIds) => {
+    if (cachedPayloads.has(id)) return { ok: true, task: cachedPayloads.get(id) };
+    if (!USE_PACT) return { ok: false, reason: 'payload 없음(demo)' }; // demo 는 graph task 없음 — 방어
+    const flags = inFlightIds && inFlightIds.length ? ` --in-flight=${inFlightIds.join(',')}` : '';
+    let out;
+    try { out = execSync(`node ${PACT_BIN} run-cycle admit ${id}${flags}`, { encoding: 'utf8' }); }
+    catch (e) { out = (e.stdout || '').toString(); } // admit hard-fail 은 exit≠0 이나 stdout 에 JSON 존재
+    let j;
+    try { j = JSON.parse(out); } catch { return { ok: false, reason: 'admit 응답 파싱 실패' }; }
+    if (j.ok === false) {
+      if (j.reason === 'path_overlap') return { ok: false, reason: 'path_overlap' }; // 재큐(in-flight 해소 후 재시도)
+      return { ok: false, reason: (j.errors && j.errors[0] && j.errors[0].message) || j.reason || 'admit 실패' };
+    }
+    cachedPayloads.set(id, j.task_prompt); // 슬롯 내 resume 재사용
+    return { ok: true, task: j.task_prompt };
+  };
+}
+
+// PACT 단건 머지 — 워커 완료 즉시 그 task 만 게이트(planMerge) 경유. 충돌은 자동해결 X(정지 신호).
+async function mergeOnePact(id) {
+  let out;
+  try { out = execSync(`node ${PACT_BIN} run-cycle collect-one ${id} --commit-status`, { encoding: 'utf8' }); }
+  catch (e) { out = (e.stdout || '').toString(); }
+  let j;
+  try { j = JSON.parse(out); } catch { return { result: 'rejected', detail: { task_id: id, error: 'collect-one 응답 파싱 실패' } }; }
+  if (j.conflicted) return { result: 'conflicted', detail: j.conflicted };
+  if ((j.merged || []).includes(id)) return { result: 'merged', detail: { verification: j.verification_summary } };
+  if ((j.already_merged || []).includes(id)) return { result: 'already_merged', detail: {} };
+  return { result: 'rejected', detail: (j.rejected && j.rejected[0]) || { task_id: id } };
+}
+
+// 한 라운드: batch0 ∪ graph 를 K-슬롯 풀로 드레인. 완료 즉시 단건 머지가 다른 워커 실행과 겹친다.
+async function runCyclePipeline(c, tasks, graph) {
+  const map = new Map();
+  const cachedPayloads = new Map();
+  for (const t of tasks) {                     // batch0 = ready-set (deps 이미 충족)
+    cachedPayloads.set(t.task_id, t);
+    map.set(t.task_id, { deps: [], allowed_paths: t.allowed_paths || [], size: sizeOfTask(t.task_id, t.allowed_paths) });
+  }
+  for (const [id, g] of Object.entries((graph && graph.tasks) || {})) { // batch0 밖 남은 DAG
+    if (map.has(id)) continue;                 // batch0 우선
+    map.set(id, { deps: g.deps || [], allowed_paths: g.allowed_paths || [], size: sizeOfTask(id, g.allowed_paths) });
+  }
+  return runPipeline({
+    slots: MAX,
+    tasks: map,
+    admit: makeAdmit(cachedPayloads),
+    runTask: (task) => (task.loop_until ? runLoopTask(task) : runResumableTask(task)),
+    mergeOne: USE_PACT ? mergeOnePact : null,          // demo: 머지 없음 → 워커 done 이 곧 done
+    overlaps: USE_PACT ? pathsOverlap : () => false,   // demo: 개별 tmpdir → 무충돌
+    onEvent: (evt) => { if (evt.in_flight) writeDriverState({ phase: 'spawning', cycle: c, active_workers: evt.in_flight }); },
+    shouldStop: () => (ledger.spentUsd >= BUDGET ? `예산 초과 ($${ledger.spentUsd.toFixed(2)} ≥ $${BUDGET})` : null),
+  });
+}
+
 // ---- 메인 루프 (오케스트레이터 = 이 코드 = 토큰 0) -------------------------
 console.log('=== pact 헤드리스 드라이버 PoC v2 (하드닝) ===');
 console.log(`mode: ${REAL ? 'REAL' : 'MOCK'} | ${USE_PACT ? 'PACT' : 'DEMO'} | max=${MAX} cycles=${CYCLES} budget=$${BUDGET}(cap) timeout=${TIMEOUT_MS / 1000}s(backstop) retries=${RETRIES}`);
@@ -355,52 +459,64 @@ for (let c = 1; c <= CYCLES; c++) {
   // (4) 예산 회로차단기 — 사이클 시작 전 점검
   if (ledger.spentUsd >= BUDGET) { ledger.stoppedReason = `예산 초과 ($${ledger.spentUsd.toFixed(2)} ≥ $${BUDGET})`; break; }
 
-  let tasks, readyToCollect;
-  try { ({ tasks, readyToCollect } = getTasks()); }
+  let tasks, readyToCollect, graph;
+  try { ({ tasks, readyToCollect, graph } = getTasks()); }
   catch (e) { ledger.stoppedReason = `태스크 소스 실패: ${e.message}`; break; }
   // spawn 할 것도 없고 collect 할 것도 없으면 종료. (ready_to_collect 면 spawn 만 스킵하고 collect 진행)
   if (!tasks.length && !readyToCollect) { console.log(`\ncycle ${c}: 실행 가능 task 없음 — 종료`); break; }
 
-  writeDriverState({ phase: tasks.length ? 'spawning' : 'collecting', cycle: c, active_workers: tasks.map((t) => t.task_id) });
+  // ready_to_collect(resume): 모든 워커 이미 done → spawn 스킵, 배치 collect 로 머지(기존 경로 유지).
+  if (!tasks.length && readyToCollect) {
+    console.log(`\ncycle ${c}: spawn 스킵 (모든 워커 이미 done) → collect 로 진행`);
+    writeDriverState({ phase: 'collecting', cycle: c, active_workers: [] });
+    if (USE_PACT && collectBatch() === 'conflict') break;
+    continue;
+  }
 
-  if (tasks.length) {
-    console.log(`\ncycle ${c}: 워커 ${tasks.length}개 동시 spawn... (오케스트레이터 await = 0 토큰)`);
+  if (PIPELINE) {
+    // ★ P2-2 · SPD-1/3: K-슬롯 워커 풀 — 슬롯이 비면 다음 ready+무겹침 task 를 즉시 pull.
+    // 완료 즉시 단건 머지(게이트 경유)가 다른 워커 실행과 겹친다 → 배치 배리어 붕괴.
+    const graphN = Object.keys((graph && graph.tasks) || {}).length;
+    console.log(`\ncycle ${c}: K-슬롯 풀 (슬롯=${MAX}, ready=${tasks.length}${graphN ? ` +graph=${graphN}` : ''}) — freed slot 이 다음 ready+무겹침 task pull (오케스트레이터 = 0 토큰)`);
     if (VERBOSE) for (const t of tasks) vlog(`  [spawn] ${t.task_id} → worktree ${t.working_dir}`);
+    writeDriverState({ phase: 'spawning', cycle: c, active_workers: tasks.map((t) => t.task_id) });
 
-    // (1) ★ allSettled — 한 워커가 터져도 나머지 결과는 보존됨
-    const settled = await Promise.allSettled(tasks.map((t) => t.loop_until ? runLoopTask(t) : runResumableTask(t)));
-    const outcomes = settled.map((s, i) =>
-      s.status === 'fulfilled' ? s.value : { task_id: tasks[i].task_id, status: 'escalated', reason: 'driver 예외: ' + s.reason });
-
-    for (const o of outcomes) {
+    const pr = await runCyclePipeline(c, tasks, graph);
+    for (const o of pr.outcomes) {
       allOutcomes.push(o);
       if (o.status === 'escalated') ledger.escalations.push(o);
-      const icon = { done: '✓', failed: '✗', denied: '⛔', escalated: '🚨' }[o.status] || '?';
-      const tok = o.usage ? (tokOf(o.usage) / 1e6).toFixed(2) + 'M' : '—';
-      const extra = o.status === 'done' ? `${o.turns}턴 ${tok}` : (o.reason || '');
-      console.log(`  ${icon} ${o.task_id}  [${o.status}]  시도 ${o.attempts || '?'}회  ${extra}`);
+      reportOutcome(o);
     }
-  } else {
-    console.log(`\ncycle ${c}: spawn 스킵 (모든 워커 이미 done) → collect 로 진행`);
+    if (VERBOSE) for (const m of pr.merges) vlog(`  [merge] ${m.id}: ${m.result}`);
+    if (pr.skipped.length) console.log(`  ⏭  미투입(skipped) ${pr.skipped.length}: ${pr.skipped.join(', ')}  (dep reject / budget / 정지)`);
+
+    // 머지 충돌 = 판단 에러 → 자동해결 X, 정지+위임. (그 외 정지사유=예산 등도 루프 중단)
+    if (pr.conflicted) { ledger.stoppedReason = pr.stoppedReason || '머지 충돌 — 자동해결 안 함, 사람 위임(/pact:resolve-conflict)'; break; }
+    if (pr.stoppedReason) { ledger.stoppedReason = pr.stoppedReason; break; }
+    if (ledger.spentUsd >= BUDGET) { ledger.stoppedReason = `예산 초과 ($${ledger.spentUsd.toFixed(2)} ≥ $${BUDGET})`; break; }
+    continue;
+  }
+
+  // ─── 레거시 배치-배리어(--no-pipeline): 배치 전원 종료 대기 → 직렬 collect ───
+  writeDriverState({ phase: 'spawning', cycle: c, active_workers: tasks.map((t) => t.task_id) });
+  console.log(`\ncycle ${c}: 워커 ${tasks.length}개 동시 spawn... (레거시 배리어, 오케스트레이터 await = 0 토큰)`);
+  if (VERBOSE) for (const t of tasks) vlog(`  [spawn] ${t.task_id} → worktree ${t.working_dir}`);
+
+  // (1) ★ allSettled — 한 워커가 터져도 나머지 결과는 보존됨
+  const settled = await Promise.allSettled(tasks.map((t) => t.loop_until ? runLoopTask(t) : runResumableTask(t)));
+  const outcomes = settled.map((s, i) =>
+    s.status === 'fulfilled' ? s.value : { task_id: tasks[i].task_id, status: 'escalated', reason: 'driver 예외: ' + s.reason });
+  for (const o of outcomes) {
+    allOutcomes.push(o);
+    if (o.status === 'escalated') ledger.escalations.push(o);
+    reportOutcome(o);
   }
 
   // (4) 예산 점검 — 사이클 후 누적
   if (ledger.spentUsd >= BUDGET) { ledger.stoppedReason = `예산 초과 ($${ledger.spentUsd.toFixed(2)} ≥ $${BUDGET})`; break; }
 
   // 머지 충돌 = 판단 에러 → 자동해결 X, 정지+위임
-  if (USE_PACT) {
-    // --commit-status: status 변경 자동커밋 (무인 멀티사이클에서 다음 prepare preflight 통과)
-    const out = execSync(`node ${PACT_BIN} run-cycle collect --commit-status`, { encoding: 'utf8' });
-    const cj = JSON.parse(out);
-    const committed = cj.status_commit && cj.status_commit.committed ? 'committed' : 'no-commit';
-    console.log(`  collect: merged=${(cj.merged || []).length} conflicted=${cj.conflicted ? 'YES' : 'no'} failures=${(cj.failures || []).length} status=${committed}`);
-    if (VERBOSE) {
-      vlog(`  [collect] merged=${JSON.stringify(cj.merged || [])}`);
-      for (const r of cj.rejected || []) vlog(`  [collect] ✗ ${r.task_id}: ${r.reason}`);
-      for (const f of cj.failures || []) vlog(`  [collect] ⚠ ${f.task_id}: ${f.status} ${(f.blockers || []).join('; ')}`);
-    }
-    if (cj.conflicted) { ledger.stoppedReason = '머지 충돌 — 자동해결 안 함, 사람 위임(/pact:resolve-conflict)'; break; }
-  }
+  if (USE_PACT && collectBatch() === 'conflict') break;
 }
 
 // ---- 최종 보고 + 불변식 ----------------------------------------------------
