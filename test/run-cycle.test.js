@@ -306,6 +306,94 @@ test('run-cycle prepare — 두 번째 호출은 already_prepared (v0.6.1 멱등
   } finally { cleanupProject(dir); }
 });
 
+// ─── STAB-1: 멀티세션 owner-pid 게이트 (이중 spawn 차단) ──────────
+
+const ALIVE_PID = process.pid;   // 테스트 러너 = 항상 살아있음
+const DEAD_PID = 999999;         // 비현실적으로 큰 pid = 죽음(isAlive false)
+
+function cbOf(dir) {
+  return JSON.parse(fs.readFileSync(path.join(dir, '.pact/current_batch.json'), 'utf8'));
+}
+
+test('owner gate — prepare --owner-pid 시 current_batch 에 owner stamp', () => {
+  const dir = makeProject();
+  try {
+    writeTasks(dir, [{ id: 'OWN-001', allowed_paths: ['src/a.ts'] }]);
+    const r = runPact(['run-cycle', 'prepare', `--owner-pid=${ALIVE_PID}`, '--session=drive'], dir);
+    assert.equal(r.status, 0, r.stderr);
+    const cb = cbOf(dir);
+    assert.ok(cb.owner, 'owner 필드 존재');
+    assert.equal(cb.owner.pid, ALIVE_PID);
+    assert.equal(cb.owner.session, 'drive');
+    assert.ok(cb.owner.stamped_at, 'stamped_at 존재');
+  } finally { cleanupProject(dir); }
+});
+
+test('owner gate — 살아있는 타 세션 소유면 adopt 거부(cycle-busy, spawn 전 정지)', () => {
+  const dir = makeProject();
+  try {
+    writeTasks(dir, [{ id: 'OWN-001', allowed_paths: ['src/a.ts'] }]);
+    // 세션 A(살아있는 ALIVE_PID)가 소유권 stamp
+    const a = runPact(['run-cycle', 'prepare', `--owner-pid=${ALIVE_PID}`, '--session=A'], dir);
+    assert.equal(a.status, 0, a.stderr);
+    // 세션 B(다른 pid)가 재개 시도 → 기록된 owner(살아있음)와 달라 거부
+    const b = runPact(['run-cycle', 'prepare', `--owner-pid=${DEAD_PID}`, '--session=B'], dir);
+    assert.equal(b.status, 1, 'cycle-busy 는 exit 1');
+    const out = JSON.parse(b.stdout);
+    assert.equal(out.ok, false);
+    assert.equal(out.stage, 'cycle-busy');
+    assert.match(out.error, /다른 세션/);
+    assert.match(out.error, new RegExp(String(ALIVE_PID)));
+  } finally { cleanupProject(dir); }
+});
+
+test('owner gate — 죽은 owner 는 재개 허용(크래시 resume) + 호출자로 재스탬프', () => {
+  const dir = makeProject();
+  try {
+    writeTasks(dir, [{ id: 'OWN-001', allowed_paths: ['src/a.ts'] }]);
+    // 크래시한 세션(죽은 DEAD_PID)이 소유권 stamp 하고 사라짐
+    const a = runPact(['run-cycle', 'prepare', `--owner-pid=${DEAD_PID}`, '--session=dead'], dir);
+    assert.equal(a.status, 0, a.stderr);
+    assert.equal(cbOf(dir).owner.pid, DEAD_PID);
+    // 새 세션(살아있는 ALIVE_PID)이 재개 → 죽은 owner 이므로 adopt 허용
+    const b = runPact(['run-cycle', 'prepare', `--owner-pid=${ALIVE_PID}`, '--session=live'], dir);
+    assert.equal(b.status, 0, b.stderr);
+    const out = JSON.parse(b.stdout);
+    assert.equal(out.ok, true);
+    assert.equal(out.already_prepared, true);
+    // 소유권이 산 호출자로 이전됨(이후 세션의 이중 채택 방지)
+    assert.equal(cbOf(dir).owner.pid, ALIVE_PID);
+  } finally { cleanupProject(dir); }
+});
+
+test('owner gate — --owner-pid 미제공이면 게이트 skip(하위호환)', () => {
+  const dir = makeProject();
+  try {
+    writeTasks(dir, [{ id: 'OWN-001', allowed_paths: ['src/a.ts'] }]);
+    // 살아있는 owner 가 stamp 돼 있어도
+    runPact(['run-cycle', 'prepare', `--owner-pid=${ALIVE_PID}`, '--session=A'], dir);
+    // owner-pid 없이 호출하면 게이트 자체를 건너뛴다(구버전 호출자)
+    const r = runPact(['run-cycle', 'prepare'], dir);
+    assert.equal(r.status, 0, r.stderr);
+    const out = JSON.parse(r.stdout);
+    assert.equal(out.ok, true);
+    assert.equal(out.already_prepared, true, '거부되지 않고 멱등 재개');
+  } finally { cleanupProject(dir); }
+});
+
+test('owner gate — collect 후 owner clear(current_batch 소비)', () => {
+  const dir = makeProject();
+  try {
+    writeTasks(dir, [{ id: 'OWN-001', allowed_paths: ['src/a.ts'] }]);
+    runPact(['run-cycle', 'prepare', `--owner-pid=${ALIVE_PID}`, '--session=drive'], dir);
+    assert.ok(fs.existsSync(path.join(dir, '.pact/current_batch.json')));
+    const c = runPact(['run-cycle', 'collect'], dir);
+    assert.equal(c.status, 0, c.stderr);
+    // collect 는 current_batch.json 을 소비(삭제) → owner 도 함께 clear
+    assert.equal(fs.existsSync(path.join(dir, '.pact/current_batch.json')), false);
+  } finally { cleanupProject(dir); }
+});
+
 // ─── prepare → 워커 시뮬 → collect end-to-end ──────────
 
 test('run-cycle E2E — prepare → 워커 시뮬 commit → collect 모두 머지 성공', () => {

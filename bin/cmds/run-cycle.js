@@ -36,7 +36,7 @@ const { assessTasks: assessScopes, assessOwnership } = require(path.join(PLUGIN_
 const { planMerge } = require(path.join(PLUGIN_ROOT, 'bin', 'cmds', 'merge.js'));
 const { generateAll: generateReports } = require(path.join(PLUGIN_ROOT, 'scripts', 'report-gen.js'));
 const { mergeAll, mergeWorktree, abortMerge } = require(path.join(PLUGIN_ROOT, 'scripts', 'merge-coordinator.js'));
-const { acquireCycleLock, releaseCycleLock, cleanStaleLocks } = require(path.join(PLUGIN_ROOT, 'scripts', 'lock.js'));
+const { acquireCycleLock, releaseCycleLock, cleanStaleLocks, isAlive } = require(path.join(PLUGIN_ROOT, 'scripts', 'lock.js'));
 const { setTaskStatus } = require(path.join(PLUGIN_ROOT, 'scripts', 'task-sources.js'));
 const { writeJsonAtomic } = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'atomic-write.js'));
 
@@ -44,6 +44,59 @@ const CURRENT_BATCH_FILE = '.pact/current_batch.json';
 
 function emit(obj) {
   process.stdout.write(JSON.stringify(obj, null, 2) + '\n');
+}
+
+// ─── STAB-1: 멀티세션 owner-pid 게이트 ───────────────────────────────────────
+// 문제: 사이클 락은 prepare/collect CLI 호출만 직렬화하고, 워커가 도는 창(분 단위)은
+//   무방비다. adopt(already_prepared) 분기는 사이클 락 이전에 return 하므로 락도 안 잡는다.
+//   → 같은 레포의 두 세션(drive+인터랙티브 등)이 같은 worktree 에 워커를 이중 spawn 할 수 있다.
+// 고침: 호출측이 장수 pid 를 주입(driver=process.pid, parallel.md=$PPID). prepare/admit 가
+//   그 owner{pid,session,stamped_at} 를 current_batch.json 에 stamp 하고, adopt 시 살아있는
+//   타 owner 면 spawn 전 거부한다. --owner-pid 미제공(구버전)이면 게이트 전체 skip(하위호환).
+
+/** --owner-pid=<n> [--session=<label>] 파싱(= 형태만 — admit taskId 오탐 방지). 없으면 null. */
+function parseOwner(args) {
+  const pidFlag = (args || []).find((a) => a.startsWith('--owner-pid='));
+  if (!pidFlag) return null;
+  const pid = Number(pidFlag.slice('--owner-pid='.length));
+  if (!Number.isFinite(pid) || pid <= 0) return null;
+  const sessFlag = (args || []).find((a) => a.startsWith('--session='));
+  return { pid, session: sessFlag ? sessFlag.slice('--session='.length) : null };
+}
+
+function readCurrentBatch(cwd) {
+  try { return JSON.parse(fs.readFileSync(path.join(cwd, CURRENT_BATCH_FILE), 'utf8')); }
+  catch { return null; }
+}
+
+/** owner stamp 객체(현재 시각). */
+function ownerStamp(owner) {
+  return { pid: owner.pid, session: owner.session, stamped_at: new Date().toISOString() };
+}
+
+/** current_batch.json 의 owner 만 호출자로 재스탬프(adopt 시 이후 프리페어가 라이브 소유로 인식). */
+function restampOwner(cwd, owner) {
+  const cb = readCurrentBatch(cwd);
+  if (!cb) return;
+  writeJsonAtomic(path.join(cwd, CURRENT_BATCH_FILE), { ...cb, owner: ownerStamp(owner) });
+}
+
+/**
+ * adopt(already_prepared) 게이트. 호출자가 owner-pid 를 안 줬으면 skip(하위호환).
+ * 기록된 owner 가 호출자와 다르고 살아있으면 거부. 같은 owner/죽은 owner/무-owner 면 adopt 재스탬프
+ * (크래시 세션의 죽은 owner 를 산 호출자로 이전 → 이후 세션의 이중 채택 방지).
+ * @returns {{ok:true} | {ok:false, holder:{pid:number, session?:string}}}
+ */
+function ownerAdoptGate(cwd, args) {
+  const owner = parseOwner(args);
+  if (!owner) return { ok: true };                     // 미제공 → 게이트 skip(하위호환)
+  const cb = readCurrentBatch(cwd);
+  const rec = cb && cb.owner;
+  if (rec && typeof rec.pid === 'number' && rec.pid !== owner.pid && isAlive(rec.pid)) {
+    return { ok: false, holder: rec };
+  }
+  restampOwner(cwd, owner);                             // adopt — 소유권을 호출자로 이전
+  return { ok: true };
 }
 
 /**
@@ -281,6 +334,19 @@ function prepare(args, opts = {}) {
   // 멱등 (v0.6.1): 이미 prepared면 skip. --force로 무시 가능.
   // 단 task_prompts 는 항상 반환(makeTaskPrompt 단일 소스) → 드라이버 reconstruct 불필요·drift 제거.
   if (!force && isAlreadyPrepared(cwd)) {
+    // STAB-1: adopt 전 owner 게이트 — 살아있는 타 세션이 소유 중이면 spawn 전 거부(이중 spawn 차단).
+    const gate = ownerAdoptGate(cwd, args);
+    if (!gate.ok) {
+      const h = gate.holder;
+      const who = `pid=${h.pid}${h.session ? `, session=${h.session}` : ''}`;
+      emit({
+        ok: false,
+        stage: 'cycle-busy',
+        error: `cycle-busy: 다른 세션(${who})이 이 사이클을 소유 중`,
+        errors: [{ message: `cycle-busy: 다른 세션(${who})이 이 사이클을 소유 중`, fix: '다른 세션 종료 대기 또는 pact status' }],
+      });
+      process.exit(1);
+    }
     const rebuilt = rebuildTaskPrompts(cwd);
     emit({
       ok: true,
@@ -389,9 +455,12 @@ function doPrepare(args, opts, cwd, pre) {
   }
 
   fs.mkdirSync(path.join(cwd, '.pact'), { recursive: true });
+  // STAB-1: --owner-pid 주입 시 owner stamp(멀티세션 adopt 게이트용). 미제공이면 필드 생략(하위호환).
+  const owner = parseOwner(args);
   writeJsonAtomic(path.join(cwd, CURRENT_BATCH_FILE), {
     task_ids: batch0.map(t => t.id),
     prepared_at: new Date().toISOString(),
+    ...(owner ? { owner: ownerStamp(owner) } : {}),
   });
 
   const out = {
@@ -453,19 +522,22 @@ function admit(args, opts = {}) {
 }
 
 /** admit 된 task 를 current_batch.json 에 추가 기록(멱등 append). collect 가 함께 처리하게. */
-function recordAdmitted(cwd, taskId) {
+function recordAdmitted(cwd, taskId, owner) {
   const cbPath = path.join(cwd, CURRENT_BATCH_FILE);
   let cb = {};
   try { cb = JSON.parse(fs.readFileSync(cbPath, 'utf8')); } catch { cb = {}; }
   const ids = Array.isArray(cb.task_ids) ? cb.task_ids.slice() : [];
   if (!ids.includes(taskId)) ids.push(taskId);
   fs.mkdirSync(path.join(cwd, '.pact'), { recursive: true });
-  writeJsonAtomic(cbPath, {
+  // STAB-1: owner 주입 시 재스탬프, 미제공이면 기존 owner 를 ...cb 로 보존(clobber 방지).
+  const next = {
     ...cb,
     task_ids: ids,
     prepared_at: cb.prepared_at || new Date().toISOString(),
     last_admitted_at: new Date().toISOString(),
-  });
+  };
+  if (owner) next.owner = ownerStamp(owner);
+  writeJsonAtomic(cbPath, next);
 }
 
 function parseInFlight(args) {
@@ -490,10 +562,13 @@ function doAdmit(args, taskId, cwd) {
     return fail('admit', [{ message: `task ${taskId} 를 task source 에서 찾을 수 없음` }]);
   }
 
+  // STAB-1: admit 도 owner 를 stamp/보존(드라이버가 --owner-pid 로 자기 소유권 유지).
+  const owner = parseOwner(args);
+
   // 멱등/재개: 이미 worktree+payload 가 있으면 재생성하지 않고 기존 payload 반환(per-task 판정).
   // 진행 중 워커 작업물을 재베이스로 날리지 않기 위해 idempotency 가 overlap 재검사보다 우선.
   if (isTaskPrepared(cwd, taskId)) {
-    recordAdmitted(cwd, taskId);
+    recordAdmitted(cwd, taskId, owner);
     emit({ ok: true, admitted: true, already_prepared: true, task_prompt: rebuildOneTaskPrompt(cwd, taskId) });
     return;
   }
@@ -528,7 +603,7 @@ function doAdmit(args, taskId, cwd) {
     return fail(res.stage, [{ task_id: taskId, message: res.error }]);
   }
 
-  recordAdmitted(cwd, taskId);
+  recordAdmitted(cwd, taskId, owner);
   emit({
     ok: true,
     admitted: true,
