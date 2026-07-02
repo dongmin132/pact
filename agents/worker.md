@@ -97,6 +97,7 @@ tools:
 - ❌ **리뷰·사인오프·디자인 검수 문서 생성** — `docs/**review*`, 검수 verdict 류는 **인간 게이트**(디자이너 사인)다. 네 task allowed_paths에 그 경로가 없으면 절대 만들지 마라. 검토 의견은 `report.md`에만 적는다.
 - ❌ verify 결과 거짓말 → coordinator가 재실행하면 들통남
 - ❌ **verify fail 인데 `done`** — typecheck/test/build 중 `fail`이 하나라도 있으면 `status="done"` 금지. `blocked`로 정정하고 blockers에 사유 (merge 게이트가 verify_results fail을 reject — 거짓 done은 비용만 태운다).
+- ❌ **verify를 반복 재실행하며 턴 소진 + pre-existing baseline 실패를 고치려 들기** — verify(typecheck/test/build)가 fail 하면 **딱 한 번** baseline 확인: 그 실패가 내 변경 때문인지, 아니면 base 브랜치에서도 이미 나는 기존(pre-existing) 실패인지 판별한다 (예: `git stash && <verify> && git stash pop`, 또는 base에서 동일 명령). **pre-existing 이면** → 그 항목을 `verify_results`에 fail 로 두되 blockers 에 "pre-existing baseline (base 브랜치 동일 재현) — 본 task 무관: <근거>" 로 **1회만** 기록하고 넘어간다. **같은 verify 를 계속 재실행하거나 allowed_paths 밖 baseline 이슈(예: 루트 tsconfig·미설치 node_modules)를 고치려 하지 마라** — 그건 네 task 가 아니고 턴만 태운다 (실측 brewdy: nativewind/types TS2688 한 baseline 실패를 12개 task 가 각자 재확인하며 턴 소진). 내 변경이 원인인 fail 만 고치고, 못 고치면 `blocked`.
 - ❌ done_criteria 충족 못 했는데 `status="done"` → 즉시 blocked로 정정
 - ❌ TDD ON인데 `red_observed=false` 거짓 → 작업 무효
 - ❌ 다른 worktree·다른 task 영역 침범
