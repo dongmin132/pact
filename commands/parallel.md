@@ -28,6 +28,9 @@ prepare가 반환한 키:
 - `task_prompts: [{task_id, title, task_prompt, status_path, working_dir, ...}]`
 - `coordinator_review_needed: bool`
 - `context_warnings: [...]` — 있으면 한국어 경고 (중단 X)
+- `size_warnings: [{task, risk, reason}]` — 턴소진 위험(oversized/unbounded) task (중단 X)
+- `scope_warnings: [{task, violations}]` — done_criteria ⊄ allowed_paths 계약모순 (중단 X)
+- `bundle_warnings: [{task_id, ref, lines}]` — anchor 없이 통째 번들된 대형 shard (중단 X)
 
 ## 단계 2.5: 분담 모드 인식 (v0.6.2)
 
@@ -43,6 +46,21 @@ stdout `task_ids`:
 
 분담 모드에서는 사용자에게 한국어 안내:
 > 🪟 분담 모드: 이 세션이 잡은 N개만 sub-agent로 처리 (다른 세션이 나머지 처리 중).
+
+## 단계 2.6: 슬로우니스 경고 표면 (조건부, propose-only)
+
+prepare 결과의 `size_warnings` / `scope_warnings` / `bundle_warnings` 중 **하나라도 비어있지 않으면**, fan-out **전에** 한국어로 요약 표시하고 진행 여부를 확인한다 (`context_warnings`와 동일 패턴 — 자동 수정 X, 철학 5번). 전부 빈 배열이면 이 단계 스킵.
+
+> ⚠️ fan-out 전 슬로우니스 사전경보 (분해가 아직 무료인 지점):
+> - 🔴 **턴소진 위험** (size_warnings): `<task>` — `<reason>`. 워커가 한 턴에 못 끝내 resume·salvage로 wall-time이 배로 늘 수 있음.
+> - 🔴 **계약모순** (scope_warnings): `<task>` — done_criteria가 allowed_paths 밖 파일 생성을 요구 → merge 게이트가 통째 거부(작업 유실).
+> - 🟡 **컨텍스트 bloat** (bundle_warnings): `<task_id>` — `<ref>`(`<lines>`줄)가 anchor 없이 K워커에 통째 복제.
+>
+> 어떻게 할까요?
+> 1. **분해/수정 후 재시작** (권장): `/pact:plan` 재분해(oversized) 또는 사용자 승인 후 메인이 `tasks/<domain>.md`의 해당 task를 직접 `Edit`(계약모순=경로 추가/의무 제거, bloat=ref에 anchor 추가) → 다시 `/pact:parallel`.
+> 2. **경고 무시하고 이대로 진행**: risk 감수하고 fan-out 계속.
+
+사용자가 2를 택하면 그대로 단계 3으로. 1을 택하면 정리 안내(worktree·payload는 이미 생성됨 → `pact run-cycle collect` 또는 수동 cleanup) 후 재분해로 유도.
 
 ## 단계 3: coordinator 검토 (조건부)
 

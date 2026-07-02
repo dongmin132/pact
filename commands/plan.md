@@ -88,6 +88,24 @@ planner가 알아서:
 - `tasks/<domain>.md` 생성 또는 갱신
 - TBD 마커는 architect 해소 영역으로 둠
 
+## 단계 3.5: 슬로우니스 사전검사 (결정적, propose-only)
+
+planner가 `tasks/*.md`를 산출한 **직후** 다음 3종 정적 검사를 결정적으로 실행한다. 분해가 아직 무료인 지점(worktree·cycle 미생성)이라 여기서 제안이 도착하면 fan-out 후 salvage/유실을 원천 예방한다. **자동 반영 X — 제안까지만** (철학 5번).
+
+```bash
+node ${CLAUDE_PLUGIN_ROOT}/bin/pact sizecheck --json
+node ${CLAUDE_PLUGIN_ROOT}/bin/pact prelude --json
+node ${CLAUDE_PLUGIN_ROOT}/bin/pact scopecheck --json
+```
+
+각 JSON 결과가 **비어있지 않으면** 한국어로 제안 (전부 비면 이 단계 스킵):
+
+- `sizecheck.flagged`가 있으면 → 🔴 **분해 제안**: `<task>` (`<reason>`) 은 워커가 한 턴에 못 끝낼 위험. "이 task를 더 작게 쪼갤까요?" 물어 승인 시 재분해.
+- `prelude` 제안(공유 파일로 배치가 직렬화되는 task 군)이 있으면 → 🟡 **freeze 제안**: 먼저 공통 인터페이스/타입을 단독 task로 freeze 후 나머지를 병렬화하면 직렬화가 풀림. "prelude task를 앞에 둘까요?" 물어 승인 시 반영.
+- `scopecheck.flagged`가 있으면 → 🔴 **계약수정 제안**: `<task>`의 done_criteria가 allowed_paths 밖 파일 생성을 요구 → merge가 통째 거부. "(a) 그 경로를 allowed_paths에 추가 / (b) 생성 의무 제거" 중 택해 승인 시 반영.
+
+사용자가 승인한 항목만 `/pact:plan` 재분해 또는 해당 `tasks/<domain>.md` task 직접 수정으로 반영한다. 무시를 택하면 그대로 단계 4.
+
 ## 단계 4: 결과 보고 (한국어)
 
 planner 종료 후 `pact slice --headers`로 요약 출력:
