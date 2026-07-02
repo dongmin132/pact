@@ -19,6 +19,10 @@ function cycleLockPath(cwd) {
   return path.join(cwd, '.pact', 'cycle.lock');
 }
 
+function driveOwnerPath(cwd) {
+  return path.join(cwd, '.pact', 'drive-owner.json');
+}
+
 function isAlive(pid) {
   if (typeof pid !== 'number' || !Number.isFinite(pid) || pid <= 0) return false;
   try {
@@ -262,6 +266,73 @@ function readCycleLock(opts = {}) {
 }
 
 /**
+ * 드라이브 소유권 락(belt, STAB-1) — 같은 레포에 두 헤드리스 드라이버 동시 실행 차단.
+ * driver-state.json 은 관측용(단일 writer)이라 소유권 판정에 쓰지 않는다 → 전용 파일
+ * .pact/drive-owner.json 을 writeFileExclusive+isAlive 로 검사/기록한다.
+ * live 한 타 pid 가 소유 중이면 거부. stale(죽은 pid)·자기 pid 는 takeover(재공개).
+ *
+ * @returns {{ok:true, file:string, action:'fresh'|'takeover'} | {ok:false, error:string, holder?:object}}
+ */
+function acquireDriveLock(opts = {}) {
+  const cwd = opts.cwd || process.cwd();
+  const pid = opts.pid || process.pid;
+  const file = driveOwnerPath(cwd);
+  const dir = path.dirname(file);
+
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+
+  let action = 'fresh';
+  let stalePath = null;
+  if (fs.existsSync(file)) {
+    const holder = readLock(file);
+    if (holder && holder.pid !== pid && isAlive(holder.pid)) {
+      return {
+        ok: false,
+        error: `드라이버 이미 실행 중 (pid=${holder.pid}${holder.session ? `, session=${holder.session}` : ''})`,
+        holder,
+      };
+    }
+    // 자기 pid 재획득(멱등) 또는 stale(죽은 pid) — 치우고 배타적 재공개(단일 승자 수렴).
+    action = 'takeover';
+    stalePath = `${file}.stale.${pid}.${Date.now()}`;
+    try { fs.renameSync(file, stalePath); } catch { stalePath = null; }
+  }
+
+  const payload = {
+    pid,
+    session: opts.session || null,
+    acquired_at: new Date().toISOString(),
+  };
+  const won = writeFileExclusive(file, JSON.stringify(payload, null, 2) + '\n');
+  if (stalePath) { try { fs.unlinkSync(stalePath); } catch { /* best-effort */ } }
+  if (!won) {
+    const holder = readLock(file);
+    return {
+      ok: false,
+      error: `드라이버 이미 실행 중 (pid=${holder ? holder.pid : '?'})`,
+      holder: holder || undefined,
+    };
+  }
+  return { ok: true, file, action };
+}
+
+/** 드라이브 소유권 락 해제(정상/SIGINT/SIGTERM 종료 시). 자기 pid 일 때만(force 로 강제). */
+function releaseDriveLock(opts = {}) {
+  const cwd = opts.cwd || process.cwd();
+  const pid = opts.pid || process.pid;
+  const file = driveOwnerPath(cwd);
+
+  if (!fs.existsSync(file)) return { ok: true, removed: false };
+
+  const holder = readLock(file);
+  if (!opts.force && holder && holder.pid !== pid) {
+    return { ok: false, error: `다른 PID(${holder.pid})가 드라이브 소유 중. force 필요.` };
+  }
+  try { fs.unlinkSync(file); } catch { /* 이미 없음 */ }
+  return { ok: true, removed: true };
+}
+
+/**
  * 현재 잡혀 있는 모든 락 목록.
  * @returns {Array<{task_id, pid, session_label, acquired_at, alive}>}
  */
@@ -300,4 +371,7 @@ module.exports = {
   releaseCycleLock,
   readCycleLock,
   cycleLockPath,
+  acquireDriveLock,
+  releaseDriveLock,
+  driveOwnerPath,
 };

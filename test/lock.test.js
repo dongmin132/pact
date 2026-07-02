@@ -18,6 +18,9 @@ const {
   releaseCycleLock,
   readCycleLock,
   cycleLockPath,
+  acquireDriveLock,
+  releaseDriveLock,
+  driveOwnerPath,
 } = require('../scripts/lock.js');
 
 function tmpProject() {
@@ -276,5 +279,67 @@ test('cleanStaleLocks — cycle lock도 청소 (v0.6.1)', () => {
     const r = cleanStaleLocks({ cwd: dir });
     assert.ok(r.cleaned.includes('__cycle__'));
     assert.ok(!fs.existsSync(cycleLockPath(dir)));
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+// ─── STAB-1 belt: 드라이브 소유권 락 (drive-owner.json) ───────────────────
+
+test('acquireDriveLock — 새 드라이브 락 획득 (fresh)', () => {
+  const dir = tmpProject();
+  try {
+    const r = acquireDriveLock({ cwd: dir, pid: ALIVE_PID, session: 'drive' });
+    assert.equal(r.ok, true);
+    assert.equal(r.action, 'fresh');
+    assert.ok(fs.existsSync(driveOwnerPath(dir)));
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('acquireDriveLock — live 한 타 pid 소유 중이면 거부 (이중 드라이버 차단)', () => {
+  const dir = tmpProject();
+  try {
+    // ALIVE_PID(현재 프로세스) 가 소유 중 — 살아있음
+    acquireDriveLock({ cwd: dir, pid: ALIVE_PID });
+    const r = acquireDriveLock({ cwd: dir, pid: DEAD_PID }); // 다른 요청자(pid 무관, holder 가 살아있음)
+    assert.equal(r.ok, false);
+    assert.match(r.error, /드라이버 이미 실행 중/);
+    assert.equal(r.holder.pid, ALIVE_PID);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('acquireDriveLock — stale(죽은 pid) 소유는 takeover', () => {
+  const dir = tmpProject();
+  try {
+    fs.writeFileSync(driveOwnerPath(dir), JSON.stringify({ pid: DEAD_PID, session: 'old', acquired_at: '2020' }));
+    const r = acquireDriveLock({ cwd: dir, pid: ALIVE_PID });
+    assert.equal(r.ok, true);
+    assert.equal(r.action, 'takeover');
+    // 소유권이 산 pid 로 이전됐고 .stale 잔재 없음
+    const held = JSON.parse(fs.readFileSync(driveOwnerPath(dir), 'utf8'));
+    assert.equal(held.pid, ALIVE_PID);
+    assert.equal(fs.readdirSync(path.join(dir, '.pact')).filter(f => f.includes('.stale.')).length, 0);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('releaseDriveLock — 해제 후 재획득 가능', () => {
+  const dir = tmpProject();
+  try {
+    acquireDriveLock({ cwd: dir, pid: ALIVE_PID });
+    const rel = releaseDriveLock({ cwd: dir, pid: ALIVE_PID });
+    assert.equal(rel.ok, true);
+    assert.equal(rel.removed, true);
+    assert.ok(!fs.existsSync(driveOwnerPath(dir)));
+    const r2 = acquireDriveLock({ cwd: dir, pid: DEAD_PID });
+    assert.equal(r2.ok, true); // 해제됐으니 다른 pid 도 획득 가능
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('releaseDriveLock — 다른 PID 소유는 force 없이 거부', () => {
+  const dir = tmpProject();
+  try {
+    acquireDriveLock({ cwd: dir, pid: ALIVE_PID });
+    const rel = releaseDriveLock({ cwd: dir, pid: DEAD_PID });
+    assert.equal(rel.ok, false);
+    assert.match(rel.error, /force/);
+    assert.ok(fs.existsSync(driveOwnerPath(dir))); // 여전히 존재
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
