@@ -721,3 +721,94 @@ method: POST
     assert.ok(fs.existsSync(path.join(repo, 'contracts/api/user.md')), 'user shard 없음');
   } finally { cleanupRepo(repo); }
 });
+
+// ---- pact resume-prompt (STR-2 / P2-A) — fresh-resume 연속 프롬프트 단일 결정적 소스 ----
+
+function seedRun(repo, taskId, extra = {}) {
+  const runs = path.join(repo, '.pact', 'runs', taskId);
+  fs.mkdirSync(runs, { recursive: true });
+  fs.writeFileSync(path.join(runs, 'payload.json'), JSON.stringify({
+    task_id: taskId,
+    title: 'do the thing',
+    working_dir: path.join(repo, '.pact', 'worktrees', taskId),
+    ...extra,
+  }));
+  return runs;
+}
+
+test('pact resume-prompt — continuationPrompt + resumes_remaining 반환 (조회는 소비 X)', () => {
+  const repo = makeRepo();
+  try {
+    seedRun(repo, 'PACT-001');
+    const r = runPact(['resume-prompt', 'PACT-001'], repo);
+    assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+    const out = JSON.parse(r.stdout);
+    assert.equal(out.task_id, 'PACT-001');
+    assert.match(out.continuationPrompt, /RESUME 1/);
+    assert.match(out.continuationPrompt, /git status/);
+    assert.equal(out.resumes_remaining, 2, '기본 MAX_RESUME=2, 소비 전이므로 2');
+    // 조회는 resume.json 을 만들지 않는다 (조회 ≠ 소비)
+    assert.equal(fs.existsSync(path.join(repo, '.pact/runs/PACT-001/resume.json')), false);
+  } finally { cleanupRepo(repo); }
+});
+
+test('pact resume-prompt --consume — 카운트 영속 증가 (파일 기반 회로차단기)', () => {
+  const repo = makeRepo();
+  try {
+    seedRun(repo, 'PACT-001');
+    const r1 = JSON.parse(runPact(['resume-prompt', 'PACT-001', '--consume'], repo).stdout);
+    assert.match(r1.continuationPrompt, /RESUME 1/);
+    assert.equal(r1.resumes_remaining, 1);
+    const r2 = JSON.parse(runPact(['resume-prompt', 'PACT-001', '--consume'], repo).stdout);
+    assert.match(r2.continuationPrompt, /RESUME 2/);
+    assert.equal(r2.resumes_remaining, 0);
+    assert.equal(r2.escalate, true, 'cap 도달 → escalate 신호');
+    // 영속 파일 확인
+    const st = JSON.parse(fs.readFileSync(path.join(repo, '.pact/runs/PACT-001/resume.json'), 'utf8'));
+    assert.equal(st.count, 2);
+  } finally { cleanupRepo(repo); }
+});
+
+test('pact resume-prompt --consume — cap 초과는 escalate + 카운트 유지', () => {
+  const repo = makeRepo();
+  try {
+    seedRun(repo, 'PACT-001');
+    runPact(['resume-prompt', 'PACT-001', '--consume'], repo);
+    runPact(['resume-prompt', 'PACT-001', '--consume'], repo);
+    const r3 = JSON.parse(runPact(['resume-prompt', 'PACT-001', '--consume'], repo).stdout);
+    assert.equal(r3.resumes_remaining, 0);
+    assert.equal(r3.escalate, true);
+    const st = JSON.parse(fs.readFileSync(path.join(repo, '.pact/runs/PACT-001/resume.json'), 'utf8'));
+    assert.equal(st.count, 2, 'cap 초과 소비는 카운트를 늘리지 않음');
+  } finally { cleanupRepo(repo); }
+});
+
+test('pact resume-prompt — merge-result rejected 사유를 incomplete_reason 으로 표면', () => {
+  const repo = makeRepo();
+  try {
+    seedRun(repo, 'PACT-001');
+    fs.writeFileSync(path.join(repo, '.pact', 'merge-result.json'), JSON.stringify({
+      rejected: [{ task_id: 'PACT-001', reason: 'clean_for_merge=false' }],
+      failures: [],
+    }));
+    const out = JSON.parse(runPact(['resume-prompt', 'PACT-001'], repo).stdout);
+    assert.equal(out.resume_needed, true);
+    assert.match(out.incomplete_reason, /clean_for_merge=false/);
+  } finally { cleanupRepo(repo); }
+});
+
+test('pact resume-prompt — payload 없으면 exit 2', () => {
+  const repo = makeRepo();
+  try {
+    const r = runPact(['resume-prompt', 'NOPE-999'], repo);
+    assert.equal(r.status, 2);
+  } finally { cleanupRepo(repo); }
+});
+
+test('pact resume-prompt — task_id 인자 누락 시 exit 1 (usage)', () => {
+  const repo = makeRepo();
+  try {
+    const r = runPact(['resume-prompt'], repo);
+    assert.equal(r.status, 1);
+  } finally { cleanupRepo(repo); }
+});

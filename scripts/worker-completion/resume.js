@@ -5,6 +5,9 @@
 // FRESH 워커가 "처음부터 다시"가 아니라 "이어서" 마저 끝낼 수 있다. 사람 salvage 제거.
 // 결정 로직은 순수(여기), 실제 재투입은 드라이버가 같은 worktree 에 spawn.
 
+const fs = require('fs');
+const path = require('path');
+
 const DEFAULT_MAX_RESUME = 2; // 회로차단기(철학): 동일 task 재개 ≤ 2회, 초과 시 위임
 
 // 재개할까? 미완(턴/예산 소진)이고 재개 횟수가 cap 미만일 때만.
@@ -45,4 +48,45 @@ function withContinuation(task, n) {
   return { ...task, task_prompt: continuationPrompt(task, n), _resume: n };
 }
 
-module.exports = { shouldResume, classifyRealResult, continuationPrompt, withContinuation, DEFAULT_MAX_RESUME };
+// ---- 영속 회로차단기 (STR-2 / P2-A) ----
+// 인터랙티브 /pact:parallel 의 재개 카운트가 LLM 기억에 의존하면 신뢰 불가 → 파일 기반으로 영속.
+// .pact/runs/<id>/resume.json 에 누적. 조회(readResumeCount)와 소비(consumeResume)를 분리해
+// CLI 가 "몇 번 재개했나"를 부수효과 없이 물어볼 수 있게 한다. 드라이버(driver.mjs)는 이 헬퍼를
+// 쓰지 않고 in-loop 카운터로 동작하므로 여기 추가는 드라이버 동작 불변.
+
+// 재개 카운트 영속 경로.
+function resumeStatePath(cwd, taskId) {
+  return path.join(cwd, '.pact', 'runs', taskId, 'resume.json');
+}
+
+// 영속된 재개 횟수 조회 (파일 없거나 손상이면 0). 조회는 부수효과 없음 (파일 생성 X).
+function readResumeCount(cwd, taskId) {
+  try {
+    const j = JSON.parse(fs.readFileSync(resumeStatePath(cwd, taskId), 'utf8'));
+    return Number.isInteger(j.count) && j.count >= 0 ? j.count : 0;
+  } catch {
+    return 0;
+  }
+}
+
+// 재개 1회 소비 — 카운트 증가 후 영속, 새 카운트 반환.
+// cap(maxResume) 도달 시 증가하지 않고 현재 카운트 그대로 반환(회로차단기: 소비 거부 = 위임 신호).
+function consumeResume(cwd, taskId, maxResume = DEFAULT_MAX_RESUME) {
+  const cur = readResumeCount(cwd, taskId);
+  if (cur >= maxResume) return cur;
+  const next = cur + 1;
+  const p = resumeStatePath(cwd, taskId);
+  fs.mkdirSync(path.dirname(p), { recursive: true });
+  fs.writeFileSync(p, JSON.stringify({ task_id: taskId, count: next, updated_at: new Date().toISOString() }, null, 2) + '\n');
+  return next;
+}
+
+// 남은 재개 횟수 (cap - 소비, 음수는 0 clamp).
+function resumesRemaining(count, maxResume = DEFAULT_MAX_RESUME) {
+  return Math.max(0, maxResume - count);
+}
+
+module.exports = {
+  shouldResume, classifyRealResult, continuationPrompt, withContinuation, DEFAULT_MAX_RESUME,
+  resumeStatePath, readResumeCount, consumeResume, resumesRemaining,
+};

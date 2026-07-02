@@ -99,11 +99,17 @@ CLI는 자동으로 머지 → merge-result.json 작성 → 성공 worktree clea
 
 워커가 턴/budget 소진으로 **미완 종료**(status.json 없음 + worktree에 부분작업 존재, 또는 `clean_for_merge: false`)면 **메인이 직접 끝내지 말 것** — 그게 salvage(= 솔로작업 + ceremony), brewdy의 ~65% 시간을 먹은 그 패턴이다. 대신:
 
-1. **같은 worktree(부분작업 보존)에 fresh worker 서브에이전트를 continuation 프롬프트로 재투입** (`scripts/worker-completion/resume.js`의 `continuationPrompt` 형식 그대로):
-   - prompt 맨 앞에: `[RESUME n] 이전 워커가 턴 소진으로 미완. worktree에 부분작업 보존됨. 처음부터 다시 X — git status로 진행 확인 후 남은 done_criteria만 마저 완료. allowed_paths 동일.` + 원 `task_prompt`
-   - `subagent_type: worker`, working_dir = 그 task의 worktree 그대로
+1. **같은 worktree(부분작업 보존)에 fresh worker 서브에이전트를 continuation 프롬프트로 재투입.** 연속 프롬프트는 인라인으로 직접 쓰지 말 것 — driver.mjs 와 동일한 코어(`scripts/worker-completion/resume.js`)를 그대로 출력하는 결정적 CLI 단일소스에서 가져온다 (drift 0, 회로차단기 영속):
+
+   ```bash
+   node ${CLAUDE_PLUGIN_ROOT}/bin/pact resume-prompt <task_id> --consume
+   ```
+
+   stdout JSON `{task_id, continuationPrompt, resumes_remaining, escalate, incomplete_reason?}` 분기:
+   - `escalate: true` (또는 `resumes_remaining: 0`) → 재개 상한(`MAX_RESUME`=2) 도달. **재투입 X** → 아래 1~4 직접 처리 또는 사용자 위임.
+   - 아니면 `continuationPrompt` 문자열을 **그대로** worker 서브에이전트 prompt 로 사용 (`subagent_type: worker`, working_dir = 그 task 의 worktree). 메인이 프롬프트를 직접 작문하지 않는다 (단일소스).
 2. 재투입 종료 후 `pact merge` 재시도.
-3. **회로차단기**: 같은 task 재개 ≤ 2회(`MAX_RESUME`). 초과 시에만 아래 1~4 직접 처리 또는 사용자 위임.
+3. **회로차단기(영속)**: 재개 카운트는 LLM 기억이 아니라 `.pact/runs/<id>/resume.json` 에 파일로 누적된다 — `--consume` 이 카운트를 증가시키고, `resumes_remaining: 0` 이면 더는 재개 없이 아래 1~4 또는 사용자 위임. (조회만 하려면 `--consume` 없이 호출 — 카운트 불변.)
 
 > 헤드리스 `pact drive`는 driver.mjs `runResumableTask`가 이걸 자동으로 한다(토큰 0). 인터랙티브 `/pact:parallel`은 메인이 위 절차로 동일 효과를 낸다.
 
