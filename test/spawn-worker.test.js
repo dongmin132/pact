@@ -12,6 +12,7 @@ const {
   prepareWorkerSpawn,
   validatePayload,
   renderPrompt,
+  makeTaskPrompt,
 } = require('../scripts/spawn-worker.js');
 
 const SPAWN_WORKER = path.join(__dirname, '..', 'scripts', 'spawn-worker.js');
@@ -227,6 +228,67 @@ test('prepareWorkerSpawn — context_refs 기반 context.md 번들 생성', () =
   } finally {
     fs.rmSync(tmpRoot, { recursive: true, force: true });
   }
+});
+
+// ─── TOK-3(1부): bundle_warnings 를 호출자에 플럼빙 (추가 필드, 비파괴) ───
+
+test('prepareWorkerSpawn — bundle_warnings를 호출자에 전달 (anchor 없는 대형 shard)', () => {
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'pact-test-'));
+  try {
+    const tmpl = path.join(tmpRoot, 'tmpl.md');
+    fs.writeFileSync(tmpl, '');
+    const big = ['# Big Contract'].concat(
+      Array.from({ length: 250 }, (_, i) => `line ${i}`)).join('\n');
+    fs.mkdirSync(path.join(tmpRoot, 'contracts/api'), { recursive: true });
+    fs.writeFileSync(path.join(tmpRoot, 'contracts/api/big.md'), big);
+
+    const result = prepareWorkerSpawn({
+      ...VALID,
+      context_refs: ['contracts/api/big.md'],
+    }, {
+      templatePath: tmpl,
+      runsRoot: path.join(tmpRoot, '.pact/runs'),
+      cwd: tmpRoot,
+    });
+
+    assert.equal(result.ok, true);
+    assert.ok(Array.isArray(result.bundle_warnings));
+    assert.equal(result.bundle_warnings.length, 1);
+    assert.equal(result.bundle_warnings[0].ref, 'contracts/api/big.md');
+    assert.equal(result.bundle_warnings[0].reason, 'no_anchor_full_include');
+  } finally {
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  }
+});
+
+test('prepareWorkerSpawn — context_refs 없으면 bundle_warnings 빈 배열', () => {
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'pact-test-'));
+  try {
+    const tmpl = path.join(tmpRoot, 'tmpl.md');
+    fs.writeFileSync(tmpl, '');
+    const result = prepareWorkerSpawn(VALID, {
+      templatePath: tmpl,
+      runsRoot: path.join(tmpRoot, '.pact/runs'),
+      cwd: tmpRoot,
+    });
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.bundle_warnings, []);
+  } finally {
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  }
+});
+
+// ─── TOK-1: 워커 종료 메시지 1줄 요약 규약 ───
+
+test('makeTaskPrompt — 최종 메시지로 1줄 요약만 반환하라는 지시 포함', () => {
+  const paths = {
+    prompt_path: '.pact/runs/PACT-001/prompt.md',
+    context_path: '.pact/runs/PACT-001/context.md',
+    status_path: '.pact/runs/PACT-001/status.json',
+    report_path: '.pact/runs/PACT-001/report.md',
+  };
+  const tp = makeTaskPrompt(VALID, paths);
+  assert.match(tp, /one-line summary/i);
 });
 
 test('spawn-worker CLI — stdout에 full prompt를 싣지 않음', () => {

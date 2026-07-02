@@ -84,7 +84,7 @@ function renderPrompt(payload, template) {
     done_criteria: listOrEmpty(payload.done_criteria),
     verify_commands: listOrEmpty(payload.verify_commands),
     contracts: jsonOrEmpty(payload.contracts),
-    context_refs: listOrEmpty(payload.context_refs),
+    // TOK-4: context_refs 는 context.md 의 '## Slices' 가 canonical — prompt.md 에서 재나열 제거.
     context_bundle_path: `.pact/runs/${payload.task_id}/context.md`,
     tdd_mode: payload.tdd ? 'ON (RED → GREEN → REFACTOR 강제)' : 'OFF',
     educational_mode: payload.educational_mode ? 'ON (학습 노트 동시 생성)' : 'OFF',
@@ -129,6 +129,8 @@ function makeTaskPrompt(payload, paths) {
     `4. Write final status to ${paths.status_path} and report to ${paths.report_path}.`,
     '',
     'Do not read full legacy SOT documents unless prompt.md explicitly names a needed section.',
+    // TOK-1: caller 반환(최종 메시지)은 1~2줄 구조화 요약만. 서술은 status.json/report.md 에.
+    'Then reply with only the one-line summary described in your system prompt (§ 종료 메시지) as your final message — no prose, no code, no file listing.',
   ].join('\n');
 }
 
@@ -160,7 +162,8 @@ function prepareWorkerSpawn(payload, opts = {}) {
   const dir = preparePayloadDir(payload, runsRoot);
   const contextPath = path.join(dir, 'context.md');
   const { writeContextBundle } = require('./context-bundle.js');
-  writeContextBundle(payload, contextPath, { cwd: opts.cwd || process.cwd() });
+  // TOK-3(1부): anchor 없이 통째 번들된 대형 shard 경고를 호출자에 플럼빙(추가 필드, 비파괴).
+  const bundle = writeContextBundle(payload, contextPath, { cwd: opts.cwd || process.cwd() });
   const promptPath = writePromptFile(dir, prompt);
 
   const paths = {
@@ -176,6 +179,7 @@ function prepareWorkerSpawn(payload, opts = {}) {
     task_prompt: makeTaskPrompt(payload, paths),
     runs_dir: dir,
     payload_path: path.join(dir, 'payload.json'),
+    bundle_warnings: bundle.bundle_warnings || [],
     ...paths,
   };
 }
