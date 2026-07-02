@@ -13,6 +13,7 @@
 //  검증-only path 언급(eslint 실행 등)은 생성 동사가 없어 자동 제외 → 오탐 최소화.
 
 const { pathsOverlap } = require('../batch-builder.js');
+const { readOwnership } = require('../hooks/pre-tool-guard.js');
 
 // 파일 생성/산출 의무를 뜻하는 동사. 검증(exit 0, 반환, 통과)과 구분하는 핵심 필터.
 const CREATION_VERB_RE = /생성|산출|작성|만들|출력|저장|create|produce|generate|scaffold|author|\bwrite\b/i;
@@ -84,6 +85,47 @@ function summarizeByDir(rows) {
     .sort((a, b) => b.count - a.count || a.dir.localeCompare(b.dir));
 }
 
+// ─── ownership 교차검토 (P1-3 · SPD-6) ──────────────────────────────────
+//
+// pre-spawn coordinator 검토(parallel.md 단계3)를 제거하면서, 그 4항목 중 결정적 게이트가
+// 커버하지 못하던 **유일한 비중복 체크**(allowed_paths ⊆ MODULE_OWNERSHIP)를 결정적으로 승계.
+//
+// 왜 비중복인가: merge 게이트는 files_changed ⊆ allowed_paths 만 검사하고, pre-tool-guard 는
+// 워커 worktree 안에서 allowed_paths 로 판정(ownership 우회, hooks/pre-tool-guard.js 워커 분기).
+// 즉 task 의 allowed_paths 자체가 다른 모듈 오너 영역/무주공산을 가리켜도 어떤 결정적 게이트도
+// 잡지 않는다 — coordinator LLM 검토만이 하던 일. 이를 readOwnership(재사용, 재구현 X)로 승계.
+//
+// propose-only(철학5): 경고만 반환, 차단·자동수정 X. ownership 소스 없으면 검사 불가 → 빈 배열.
+
+function assessOwnershipTask(t, owners) {
+  const allowed = Array.isArray(t.allowed_paths) ? t.allowed_paths : [];
+  const violations = [];
+  for (const ap of allowed) {
+    if (typeof ap !== 'string' || !ap.trim()) continue;
+    // allowed_path glob 이 어느 owner_path 와도 안 겹치면 = 선언된 모듈 오너 영역 밖 침범.
+    if (!pathsOverlap([ap], owners)) {
+      violations.push({ path: ap });
+    }
+  }
+  return {
+    task: t.id,
+    risk: violations.length ? 'ownership_conflict' : 'ok',
+    violations,
+  };
+}
+
+// task 들의 allowed_paths 를 MODULE_OWNERSHIP 오너 영역과 대조. cwd 로 ownership 소스 read.
+function assessOwnership(tasks = [], cwd = process.cwd()) {
+  const owners = readOwnership(cwd);
+  // 소스 없음(null) 또는 owner_paths 0건(빈 배열)이면 검사 불가 — 전부 flag 하면 오탐 홍수.
+  // readOwnership 의 기존 fail-open shape 유지(강제 X). 손상 ownership 경고는 STAB-9(hook)이 담당.
+  if (!owners || owners.length === 0) return [];
+  return tasks
+    .map((t) => assessOwnershipTask(t, owners))
+    .filter((r) => r.risk !== 'ok')
+    .sort((a, b) => String(a.task).localeCompare(String(b.task)));
+}
+
 function formatJson(rows) {
   return JSON.stringify({ flagged: rows }, null, 2);
 }
@@ -123,6 +165,7 @@ function formatHuman(rows, project) {
 module.exports = {
   assessTask,
   assessTasks,
+  assessOwnership,
   summarizeByDir,
   extractCreationPaths,
   looksLikePath,

@@ -27,7 +27,7 @@ const {
 const { prepareWorkerSpawn, makeTaskPrompt } = require(path.join(PLUGIN_ROOT, 'scripts', 'spawn-worker.js'));
 const { collectLongDocs, DEFAULT_MAX_LINES } = require(path.join(PLUGIN_ROOT, 'bin', 'cmds', 'context-guard.js'));
 const { assessTasks: assessSizes } = require(path.join(PLUGIN_ROOT, 'scripts', 'sizecheck.js'));
-const { assessTasks: assessScopes } = require(path.join(PLUGIN_ROOT, 'scripts', 'scopecheck.js'));
+const { assessTasks: assessScopes, assessOwnership } = require(path.join(PLUGIN_ROOT, 'scripts', 'scopecheck.js'));
 const { planMerge } = require(path.join(PLUGIN_ROOT, 'bin', 'cmds', 'merge.js'));
 const { mergeAll, abortMerge } = require(path.join(PLUGIN_ROOT, 'scripts', 'merge-coordinator.js'));
 const { acquireCycleLock, releaseCycleLock, cleanStaleLocks } = require(path.join(PLUGIN_ROOT, 'scripts', 'lock.js'));
@@ -126,7 +126,8 @@ function rebuildTaskPrompts(cwd) {
     try { done = JSON.parse(fs.readFileSync(paths.status_path, 'utf8')).status === 'done'; } catch { /* 미완 */ }
     if (!done) allDone = false;
   }
-  return { task_prompts: taskPrompts, ready_to_collect: allDone, coordinator_review_needed: !!cb.coordinator_review_needed };
+  // coordinator_review_needed 는 pre-spawn 검토 제거(P1-3)로 deprecated — 항상 false.
+  return { task_prompts: taskPrompts, ready_to_collect: allDone, coordinator_review_needed: false };
 }
 
 function preflight(cwd) {
@@ -249,11 +250,12 @@ function doPrepare(args, opts, cwd, pre) {
   // 담으므로 이미 merged/done task 는 자동 제외(노이즈 방어). 검사가 던져도 prepare 는 진행.
   let sizeWarnings = [];
   let scopeWarnings = [];
+  let ownershipWarnings = [];
   try { sizeWarnings = assessSizes(batch0); } catch { /* non-blocking */ }
   try { scopeWarnings = assessScopes(batch0); } catch { /* non-blocking */ }
-
-  const skippedCount = plan.skipped ? plan.skipped.length : 0;
-  const coordinator_review_needed = batch0.length > 2 || skippedCount > 0;
+  // P1-3 · SPD-6: pre-spawn coordinator 검토를 제거하며, 그 유일한 비중복 체크
+  // (allowed_paths ⊆ MODULE_OWNERSHIP)를 결정적으로 승계 — non-blocking, propose-only.
+  try { ownershipWarnings = assessOwnership(batch0, cwd); } catch { /* non-blocking */ }
 
   // worktree 생성 + payload·prompt 렌더 — atomic, 실패 시 모두 롤백
   const created = [];
@@ -325,18 +327,21 @@ function doPrepare(args, opts, cwd, pre) {
   writeJsonAtomic(path.join(cwd, CURRENT_BATCH_FILE), {
     task_ids: batch0.map(t => t.id),
     prepared_at: new Date().toISOString(),
-    coordinator_review_needed,
   });
 
   emit({
     ok: true,
     task_prompts: taskPrompts,
-    coordinator_review_needed,
+    // deprecated (P1-3): pre-spawn coordinator 검토 삭제 — 검토 4항목은 결정적 게이트가 커버
+    // (경로충돌=buildBatches/pathsOverlap, 의존=allDependenciesMet, TBD=parse, 스코프=merge 게이트,
+    //  ownership=아래 ownership_warnings). 하위호환 위해 필드는 유지하되 항상 false.
+    coordinator_review_needed: false,
     context_warnings: contextWarnings,
-    // P1-1 · SPD-4 슬로우니스 레버 (전부 non-blocking, propose-only):
-    size_warnings: sizeWarnings,     // 턴소진 위험(oversized/unbounded) — 분해 제안
-    scope_warnings: scopeWarnings,   // done_criteria ⊄ allowed_paths 계약모순 — 수정 제안
-    bundle_warnings: bundleWarnings, // anchor 없는 대형 shard 통째 번들 — freeze/anchor 제안
+    // P1-1 · SPD-4 + P1-3 · SPD-6 슬로우니스/계약 레버 (전부 non-blocking, propose-only):
+    size_warnings: sizeWarnings,          // 턴소진 위험(oversized/unbounded) — 분해 제안
+    scope_warnings: scopeWarnings,        // done_criteria ⊄ allowed_paths 계약모순 — 수정 제안
+    bundle_warnings: bundleWarnings,      // anchor 없는 대형 shard 통째 번들 — freeze/anchor 제안
+    ownership_warnings: ownershipWarnings, // allowed_paths ⊄ MODULE_OWNERSHIP 오너 영역 침범 — 경계 수정 제안
     next_action: '메인이 Task tool로 위 task_prompts들을 한 메시지에서 동시 spawn (subagent_type: worker)',
   });
 }
