@@ -35,7 +35,7 @@ const { assessTasks: assessSizes } = require(path.join(PLUGIN_ROOT, 'scripts', '
 const { assessTasks: assessScopes, assessOwnership } = require(path.join(PLUGIN_ROOT, 'scripts', 'scopecheck.js'));
 const { planMerge } = require(path.join(PLUGIN_ROOT, 'bin', 'cmds', 'merge.js'));
 const { generateAll: generateReports } = require(path.join(PLUGIN_ROOT, 'scripts', 'report-gen.js'));
-const { mergeAll, abortMerge } = require(path.join(PLUGIN_ROOT, 'scripts', 'merge-coordinator.js'));
+const { mergeAll, mergeWorktree, abortMerge } = require(path.join(PLUGIN_ROOT, 'scripts', 'merge-coordinator.js'));
 const { acquireCycleLock, releaseCycleLock, cleanStaleLocks } = require(path.join(PLUGIN_ROOT, 'scripts', 'lock.js'));
 const { setTaskStatus } = require(path.join(PLUGIN_ROOT, 'scripts', 'task-sources.js'));
 const { writeJsonAtomic } = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'atomic-write.js'));
@@ -121,6 +121,7 @@ function rebuildOneTaskPrompt(cwd, id) {
     status_path: path.relative(cwd, paths.status_path),
     report_path: path.relative(cwd, paths.report_path),
     working_dir: payload.working_dir,
+    allowed_paths: payload.allowed_paths || [], // P2-2: 슬롯 풀 pathsOverlap 게이팅용(추가 필드)
     loop_until: payload.loop_until || null,
   };
 }
@@ -186,6 +187,7 @@ function buildTaskPromptEntry(r, wt, payload, cwd) {
     status_path: path.relative(cwd, r.status_path),
     report_path: path.relative(cwd, r.report_path),
     working_dir: wt.working_dir,
+    allowed_paths: payload.allowed_paths || [], // P2-2: 슬롯 풀 pathsOverlap 게이팅용(추가 필드)
     loop_until: payload.loop_until || null,
   };
 }
@@ -536,6 +538,196 @@ function doAdmit(args, taskId, cwd) {
   });
 }
 
+// ─── P2-2 · SPD-1: collect-one — 워커 완료 즉시 단건 머지(반드시 게이트 경유) ───
+// 슬롯 풀 드라이버가 task 1개 완료마다 호출. 기존 batch collect 는 100% 불변으로 두고
+// 이 서브커맨드만 추가(옵트인). merge-result.json 은 단건 append 로 누적 → /pact:wrap·status
+// 소비 포맷 유지. 충돌이면 자동해결 절대 X — conflicted 필드로 알리고 드라이버가 정지.
+
+/** verify 결과 fold(fail 우선, skip 은 뒤 값으로 대체) — 단건 append 간 누적용. */
+function foldVerification(base, patch) {
+  const out = { lint: 'skip', typecheck: 'skip', test: 'skip', build: 'skip', ...(base || {}) };
+  for (const k of ['lint', 'typecheck', 'test', 'build']) {
+    const v = patch && patch[k];
+    if (!v || v === 'skip') continue;
+    if (v === 'fail') out[k] = 'fail';
+    else if (out[k] === 'skip') out[k] = v;
+  }
+  return out;
+}
+
+/** merge-result.json 을 단건 append 로 갱신(배열 누적 + verification fold). 기존 소비 포맷 유지. */
+function appendMergeResult(cwd, patch) {
+  const p = path.join(cwd, '.pact/merge-result.json');
+  let cur = {};
+  try { cur = JSON.parse(fs.readFileSync(p, 'utf8')); } catch { cur = {}; }
+  const arr = (k) => (Array.isArray(cur[k]) ? cur[k] : []);
+  const out = {
+    timestamp: new Date().toISOString(),
+    single_merge: true, // 마커: collect-one append 로 조립된 사이클 결과(batch collect 와 구분).
+    eligible: (cur.eligible || 0) + (patch.eligible || 0),
+    merged: [...arr('merged'), ...(patch.merged || [])],
+    already_merged: [...arr('already_merged'), ...(patch.already_merged || [])],
+    conflicted: patch.conflicted || cur.conflicted || null,
+    skipped: [...arr('skipped'), ...(patch.skipped || [])],
+    rejected: [...arr('rejected'), ...(patch.rejected || [])],
+    status_updates: [...arr('status_updates'), ...(patch.status_updates || [])],
+    cleanup: [...arr('cleanup'), ...(patch.cleanup || [])],
+    failures: [...arr('failures'), ...(patch.failures || [])],
+    verification_summary: foldVerification(cur.verification_summary, patch.verification_summary),
+    decisions_to_record: [...arr('decisions_to_record'), ...(patch.decisions_to_record || [])],
+  };
+  fs.mkdirSync(path.join(cwd, '.pact'), { recursive: true });
+  writeJsonAtomic(p, out);
+  return out;
+}
+
+/** merged/already_merged task 를 current_batch.json 에서 제거(정리). 비면 파일 삭제. */
+function removeFromCurrentBatch(cwd, taskId) {
+  const cbPath = path.join(cwd, CURRENT_BATCH_FILE);
+  let cb;
+  try { cb = JSON.parse(fs.readFileSync(cbPath, 'utf8')); } catch { return; }
+  const ids = (cb.task_ids || []).filter((id) => id !== taskId);
+  if (ids.length === 0) { try { fs.unlinkSync(cbPath); } catch { /* noop */ } return; }
+  writeJsonAtomic(cbPath, { ...cb, task_ids: ids });
+}
+
+/** 단일 task status.json 요약(verification patch + decisions + failure). */
+function summarizeOne(cwd, taskId) {
+  const sp = path.join(cwd, '.pact/runs', taskId, 'status.json');
+  const verification = {};
+  const decisions = [];
+  let failure = null;
+  if (fs.existsSync(sp)) {
+    try {
+      const s = JSON.parse(fs.readFileSync(sp, 'utf8'));
+      for (const k of ['lint', 'typecheck', 'test', 'build']) {
+        const v = s.verify_results && s.verify_results[k];
+        if (v) verification[k] = v;
+      }
+      if (Array.isArray(s.decisions)) for (const d of s.decisions) decisions.push({ task_id: taskId, ...d });
+      if (s.status !== 'done') failure = { task_id: taskId, status: s.status, blockers: s.blockers || [] };
+    } catch { /* skip malformed */ }
+  }
+  return { verification, decisions, failure };
+}
+
+function collectOne(args, opts = {}) {
+  const cwd = opts.cwd || process.cwd();
+  cleanStaleLocks({ cwd });
+  const taskId = args.find((a) => !a.startsWith('--'));
+  if (!taskId) {
+    emit({ ok: false, stage: 'collect-one', errors: [{ message: 'collect-one <task_id> 필요' }] });
+    process.exit(1);
+  }
+
+  // 사이클 lock — admit/collect/prepare 와 current_batch.json·머지 경쟁 차단.
+  const lock = acquireCycleLock({ cwd, stage: 'collect-one' });
+  if (!lock.ok) {
+    emit({ ok: false, stage: 'cycle-busy', errors: [{ message: lock.error, fix: '다른 세션 종료 대기 또는 pact status' }] });
+    process.exit(1);
+  }
+
+  try {
+    doCollectOne(args, opts, cwd, taskId);
+  } catch (e) {
+    if (e.pactStage) emitFail(e);
+    else throw e;
+  } finally {
+    releaseCycleLock({ cwd });
+  }
+}
+
+function doCollectOne(args, opts, cwd, taskId) {
+  const journalPath = path.join(cwd, '.pact/collect-journal.json');
+
+  // 재진입 복구(doCollect 와 동일 규약): dangling 머지 + journal 있으면 abort 후 재개,
+  // journal 없으면 외부 머지 → 건드리지 않고 정지(자동해결 X).
+  if (isMergeInProgress({ cwd })) {
+    if (fs.existsSync(journalPath)) {
+      abortMerge({ cwd });
+    } else {
+      return fail('merge-in-progress', [{
+        message: '외부 머지 진행 중(MERGE_HEAD) — pact 가 시작한 머지가 아님',
+        fix: '/pact:resolve-conflict 또는 git merge --abort 후 재시도',
+      }]);
+    }
+  }
+
+  // report-gen 을 planMerge 이전에(doCollect 와 동일 순서) — report.md 존재 게이트 tautology 화.
+  const reportGen = generateReports({ cwd, taskIds: [taskId] });
+
+  const plan = planMerge({ cwd, taskIds: [taskId] });
+  const rejected = plan.rejected || [];
+  const eligible = plan.eligible || [];
+
+  const merged = [];
+  const alreadyMerged = [];
+  const cleanup = [];
+  const statusUpdates = [];
+  let conflicted = null;
+
+  if (eligible.includes(taskId)) {
+    writeJsonAtomic(journalPath, { phase: 'merging', task_ids: [taskId], started_at: new Date().toISOString() });
+    const r = mergeWorktree(taskId, { cwd });
+    if (r.ok) {
+      merged.push(taskId);
+      const su = setTaskStatus(taskId, 'done', { cwd });
+      statusUpdates.push({ task_id: taskId, ok: su.ok, action: su.action, file: su.file, error: su.error });
+      const rm = removeWorktree(taskId, { cwd });
+      cleanup.push({ task_id: taskId, ok: rm.ok, error: rm.error });
+    } else if (r.branch_missing) {
+      // 이미 머지+정리됨(재진입) — 충돌 아님. status done 멱등 보장.
+      alreadyMerged.push(taskId);
+      const su = setTaskStatus(taskId, 'done', { cwd });
+      statusUpdates.push({ task_id: taskId, ok: su.ok, action: su.action, file: su.file, error: su.error });
+    } else {
+      // 실제 충돌 — abort 안 함(merge-coordinator 규약). 드라이버가 conflicted 로 정지·escalate.
+      conflicted = { task_id: taskId, branch_name: r.branch_name, files: r.conflicted_files || [], error: r.error };
+    }
+    try { fs.unlinkSync(journalPath); } catch { /* noop */ }
+  }
+
+  const { verification, decisions, failure } = summarizeOne(cwd, taskId);
+  const failures = failure ? [failure] : [];
+
+  // merged/already 는 current_batch 에서 제거(정리). conflicted/rejected 는 보존(재시도 대상).
+  if (merged.length || alreadyMerged.length) removeFromCurrentBatch(cwd, taskId);
+
+  appendMergeResult(cwd, {
+    eligible: eligible.length,
+    merged,
+    already_merged: alreadyMerged,
+    conflicted,
+    rejected,
+    status_updates: statusUpdates,
+    cleanup,
+    failures,
+    verification_summary: verification,
+    decisions_to_record: decisions,
+  });
+
+  const statusCommit = args.includes('--commit-status')
+    ? commitStatusChanges(cwd, statusUpdates)
+    : undefined;
+
+  emit({
+    ok: true,
+    task_id: taskId,
+    merged,
+    already_merged: alreadyMerged,
+    rejected,
+    conflicted,
+    skipped: [],
+    failures,
+    cleanup,
+    status_updates: statusUpdates,
+    status_commit: statusCommit,
+    verification_summary: verification,
+    decisions_to_record: decisions,
+    report_gen: reportGen,
+  });
+}
+
 function collect(args, opts = {}) {
   const cwd = opts.cwd || process.cwd();
   cleanStaleLocks({ cwd });
@@ -688,12 +880,15 @@ module.exports = function runCycle(args) {
   const rest = args.slice(1);
   if (sub === 'prepare') return prepare(rest);
   if (sub === 'collect') return collect(rest);
+  if (sub === 'collect-one') return collectOne(rest);
   if (sub === 'admit') return admit(rest);
-  console.error('Usage: pact run-cycle <prepare|collect|admit> [--max=N] [--graph]');
+  console.error('Usage: pact run-cycle <prepare|collect|collect-one|admit> [--max=N] [--graph]');
   console.error('  admit <task_id> --in-flight=id1,id2   슬롯이 빌 때 다음 task 온디맨드 투입 (P2-1)');
+  console.error('  collect-one <task_id> [--commit-status]  워커 완료 즉시 단건 머지(게이트 경유) (P2-2)');
   process.exit(1);
 };
 
 module.exports.prepare = prepare;
 module.exports.collect = collect;
+module.exports.collectOne = collectOne;
 module.exports.admit = admit;

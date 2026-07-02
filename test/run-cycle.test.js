@@ -1011,3 +1011,133 @@ test('prepare — task의 loop_until을 task_prompts로 전달 (rebuild path)', 
     assert.deepEqual(tp.loop_until, loopUntil);
   } finally { cleanupProject(dir); }
 });
+
+// ─── P2-2 · SPD-1: prepare 는 allowed_paths 를 task_prompts 로 전달(슬롯 풀 게이팅용) ──
+test('prepare — task_prompts 원소에 allowed_paths 포함(추가 필드, 하위호환)', () => {
+  const dir = makeProject();
+  try {
+    writeTasks(dir, [
+      { id: 'AP-001', allowed_paths: ['src/a.ts', 'src/b.ts'] },
+    ]);
+    const r = runPact(['run-cycle', 'prepare', '--max=1'], dir);
+    assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+    const out = JSON.parse(r.stdout);
+    const tp = out.task_prompts.find(t => t.task_id === 'AP-001');
+    assert.deepEqual(tp.allowed_paths, ['src/a.ts', 'src/b.ts'], 'allowed_paths 전달');
+  } finally { cleanupProject(dir); }
+});
+
+// ─── P2-2 · SPD-1: collect-one 단건 머지(게이트 경유) ────────────
+function simWorker(dir, tp, fname) {
+  const wtAbs = path.join(dir, tp.working_dir);
+  fs.mkdirSync(path.join(wtAbs, path.dirname(fname)), { recursive: true });
+  fs.writeFileSync(path.join(wtAbs, fname), `export const ${tp.task_id.replace(/-/g, '_')} = true;\n`);
+  sh(`git add . && git commit -m "${tp.task_id} work"`, { cwd: wtAbs });
+  fs.writeFileSync(path.join(dir, tp.status_path), mkStatus(tp.task_id, fname));
+  fs.writeFileSync(path.join(dir, tp.report_path), mkReport(tp.task_id));
+}
+
+test('collect-one — eligible task 단건 머지 성공 + worktree 정리 + status done + merge-result append', () => {
+  const dir = makeProject();
+  try {
+    fs.writeFileSync(path.join(dir, '.gitignore'), '.pact/\n');
+    sh('git add .gitignore && git commit -m gitignore', { cwd: dir });
+    writeTasks(dir, [{ id: 'ONE-001', allowed_paths: ['src/a.ts'] }]);
+    const prep = JSON.parse(runPact(['run-cycle', 'prepare', '--max=1'], dir).stdout);
+    const tp = prep.task_prompts[0];
+    simWorker(dir, tp, 'src/a.ts');
+
+    const col = runPact(['run-cycle', 'collect-one', 'ONE-001', '--commit-status'], dir);
+    assert.equal(col.status, 0, `${col.stdout}\n${col.stderr}`);
+    const out = JSON.parse(col.stdout);
+    assert.equal(out.ok, true);
+    assert.deepEqual(out.merged, ['ONE-001']);
+    assert.equal(out.conflicted, null);
+    // 게이트 통과 → main 에 반영
+    assert.ok(fs.existsSync(path.join(dir, 'src/a.ts')), 'main 에 머지됨');
+    // worktree 정리
+    assert.equal(fs.existsSync(path.join(dir, tp.working_dir)), false, 'worktree 제거됨');
+    // status done + 커밋 → tree clean
+    const tasksMd = fs.readFileSync(path.join(dir, 'TASKS.md'), 'utf8');
+    assert.match(tasksMd, /## ONE-001[\s\S]*?status: done/);
+    const porcelain = execSync('git status --porcelain', { cwd: dir, encoding: 'utf8' }).trim();
+    assert.equal(porcelain, '', '--commit-status 로 tree clean');
+    // merge-result.json append 포맷(기존 소비 필드 유지)
+    const mr = JSON.parse(fs.readFileSync(path.join(dir, '.pact/merge-result.json'), 'utf8'));
+    assert.deepEqual(mr.merged, ['ONE-001']);
+    assert.equal(mr.single_merge, true);
+    assert.deepEqual(mr.verification_summary, { lint: 'pass', typecheck: 'pass', test: 'pass', build: 'pass' });
+    assert.ok('decisions_to_record' in mr && Array.isArray(mr.failures));
+    // current_batch 에서 ONE-001 제거(비면 파일 삭제)
+    assert.equal(fs.existsSync(path.join(dir, '.pact/current_batch.json')), false, 'current_batch 정리');
+  } finally { cleanupProject(dir); }
+});
+
+test('collect-one — 두 task 순차 collect-one 은 merge-result 에 누적(append)', () => {
+  const dir = makeProject();
+  try {
+    fs.writeFileSync(path.join(dir, '.gitignore'), '.pact/\n');
+    sh('git add .gitignore && git commit -m gitignore', { cwd: dir });
+    writeTasks(dir, [
+      { id: 'ACC-001', allowed_paths: ['src/a.ts'] },
+      { id: 'ACC-002', allowed_paths: ['src/b.ts'] },
+    ]);
+    const prep = JSON.parse(runPact(['run-cycle', 'prepare', '--max=2'], dir).stdout);
+    for (const tp of prep.task_prompts) simWorker(dir, tp, tp.task_id === 'ACC-001' ? 'src/a.ts' : 'src/b.ts');
+
+    const c1 = JSON.parse(runPact(['run-cycle', 'collect-one', 'ACC-001', '--commit-status'], dir).stdout);
+    assert.deepEqual(c1.merged, ['ACC-001']);
+    const c2 = JSON.parse(runPact(['run-cycle', 'collect-one', 'ACC-002', '--commit-status'], dir).stdout);
+    assert.deepEqual(c2.merged, ['ACC-002']);
+
+    const mr = JSON.parse(fs.readFileSync(path.join(dir, '.pact/merge-result.json'), 'utf8'));
+    assert.deepEqual(mr.merged.sort(), ['ACC-001', 'ACC-002'], '두 단건 머지가 누적');
+    assert.ok(fs.existsSync(path.join(dir, 'src/a.ts')) && fs.existsSync(path.join(dir, 'src/b.ts')));
+  } finally { cleanupProject(dir); }
+});
+
+test('collect-one — status.json 없으면 rejected (머지 안 함, 게이트 유지)', () => {
+  const dir = makeProject();
+  try {
+    fs.writeFileSync(path.join(dir, '.gitignore'), '.pact/\n');
+    sh('git add .gitignore && git commit -m gitignore', { cwd: dir });
+    writeTasks(dir, [{ id: 'REJ-001', allowed_paths: ['src/a.ts'] }]);
+    runPact(['run-cycle', 'prepare', '--max=1'], dir);
+    // 워커 시뮬 없음 → status.json 미작성
+
+    const col = runPact(['run-cycle', 'collect-one', 'REJ-001'], dir);
+    assert.equal(col.status, 0, col.stderr);
+    const out = JSON.parse(col.stdout);
+    assert.deepEqual(out.merged, []);
+    assert.ok(out.rejected.some(r => r.task_id === 'REJ-001' && /status\.json missing/.test(r.reason)));
+    assert.equal(out.conflicted, null);
+    assert.equal(fs.existsSync(path.join(dir, 'src/a.ts')), false, '머지 안 됨');
+  } finally { cleanupProject(dir); }
+});
+
+test('collect-one — 실제 충돌이면 conflicted 필드(정지 신호, 자동해결 X)', () => {
+  const dir = makeProject();
+  try {
+    fs.writeFileSync(path.join(dir, '.gitignore'), '.pact/\n');
+    sh('git add .gitignore && git commit -m gitignore', { cwd: dir });
+    writeTasks(dir, [{ id: 'CFL-001', allowed_paths: ['src/a.ts'] }]);
+    const prep = JSON.parse(runPact(['run-cycle', 'prepare', '--max=1'], dir).stdout);
+    const tp = prep.task_prompts[0];
+    simWorker(dir, tp, 'src/a.ts');
+
+    // main 에 같은 파일을 다른 내용으로 커밋 → pact/CFL-001 머지 시 add/add 충돌 유발.
+    fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'src/a.ts'), 'export const MAIN_CONFLICT = 1;\n');
+    sh('git add src/a.ts && git commit -m "main conflicting a.ts"', { cwd: dir });
+
+    const col = runPact(['run-cycle', 'collect-one', 'CFL-001'], dir);
+    assert.equal(col.status, 0, `${col.stdout}\n${col.stderr}`);
+    const out = JSON.parse(col.stdout);
+    assert.deepEqual(out.merged, []);
+    assert.ok(out.conflicted, `conflicted 필드 존재: ${col.stdout}`);
+    assert.equal(out.conflicted.task_id, 'CFL-001');
+    // 충돌은 자동해결 안 함 → merge-result 에도 conflicted 기록
+    const mr = JSON.parse(fs.readFileSync(path.join(dir, '.pact/merge-result.json'), 'utf8'));
+    assert.ok(mr.conflicted && mr.conflicted.task_id === 'CFL-001');
+  } finally { cleanupProject(dir); }
+});
