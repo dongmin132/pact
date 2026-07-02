@@ -57,6 +57,7 @@ function writeTasks(dir, tasks) {
     md.push(`work: [${t.work || 'do'}]`);
     md.push(`done_criteria: [${t.done_criteria || 'exists'}]`);
     md.push(`tdd: ${t.tdd ?? false}`);
+    if (t.status) md.push(`status: ${t.status}`);
     if (t.loop_until) {
       md.push('loop_until:');
       for (const [k, v] of Object.entries(t.loop_until)) {
@@ -164,6 +165,85 @@ test('run-cycle prepare — 빈 batch면 empty: true', () => {
     const out = JSON.parse(r.stdout);
     assert.equal(out.ok, true);
     assert.equal(out.empty, true);
+  } finally { cleanupProject(dir); }
+});
+
+// ─── 슬로우니스 레버 배선 (P1-1 · SPD-4): prepare emit 에 non-blocking 경고 fold ──
+
+test('prepare — oversized task 는 size_warnings 로 플래그 (비차단, prepare ok 유지)', () => {
+  const dir = makeProject();
+  try {
+    // allowed_paths 6개 concrete (> maxFiles 5) → sizecheck oversized
+    writeTasks(dir, [
+      { id: 'BIG-001', allowed_paths: ['src/a.ts', 'src/b.ts', 'src/c.ts', 'src/d.ts', 'src/e.ts', 'src/f.ts'] },
+    ]);
+    const r = runPact(['run-cycle', 'prepare'], dir);
+    assert.equal(r.status, 0, `stderr: ${r.stderr}\nstdout: ${r.stdout}`);
+    const out = JSON.parse(r.stdout);
+    assert.equal(out.ok, true, '경고가 있어도 prepare 는 성공(non-blocking)');
+    assert.ok(Array.isArray(out.size_warnings), 'size_warnings 필드 존재');
+    assert.ok(
+      out.size_warnings.some(w => w.task === 'BIG-001' && w.risk === 'oversized'),
+      `size_warnings 에 BIG-001 oversized: ${JSON.stringify(out.size_warnings)}`,
+    );
+    // 정상 task_prompts·worktree 는 그대로 (경고는 부가 필드일 뿐)
+    assert.equal(out.task_prompts.length, 1);
+  } finally { cleanupProject(dir); }
+});
+
+test('prepare — 이미 done 인 oversized task 는 size_warnings 에서 제외 (노이즈 방어)', () => {
+  const dir = makeProject();
+  try {
+    // DONE-001 은 oversized 지만 status:done → batch0 미포함 → 재플래그 금지.
+    writeTasks(dir, [
+      { id: 'DONE-001', status: 'done', allowed_paths: ['src/a.ts', 'src/b.ts', 'src/c.ts', 'src/d.ts', 'src/e.ts', 'src/f.ts'] },
+      { id: 'TODO-001', allowed_paths: ['src/z.ts'] },
+    ]);
+    const r = runPact(['run-cycle', 'prepare'], dir);
+    assert.equal(r.status, 0, `stderr: ${r.stderr}\nstdout: ${r.stdout}`);
+    const out = JSON.parse(r.stdout);
+    assert.equal(out.ok, true);
+    assert.deepEqual(out.task_prompts.map(t => t.task_id), ['TODO-001'], 'batch0 는 미완 task 만');
+    assert.ok(
+      !(out.size_warnings || []).some(w => w.task === 'DONE-001'),
+      `done task 는 재플래그 금지: ${JSON.stringify(out.size_warnings)}`,
+    );
+  } finally { cleanupProject(dir); }
+});
+
+test('prepare — done_criteria 가 allowed_paths 밖 생성 요구하면 scope_warnings (비차단)', () => {
+  const dir = makeProject();
+  try {
+    // allowed_paths=src/x.ts 인데 done_criteria 가 docs/out.md 생성 의무 → 계약모순
+    writeTasks(dir, [
+      { id: 'SCOPE-001', allowed_paths: ['src/x.ts'], done_criteria: '"docs/out.md 생성"' },
+    ]);
+    const r = runPact(['run-cycle', 'prepare'], dir);
+    assert.equal(r.status, 0, `stderr: ${r.stderr}\nstdout: ${r.stdout}`);
+    const out = JSON.parse(r.stdout);
+    assert.equal(out.ok, true, '계약모순 경고가 있어도 prepare 성공');
+    assert.ok(Array.isArray(out.scope_warnings), 'scope_warnings 필드 존재');
+    assert.ok(
+      out.scope_warnings.some(w => w.task === 'SCOPE-001' && w.risk === 'scope_contradiction'),
+      `scope_warnings 에 SCOPE-001: ${JSON.stringify(out.scope_warnings)}`,
+    );
+  } finally { cleanupProject(dir); }
+});
+
+test('prepare — 경고 없는 정상 batch 는 size/scope/bundle_warnings 모두 빈 배열', () => {
+  const dir = makeProject();
+  try {
+    writeTasks(dir, [
+      { id: 'OK-001', allowed_paths: ['src/a.ts'] },
+      { id: 'OK-002', allowed_paths: ['src/b.ts'] },
+    ]);
+    const r = runPact(['run-cycle', 'prepare'], dir);
+    assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+    const out = JSON.parse(r.stdout);
+    assert.equal(out.ok, true);
+    assert.deepEqual(out.size_warnings, [], 'size_warnings 빈 배열');
+    assert.deepEqual(out.scope_warnings, [], 'scope_warnings 빈 배열');
+    assert.deepEqual(out.bundle_warnings, [], 'bundle_warnings 빈 배열');
   } finally { cleanupProject(dir); }
 });
 

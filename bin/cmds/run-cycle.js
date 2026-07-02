@@ -26,6 +26,8 @@ const {
 } = require(path.join(PLUGIN_ROOT, 'scripts', 'worktree-manager.js'));
 const { prepareWorkerSpawn, makeTaskPrompt } = require(path.join(PLUGIN_ROOT, 'scripts', 'spawn-worker.js'));
 const { collectLongDocs, DEFAULT_MAX_LINES } = require(path.join(PLUGIN_ROOT, 'bin', 'cmds', 'context-guard.js'));
+const { assessTasks: assessSizes } = require(path.join(PLUGIN_ROOT, 'scripts', 'sizecheck.js'));
+const { assessTasks: assessScopes } = require(path.join(PLUGIN_ROOT, 'scripts', 'scopecheck.js'));
 const { planMerge } = require(path.join(PLUGIN_ROOT, 'bin', 'cmds', 'merge.js'));
 const { mergeAll, abortMerge } = require(path.join(PLUGIN_ROOT, 'scripts', 'merge-coordinator.js'));
 const { acquireCycleLock, releaseCycleLock, cleanStaleLocks } = require(path.join(PLUGIN_ROOT, 'scripts', 'lock.js'));
@@ -242,12 +244,22 @@ function doPrepare(args, opts, cwd, pre) {
   const contextWarnings = collectLongDocs(DEFAULT_MAX_LINES, { cwd })
     .map(r => ({ file: r.file, lines: r.lines, sharded: r.sharded, fix: r.fix }));
 
+  // 슬로우니스 레버 (P1-1 · SPD-4): fan-out 직전 batch0 에 정적 검사를 결정적으로 적용해
+  // non-blocking 경고로 emit (propose-only, 철학5). batch0 은 미완(non-done/failed) task 만
+  // 담으므로 이미 merged/done task 는 자동 제외(노이즈 방어). 검사가 던져도 prepare 는 진행.
+  let sizeWarnings = [];
+  let scopeWarnings = [];
+  try { sizeWarnings = assessSizes(batch0); } catch { /* non-blocking */ }
+  try { scopeWarnings = assessScopes(batch0); } catch { /* non-blocking */ }
+
   const skippedCount = plan.skipped ? plan.skipped.length : 0;
   const coordinator_review_needed = batch0.length > 2 || skippedCount > 0;
 
   // worktree 생성 + payload·prompt 렌더 — atomic, 실패 시 모두 롤백
   const created = [];
   const taskPrompts = [];
+  // TOK-3(2부): prepareWorkerSpawn 이 반환하는 anchor-없는 대형 shard 경고를 task_id 부착해 수집.
+  const bundleWarnings = [];
 
   // base branch 자동 감지 (master 기반 repo 지원, 'main' 하드코딩 제거)
   const baseBranch = detectBaseBranch({ cwd });
@@ -292,6 +304,10 @@ function doPrepare(args, opts, cwd, pre) {
       return fail('spawn-prepare', [{ task_id: task.id, message: (r.errors || []).join('; ') }]);
     }
 
+    for (const w of r.bundle_warnings || []) {
+      bundleWarnings.push({ task_id: task.id, ...w });
+    }
+
     taskPrompts.push({
       task_id: task.id,
       title: task.title || '',
@@ -317,6 +333,10 @@ function doPrepare(args, opts, cwd, pre) {
     task_prompts: taskPrompts,
     coordinator_review_needed,
     context_warnings: contextWarnings,
+    // P1-1 · SPD-4 슬로우니스 레버 (전부 non-blocking, propose-only):
+    size_warnings: sizeWarnings,     // 턴소진 위험(oversized/unbounded) — 분해 제안
+    scope_warnings: scopeWarnings,   // done_criteria ⊄ allowed_paths 계약모순 — 수정 제안
+    bundle_warnings: bundleWarnings, // anchor 없는 대형 shard 통째 번들 — freeze/anchor 제안
     next_action: '메인이 Task tool로 위 task_prompts들을 한 메시지에서 동시 spawn (subagent_type: worker)',
   });
 }
