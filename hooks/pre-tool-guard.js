@@ -230,7 +230,10 @@ function scanLineWriteTargets(line) {
 }
 
 // heredoc 오프너( <<EOF, <<-EOF, << EOF, <<'EOF', <<"END" )를 인식해 델리미터명 캡처.
-const HEREDOC_OPENER = /<<-?\s*(?:(['"])([A-Za-z_][A-Za-z0-9_]*)\1|\\?([A-Za-z_][A-Za-z0-9_]*))/g;
+// (?<!<)…(?!<): here-string(<<<)의 일부인 `<<` 를 heredoc 오프너로 오탐하지 않는다(LG-2).
+//   `grep x <<< "EOF"` 의 `<<` 를 오프너로 잡으면 다음 줄이 본문으로 스킵돼 경계 밖 쓰기가
+//   fail-open 된다. here-string 은 본문이 없으므로 오프너에서 배제해야 한다.
+const HEREDOC_OPENER = /(?<!<)<<(?!<)-?\s*(?:(['"])([A-Za-z_][A-Za-z0-9_]*)\1|\\?([A-Za-z_][A-Za-z0-9_]*))/g;
 
 // 쉘 명령에서 쓰기 타겟 경로를 heredoc-aware 로 추출.
 // 명령줄은 스캔하고 heredoc 본문(델리미터 사이)은 스킵 → 본문 안 > 오탐 금지.
