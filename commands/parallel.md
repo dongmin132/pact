@@ -118,12 +118,12 @@ CLI는 자동으로 머지 → merge-result.json 작성 → 성공 worktree clea
    ```
 
    stdout JSON `{task_id, continuationPrompt, resumes_remaining, escalate, incomplete_reason?}` 분기:
-   - `escalate: true` (또는 `resumes_remaining: 0`) → 재개 상한(`MAX_RESUME`=2) 도달. **재투입 X** → 아래 1~4 직접 처리 또는 사용자 위임.
+   - `escalate: true` → 재개 상한(`MAX_RESUME`=2) 도달(= `--consume` 이 카운트를 못 늘리고 거부됨). **재투입 X** → 아래 1~4 직접 처리 또는 사용자 위임. 분기는 **`escalate` 로만** 한다 — `resumes_remaining` 은 정보용이라 0 이어도 방금 소비한 `continuationPrompt`(예: RESUME 2)가 유효한 재투입일 수 있다(그때 `escalate: false`).
    - 아니면 `continuationPrompt` 문자열을 **그대로** worker 서브에이전트 prompt 로 사용 (`subagent_type: worker`, working_dir = 그 task 의 worktree). 메인이 프롬프트를 직접 작문하지 않는다 (단일소스).
 2. 재투입 종료 후 `pact merge` 재시도.
-3. **회로차단기(영속)**: 재개 카운트는 LLM 기억이 아니라 `.pact/runs/<id>/resume.json` 에 파일로 누적된다 — `--consume` 이 카운트를 증가시키고, `resumes_remaining: 0` 이면 더는 재개 없이 아래 1~4 또는 사용자 위임. (조회만 하려면 `--consume` 없이 호출 — 카운트 불변.)
+3. **회로차단기(영속)**: 재개 카운트는 LLM 기억이 아니라 `.pact/runs/<id>/resume.json` 에 파일로 누적된다 — `--consume` 이 카운트를 증가시키고, `escalate: true`(소비가 거부됨) 이면 더는 재개 없이 아래 1~4 또는 사용자 위임. 이렇게 판정해야 헤드리스 드라이버와 **동일하게 2회 재투입**된다(과거엔 인터랙티브가 1회만 재투입되던 off-by-one 이 있었음). (조회만 하려면 `--consume` 없이 호출 — 카운트 불변.)
 
-> 헤드리스 `pact drive`는 driver.mjs `runResumableTask`가 이걸 자동으로 한다(토큰 0). 인터랙티브 `/pact:parallel`은 메인이 위 절차로 동일 효과를 낸다.
+> 헤드리스 `pact drive`는 driver.mjs `runResumableTask`가 이걸 자동으로 한다(토큰 0). 인터랙티브 `/pact:parallel`은 메인이 위 절차로 동일 효과(재투입 2회 예산)를 낸다.
 
 ### 1. status.json 미작성 (`reason: "status.json missing"`)
 

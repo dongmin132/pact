@@ -122,10 +122,22 @@ module.exports = function resumePrompt(args) {
   const need = assessResumeNeed(cwd, taskId);
 
   // 회로차단기 — 조회(부수효과 없음) vs 소비(영속 증가) 분리.
-  let count = readResumeCount(cwd, taskId);
-  if (consume) count = consumeResume(cwd, taskId, maxResume);
+  // RC-1: escalate 는 driver.mjs 와 동일 예산(재개 ≤ maxResume)을 내야 한다(parallel.md '동일 효과').
+  //   소비 모드: consumeResume 이 '실제로 거부'했을 때만 escalate = 소비 전 카운트가 이미 cap 도달.
+  //     → RESUME1·RESUME2 둘 다 유효 재투입, 세 번째 미완에서 escalate (드라이버 shouldResume 와 동형:
+  //       resumeCount < maxResume 를 소비 전 카운트로 판정). 과거 post-consume remaining===0 판정은
+  //       RESUME2 를 만들고도 escalate 를 세워 재개 예산이 절반(1회)으로 줄던 off-by-one 이었다.
+  //   조회 모드(부수효과 없음): 이미 cap 도달(remaining===0)이면 다음 소비가 거부될 것이므로 escalate.
+  const preCount = readResumeCount(cwd, taskId);
+  let count = preCount;
+  let escalate;
+  if (consume) {
+    count = consumeResume(cwd, taskId, maxResume);
+    escalate = preCount >= maxResume; // consumeResume 이 증가 없이 거부 = 재개 상한 도달
+  } else {
+    escalate = resumesRemaining(count, maxResume) === 0;
+  }
   const remaining = resumesRemaining(count, maxResume);
-  const escalate = remaining === 0;
 
   // [RESUME n] 라벨: 소비했으면 방금 소비한 n(=count), 조회면 다음에 예정된 재개(count+1, cap clamp).
   const n = consume ? Math.max(1, count) : Math.min(count + 1, maxResume || count + 1);
