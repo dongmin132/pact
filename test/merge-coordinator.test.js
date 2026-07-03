@@ -14,6 +14,7 @@ const {
   mergeWorktree,
   mergeAll,
   abortMerge,
+  planMerge,
 } = require('../scripts/merge-coordinator.js');
 
 function sh(cmd, opts) {
@@ -173,5 +174,104 @@ test('mergeWorktree — branch 없으면 ok:false + branch_missing 플래그 (�
     const r = mergeWorktree('NONE-001', { cwd: repo });
     assert.equal(r.ok, false);
     assert.equal(r.branch_missing, true, 'branch 없음 구분 플래그');
+  } finally { cleanupRepo(repo); }
+});
+
+// ─── STR-5 (P3-A): planMerge co-located here (was bin/cmds/merge.js) ──────────
+// 순수 검증 코어를 새 home(scripts) 에서 직접 커버. 동작 불변 회귀 안전망.
+
+/** .pact/runs/<id> 에 valid status.json + payload.json + report.md 작성(스키마 준수). */
+function writeRun(repo, taskId, { file, allowedPaths, filesChanged, statusOverride = {} }) {
+  const runDir = path.join(repo, '.pact', 'runs', taskId);
+  fs.mkdirSync(runDir, { recursive: true });
+  const status = {
+    task_id: taskId,
+    status: 'done',
+    branch_name: `pact/${taskId}`,
+    commits_made: 1,
+    clean_for_merge: true,
+    files_changed: filesChanged !== undefined ? filesChanged : [file],
+    files_attempted_outside_scope: [],
+    verify_results: { lint: 'pass', typecheck: 'pass', test: 'pass', build: 'pass' },
+    tdd_evidence: { red_observed: false, green_observed: false },
+    decisions: [],
+    blockers: [],
+    tokens_used: 100,
+    completed_at: new Date().toISOString(),
+    ...statusOverride,
+  };
+  fs.writeFileSync(path.join(runDir, 'status.json'), JSON.stringify(status, null, 2));
+  fs.writeFileSync(path.join(runDir, 'payload.json'), JSON.stringify({
+    task_id: taskId,
+    allowed_paths: allowedPaths !== undefined ? allowedPaths : [file],
+    base_branch: 'main',
+  }, null, 2));
+  fs.writeFileSync(path.join(runDir, 'report.md'), `# ${taskId} report\n\nsim\n`);
+  return runDir;
+}
+
+test('planMerge — 완전한 done task 는 eligible (git diff = files_changed ⊆ allowed_paths)', () => {
+  const repo = makeRepo();
+  try {
+    workInWorktree(repo, 'PM-001', 'a.txt', 'A\n');
+    writeRun(repo, 'PM-001', { file: 'a.txt', allowedPaths: ['a.txt'] });
+    const plan = planMerge({ cwd: repo, taskIds: ['PM-001'] });
+    assert.deepEqual(plan.eligible, ['PM-001'], JSON.stringify(plan));
+    assert.deepEqual(plan.rejected, []);
+  } finally { cleanupRepo(repo); }
+});
+
+test('planMerge — runs_dir 없으면 missing:runs_dir', () => {
+  const repo = makeRepo();
+  try {
+    const plan = planMerge({ cwd: repo });
+    assert.equal(plan.missing, 'runs_dir');
+    assert.deepEqual(plan.eligible, []);
+  } finally { cleanupRepo(repo); }
+});
+
+test('planMerge — status.json 없으면 reject', () => {
+  const repo = makeRepo();
+  try {
+    fs.mkdirSync(path.join(repo, '.pact', 'runs', 'PM-002'), { recursive: true });
+    const plan = planMerge({ cwd: repo, taskIds: ['PM-002'] });
+    assert.deepEqual(plan.eligible, []);
+    assert.equal(plan.rejected.length, 1);
+    assert.match(plan.rejected[0].reason, /status\.json missing/);
+  } finally { cleanupRepo(repo); }
+});
+
+test('planMerge — files_changed 보고 ≠ 실제 diff 면 reject (워커 거짓 보고)', () => {
+  const repo = makeRepo();
+  try {
+    workInWorktree(repo, 'PM-003', 'a.txt', 'A\n');
+    // 실제 diff 는 a.txt 인데 files_changed 를 b.txt 로 거짓 보고 + allowed_paths 는 둘 다 허용.
+    writeRun(repo, 'PM-003', { file: 'a.txt', allowedPaths: ['*.txt'], filesChanged: ['b.txt'] });
+    const plan = planMerge({ cwd: repo, taskIds: ['PM-003'] });
+    assert.deepEqual(plan.eligible, []);
+    assert.match(plan.rejected[0].reason, /files_changed 보고.*≠ 실제 diff/);
+  } finally { cleanupRepo(repo); }
+});
+
+test('planMerge — diff 가 allowed_paths 밖이면 reject (ownership 위반)', () => {
+  const repo = makeRepo();
+  try {
+    workInWorktree(repo, 'PM-004', 'a.txt', 'A\n');
+    // 실제로 a.txt 변경했지만 allowed_paths 는 src/** 만 → 스코프 밖.
+    writeRun(repo, 'PM-004', { file: 'a.txt', allowedPaths: ['src/**'], filesChanged: ['a.txt'] });
+    const plan = planMerge({ cwd: repo, taskIds: ['PM-004'] });
+    assert.deepEqual(plan.eligible, []);
+    assert.match(plan.rejected[0].reason, /allowed_paths 외 파일/);
+  } finally { cleanupRepo(repo); }
+});
+
+test('planMerge — status!=done 이면 reject', () => {
+  const repo = makeRepo();
+  try {
+    workInWorktree(repo, 'PM-005', 'a.txt', 'A\n');
+    writeRun(repo, 'PM-005', { file: 'a.txt', allowedPaths: ['a.txt'], statusOverride: { status: 'blocked' } });
+    const plan = planMerge({ cwd: repo, taskIds: ['PM-005'] });
+    assert.deepEqual(plan.eligible, []);
+    assert.match(plan.rejected[0].reason, /status=blocked/);
   } finally { cleanupRepo(repo); }
 });

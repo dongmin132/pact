@@ -1,15 +1,16 @@
 'use strict';
 
-// pact context-guard — /pact:parallel 진입 전 긴 문서 위험을 경고한다.
+// pact context-guard — /pact:parallel 진입 전 긴 문서 위험을 경고한다 (얇은 CLI).
 //
 // 이 가드는 파일 시스템에서 확인 가능한 위험을 알려준다.
 // VS Code 선택 영역 자체는 CLI가 볼 수 없으므로, 실패 메시지와 command 문서에서
 // "긴 문서 선택 해제"를 별도 사용자 액션으로 요구한다.
+//
+// STR-5 (P3-A): 순수 스캔 코어 collectLongDocs 는 scripts/context-guard.js 로 co-locate 되어
+// run-cycle 의 형제 bin/cmds import 레이어 역전을 없앴다. 이 파일은 인자 파싱 + 출력만 담는다.
+// collectLongDocs·DEFAULT_MAX_LINES 는 하위호환 위해 재export.
 
-const fs = require('fs');
-const path = require('path');
-
-const DEFAULT_MAX_LINES = 1000;
+const { collectLongDocs, DEFAULT_MAX_LINES } = require('../../scripts/context-guard.js');
 
 function parseArgs(args) {
   const opts = {
@@ -26,65 +27,6 @@ function parseArgs(args) {
   }
 
   return opts;
-}
-
-function lineCount(file) {
-  const text = fs.readFileSync(file, 'utf8');
-  if (text.length === 0) return 0;
-  return text.split(/\r?\n/).length;
-}
-
-function fileExists(file) {
-  return fs.existsSync(file) && fs.statSync(file).isFile();
-}
-
-function hasMarkdownShards(dir) {
-  return fs.existsSync(dir)
-    && fs.statSync(dir).isDirectory()
-    && fs.readdirSync(dir).some(f => f.endsWith('.md'));
-}
-
-function listDocsMarkdown(root) {
-  if (!fs.existsSync(root) || !fs.statSync(root).isDirectory()) return [];
-  return fs.readdirSync(root)
-    .filter(f => f.endsWith('.md'))
-    .map(f => path.join(root, f));
-}
-
-function collectLongDocs(maxLines, opts = {}) {
-  const cwd = opts.cwd || process.cwd();
-  const abs = (p) => path.isAbsolute(p) ? p : path.join(cwd, p);
-
-  const candidates = [
-    { file: 'TASKS.md', replacementOk: () => hasMarkdownShards(abs('tasks')), fix: 'tasks/*.md shard 사용 또는 pact split-docs 실행' },
-    { file: 'API_CONTRACT.md', replacementOk: () => hasMarkdownShards(abs('contracts/api')), fix: 'contracts/api/*.md shard 사용 또는 pact split-docs 실행' },
-    { file: 'DB_CONTRACT.md', replacementOk: () => hasMarkdownShards(abs('contracts/db')), fix: 'contracts/db/*.md shard 사용 또는 pact split-docs 실행' },
-  ];
-
-  for (const file of listDocsMarkdown(abs('docs'))) {
-    const base = path.basename(file).toLowerCase();
-    if (/(prd|spec|requirements|product|dev)/.test(base)) {
-      candidates.push({
-        file: path.relative(cwd, file),
-        replacementOk: () => false,
-        fix: '긴 docs 문서는 에디터 선택 해제 후 pact slice-prd --headers/--section으로 필요한 섹션만 읽기',
-      });
-    }
-  }
-
-  const risks = [];
-  for (const c of candidates) {
-    if (!fileExists(abs(c.file))) continue;
-    const lines = lineCount(abs(c.file));
-    if (lines <= maxLines) continue;
-    risks.push({
-      file: c.file,
-      lines,
-      sharded: c.replacementOk(),
-      fix: c.fix,
-    });
-  }
-  return risks;
 }
 
 function printRisks(risks, opts) {

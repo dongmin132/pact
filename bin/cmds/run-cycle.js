@@ -30,12 +30,11 @@ const {
   reconcileWorktree,
 } = require(path.join(PLUGIN_ROOT, 'scripts', 'worktree-manager.js'));
 const { prepareWorkerSpawn, makeTaskPrompt } = require(path.join(PLUGIN_ROOT, 'scripts', 'spawn-worker.js'));
-const { collectLongDocs, DEFAULT_MAX_LINES } = require(path.join(PLUGIN_ROOT, 'bin', 'cmds', 'context-guard.js'));
+const { collectLongDocs, DEFAULT_MAX_LINES } = require(path.join(PLUGIN_ROOT, 'scripts', 'context-guard.js'));
 const { assessTasks: assessSizes } = require(path.join(PLUGIN_ROOT, 'scripts', 'sizecheck.js'));
 const { assessTasks: assessScopes, assessOwnership } = require(path.join(PLUGIN_ROOT, 'scripts', 'scopecheck.js'));
-const { planMerge } = require(path.join(PLUGIN_ROOT, 'bin', 'cmds', 'merge.js'));
 const { generateAll: generateReports } = require(path.join(PLUGIN_ROOT, 'scripts', 'report-gen.js'));
-const { mergeAll, mergeWorktree, abortMerge } = require(path.join(PLUGIN_ROOT, 'scripts', 'merge-coordinator.js'));
+const { planMerge, mergeAll, mergeWorktree, abortMerge } = require(path.join(PLUGIN_ROOT, 'scripts', 'merge-coordinator.js'));
 const { acquireCycleLock, releaseCycleLock, cleanStaleLocks, isAlive } = require(path.join(PLUGIN_ROOT, 'scripts', 'lock.js'));
 const { setTaskStatus } = require(path.join(PLUGIN_ROOT, 'scripts', 'task-sources.js'));
 const { writeJsonAtomic } = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'atomic-write.js'));
