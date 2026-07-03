@@ -121,3 +121,38 @@ test('Bash — demo allowed_paths(**)면 어떤 쓰기도 allow', () => {
     { workingDir: WD, allowedPaths: ['**'] });
   assert.equal(r.allow, true);
 });
+
+// --- STAB-4: worktree 경계 밖 쓰기 경계 분류 (형제 WT deny · temp allow · heredoc-aware) ---
+
+test('Bash — 형제 worktree(../OTHER-1) 쓰기면 deny (형제 WT 오염)', () => {
+  const r = guardToolUse('Bash', { command: 'echo x > ../OTHER-1/src/f.js' },
+    { workingDir: WD, allowedPaths: ['src/**'] });
+  assert.equal(r.allow, false);
+  assert.match(r.reason, /worktree/);
+});
+
+test('Bash — 워크트리 밖 /tmp 쓰기는 allow (임시파일)', () => {
+  const r = guardToolUse('Bash', { command: 'echo x > /tmp/pact-x' },
+    { workingDir: WD, allowedPaths: ['src/**'] });
+  assert.equal(r.allow, true);
+});
+
+test('Bash — 자기 runs/<id>/status.json 절대경로 쓰기는 allow (보고 회귀 방지)', () => {
+  const r = guardToolUse('Bash',
+    { command: 'echo "{}" > /repo/.pact/runs/PROJ-001/status.json' },
+    { workingDir: WD, allowedPaths: ['src/**'] });
+  assert.equal(r.allow, true);
+});
+
+test('Bash — 둘째 줄 홈 탈출(cmd1\\ncat > ~/.zshrc)이면 deny (레포 밖)', () => {
+  const r = guardToolUse('Bash', { command: 'cmd1\ncat > ~/.zshrc' },
+    { workingDir: WD, allowedPaths: ['src/**'] });
+  assert.equal(r.allow, false);
+});
+
+test('Bash — heredoc 본문의 > 는 allow지만 heredoc 뒤 줄 리다이렉션은 검사(본체 트리 deny)', () => {
+  const r = guardToolUse('Bash',
+    { command: 'cat > src/a.ts <<EOF\nx > y\nEOF\ncat > ../../../src/leak.js' },
+    { workingDir: WD, allowedPaths: ['src/**'] });
+  assert.equal(r.allow, false);
+});

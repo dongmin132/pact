@@ -315,6 +315,44 @@ test('checkBashWrite — allowedPaths 없으면 검사 안 함 (allow)', () => {
   assert.equal(r.allowed, true);
 });
 
+// --- STAB-4: worktree 경계 밖 쓰기 경계 분류 ---
+
+test('checkBashWrite — 형제 worktree(../OTHER-1) 쓰기 deny', () => {
+  const r = checkBashWrite('echo x > ../OTHER-1/src/f.js',
+    { worktreeRoot: WT, allowedPaths: ['src/**'] });
+  assert.equal(r.allowed, false);
+  assert.match(r.reason, /worktree/);
+});
+
+test('checkBashWrite — 본체 트리(worktree 밖, repoRoot 아래) 쓰기 deny', () => {
+  const r = checkBashWrite('cat > ../../../src/leak.js',
+    { worktreeRoot: WT, allowedPaths: ['src/**'] });
+  assert.equal(r.allowed, false);
+  assert.match(r.reason, /본체 트리|worktree 밖/);
+});
+
+test('checkBashWrite — 레포 밖(홈, ~/.zshrc) 쓰기 deny', () => {
+  const r = checkBashWrite('cat > ~/.zshrc',
+    { worktreeRoot: WT, allowedPaths: ['src/**'] });
+  assert.equal(r.allowed, false);
+  assert.match(r.reason, /레포 밖|홈/);
+});
+
+test('checkBashWrite — /tmp 절대경로 쓰기 allow (임시파일 회귀 방지)', () => {
+  const r = checkBashWrite('echo x > /tmp/pact-x',
+    { worktreeRoot: WT, allowedPaths: ['src/**'] });
+  assert.equal(r.allowed, true);
+});
+
+test('checkBashWrite — heredoc 본문 뒤 줄 리다이렉션은 검사 (본문 > 는 스킵)', () => {
+  // line0: 자기 worktree 내 in-scope 쓰기, heredoc body 의 > 는 스킵,
+  // heredoc 종료 후 줄의 형제 WT 탈출은 잡힌다.
+  const r = checkBashWrite('cat > src/a.ts <<EOF\nconst x = a > b\nEOF\ncat > ../OTHER-2/x.js',
+    { worktreeRoot: WT, allowedPaths: ['src/**'] });
+  assert.equal(r.allowed, false);
+  assert.match(r.reason, /worktree/);
+});
+
 // --- hook main() 통합: parallel 워커 Bash 쓰기를 실제로 deny 하는지 (stdin 호출) ---
 
 const HOOK = path.join(__dirname, '..', 'hooks', 'pre-tool-guard.js');
@@ -347,6 +385,16 @@ test('hook 통합 — 범위 안 Bash 쓰기는 통과 (빈 출력)', () => {
     const r = runHook({ tool_name: 'Bash', tool_input: { command: 'echo hi > apps/log.txt' }, cwd: wt });
     assert.equal(r.status, 0, r.stderr);
     assert.doesNotMatch(r.stdout, /deny/);
+  } finally { fs.rmSync(repo, { recursive: true, force: true }); }
+});
+
+test('hook 통합 — 워커가 형제 worktree(../OTHER-1)로 Bash 쓰기 시 deny (STAB-4)', () => {
+  const { repo, wt } = makeWtRepo();
+  try {
+    const r = runHook({ tool_name: 'Bash', tool_input: { command: 'echo x > ../OTHER-1/src/f.js' }, cwd: wt });
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /deny/);
+    assert.match(r.stdout, /worktree/);
   } finally { fs.rmSync(repo, { recursive: true, force: true }); }
 });
 

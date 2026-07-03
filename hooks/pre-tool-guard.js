@@ -10,6 +10,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 const yaml = require('../scripts/lib/yaml-mini.js');
 
 function globToRegex(glob) {
@@ -194,11 +195,8 @@ function checkWorkerRead(filePath, cwd) {
   return { allowed: true };
 }
 
-// 쉘 명령에서 "파일을 새로 쓰는" 타겟 경로를 휴리스틱 추출.
-// 첫 줄만 검사 → heredoc 본문(=>·> 多)·멀티라인 코드 오탐 방지. 따옴표 안 > 무시.
-// 완벽 X (cp/mv·둘째 줄 redirection 누락) — 최종 백스톱은 merge 게이트 git-diff.
-function extractWriteTargets(cmd) {
-  const line = String(cmd || '').split('\n', 1)[0];
+// 한 줄에서 "파일을 새로 쓰는" 타겟(> >> tee touch)을 휴리스틱 추출. 따옴표 안 > 무시.
+function scanLineWriteTargets(line) {
   const targets = [];
   const n = line.length;
   let i = 0;
@@ -228,11 +226,86 @@ function extractWriteTargets(cmd) {
   let m;
   const teeTouch = /\b(?:tee(?:\s+-\S+)*|touch)\s+("[^"]+"|'[^']+'|[^\s|&;<>]+)/g;
   while ((m = teeTouch.exec(line))) targets.push(m[1].replace(/^['"]|['"]$/g, ''));
+  return targets;
+}
+
+// heredoc 오프너( <<EOF, <<-EOF, << EOF, <<'EOF', <<"END" )를 인식해 델리미터명 캡처.
+const HEREDOC_OPENER = /<<-?\s*(?:(['"])([A-Za-z_][A-Za-z0-9_]*)\1|\\?([A-Za-z_][A-Za-z0-9_]*))/g;
+
+// 쉘 명령에서 쓰기 타겟 경로를 heredoc-aware 로 추출.
+// 명령줄은 스캔하고 heredoc 본문(델리미터 사이)은 스킵 → 본문 안 > 오탐 금지.
+// 한계(best-effort, 정적 파서 밖): cp/mv·sed -i·변수 전개($VAR)·산술 <<·process substitution
+// 은 못 잡는다. 최종 백스톱은 merge 게이트 git-diff.
+function extractWriteTargets(cmd) {
+  const lines = String(cmd || '').split('\n');
+  const targets = [];
+  const pending = []; // 대기 중 heredoc 델리미터 큐 (본문 스킵용)
+  for (const raw of lines) {
+    if (pending.length) {
+      const cur = pending[0];
+      const probe = cur.stripTabs ? raw.replace(/^\t+/, '') : raw;
+      if (probe === cur.delim) pending.shift();
+      continue; // heredoc 본문/종료줄 — 쓰기 타겟 아님 (본문 안 > 무시)
+    }
+    for (const t of scanLineWriteTargets(raw)) targets.push(t);
+    let m;
+    HEREDOC_OPENER.lastIndex = 0;
+    while ((m = HEREDOC_OPENER.exec(raw))) {
+      pending.push({ delim: m[2] || m[3], stripTabs: raw[m.index + 2] === '-' });
+    }
+  }
   return targets.filter((t) => t && !t.startsWith('/dev/'));
 }
 
-// Bash 명령이 allowed_paths 밖(워크트리 *안*) 파일을 쓰면 deny.
-// 워크트리 밖(.pact/runs 보고영역·/dev/null)은 미검사 → status.json 쓰기 안 깨짐.
+// 타겟 토큰을 절대경로로. ~ 는 홈으로 전개(레포 밖 판정용). $VAR 전개는 미지원(best-effort).
+function resolveWriteTarget(tgt, base) {
+  if (tgt === '~' || tgt.startsWith('~/')) return path.join(os.homedir(), tgt.slice(1));
+  return path.isAbsolute(tgt) ? tgt : path.resolve(base, tgt);
+}
+
+// worktreeRoot(.pact/worktrees/<id>) 에서 repoRoot·taskId 도출. 비표준이면 null.
+function worktreeBoundary(worktreeRoot) {
+  const s = String(worktreeRoot);
+  const wt = detectWorktreeContext(s);
+  if (!wt) return { repoRoot: null, taskId: null };
+  const idx = s.indexOf(`.pact/worktrees/${wt.task_id}`);
+  const repoRoot = idx >= 0 ? path.resolve(s.slice(0, idx)) : null;
+  return { repoRoot, taskId: wt.task_id };
+}
+
+// /tmp·os.tmpdir() 하위인가 (워커 임시파일 — 명시 allow).
+function isTempPath(abs) {
+  if (isInsideWorktree(abs, path.resolve(os.tmpdir()))) return true;
+  return /^\/(private\/)?(tmp|var\/tmp)(\/|$)/.test(abs);
+}
+
+// 워크트리 밖 타겟의 경계 분류:
+//  (a) repoRoot/.pact/worktrees/<다른-id>/ → deny(형제 WT 오염)
+//  (b) repoRoot 아래, 자기 worktree·자기 runs 밖 → deny(본체 트리 오염)
+//  (c) 자기 .pact/runs/<id>/**, /dev/**, os.tmpdir()/tmp → allow(보고·임시파일 회귀 방지)
+//  (d) 레포 밖(홈 등) → deny
+function classifyOutsideTarget(abs, bnd) {
+  const { repoRoot, taskId } = bnd;
+  if (abs.startsWith('/dev/')) return { deny: false };
+  if (repoRoot && taskId
+      && isInsideWorktree(abs, path.join(repoRoot, '.pact', 'runs', taskId))) {
+    return { deny: false }; // 자기 보고 디렉터리
+  }
+  if (!repoRoot) return { deny: false }; // 비표준 worktreeRoot — 경계 판정 불가, 기존 동작 유지
+  if (isInsideWorktree(abs, repoRoot)) {
+    if (isInsideWorktree(abs, path.join(repoRoot, '.pact', 'worktrees'))) {
+      return { deny: true, reason: `pact: Bash가 형제 worktree(다른 태스크) 오염 시도 — ${abs}` };
+    }
+    return { deny: true, reason: `pact: Bash가 본체 트리(자기 worktree 밖) 쓰기 — ${abs}` };
+  }
+  if (isTempPath(abs)) return { deny: false };
+  return { deny: true, reason: `pact: Bash가 레포 밖(홈 등) 쓰기 — ${abs}` };
+}
+
+// Bash 명령의 쓰기 타겟을 경계별로 판정:
+//  - 워크트리 안: allowed_paths(glob) 강제
+//  - 워크트리 밖: classifyOutsideTarget 로 형제 WT·본체 트리·레포 밖 오염 deny,
+//    자기 runs·/dev·임시파일은 명시 allow.
 // drive(worker-guard)·parallel(hook) 단일 소스.
 function checkBashWrite(command, opts = {}) {
   const { worktreeRoot, allowedPaths } = opts;
@@ -241,16 +314,23 @@ function checkBashWrite(command, opts = {}) {
   }
   const root = path.resolve(worktreeRoot);
   const base = opts.resolveBase ? path.resolve(opts.resolveBase) : root;
+  const bnd = worktreeBoundary(worktreeRoot);
   for (const tgt of extractWriteTargets(command)) {
-    const abs = path.isAbsolute(tgt) ? tgt : path.resolve(base, tgt);
-    if (!isInsideWorktree(abs, root)) continue; // 워크트리 밖 — 보고영역·임시파일, 미검사
-    const rel = normalizeRel(path.relative(root, abs));
-    if (!allowedPaths.some((g) => matchesGlob(rel, g))) {
-      return {
-        allowed: false,
-        rel,
-        reason: `pact: Bash가 allowed_paths 밖(워크트리 내) 쓰기 — ${rel} (허용: ${allowedPaths.join(', ')})`,
-      };
+    const abs = resolveWriteTarget(tgt, base);
+    if (isInsideWorktree(abs, root)) {
+      const rel = normalizeRel(path.relative(root, abs));
+      if (!allowedPaths.some((g) => matchesGlob(rel, g))) {
+        return {
+          allowed: false,
+          rel,
+          reason: `pact: Bash가 allowed_paths 밖(워크트리 내) 쓰기 — ${rel} (허용: ${allowedPaths.join(', ')})`,
+        };
+      }
+      continue;
+    }
+    const cls = classifyOutsideTarget(abs, bnd);
+    if (cls.deny) {
+      return { allowed: false, rel: normalizeRel(abs), reason: cls.reason };
     }
   }
   return { allowed: true };

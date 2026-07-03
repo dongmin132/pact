@@ -64,7 +64,8 @@ function guardToolUse(toolName, input, ctx = {}) {
       return { allow: false, reason: `pact: 위험 명령 차단 — ${cmd}` };
     }
     // Write 툴은 allowed_paths 로 막지만 Bash 리다이렉션(> cat tee touch)이 백도어가 된다 (실측 CLEANUP-029).
-    // 단일 소스: pre-tool-guard.checkBashWrite (parallel hook 과 동일 규칙). 워크트리 밖(.pact/runs·/dev/null)은 미검사.
+    // 단일 소스: pre-tool-guard.checkBashWrite (parallel hook 과 동일 규칙). 워크트리 밖 타겟은 경계 분류
+    // (형제 WT·본체 트리·레포 밖 deny / 자기 runs·/dev·임시파일 allow, STAB-4).
     if (workingDir && allowedPaths && allowedPaths.length) {
       const chk = ptg.checkBashWrite(cmd, { worktreeRoot: workingDir, allowedPaths });
       if (!chk.allowed) return { allow: false, reason: chk.reason };
