@@ -1184,6 +1184,46 @@ test('collect-one — 두 task 순차 collect-one 은 merge-result 에 누적(ap
   } finally { cleanupProject(dir); }
 });
 
+test('collect-one — 다음 사이클(prepare 재실행)은 merge-result 를 이월하지 않고 현재 사이클만 (ORCH-1/CI-1)', () => {
+  // `pact drive` 를 두 번(또는 --cycles>1) 돌리는 것과 동형: 사이클1 collect-one 후 사이클2 prepare
+  // 가 새 prepared_at 을 찍으면, 사이클2 의 collect-one 은 사이클1 산출물 위에 누적하지 않는다.
+  const dir = makeProject();
+  try {
+    fs.writeFileSync(path.join(dir, '.gitignore'), '.pact/\n');
+    sh('git add .gitignore && git commit -m gitignore', { cwd: dir });
+    writeTasks(dir, [
+      { id: 'CYC-001', allowed_paths: ['src/a.ts'] },
+      { id: 'CYC-002', allowed_paths: ['src/b.ts'], dependencies: ['CYC-001'] }, // 다음 사이클로 밀림
+    ]);
+
+    // ── 사이클 1: CYC-001 만 준비·머지 ──
+    const p1 = JSON.parse(runPact(['run-cycle', 'prepare', '--max=5'], dir).stdout);
+    assert.deepEqual(p1.task_prompts.map(t => t.task_id), ['CYC-001'], 'CYC-002 는 의존으로 배치0 제외');
+    simWorker(dir, p1.task_prompts[0], 'src/a.ts');
+    const c1 = JSON.parse(runPact(['run-cycle', 'collect-one', 'CYC-001', '--commit-status'], dir).stdout);
+    assert.deepEqual(c1.merged, ['CYC-001']);
+    const mr1 = JSON.parse(fs.readFileSync(path.join(dir, '.pact/merge-result.json'), 'utf8'));
+    assert.deepEqual(mr1.merged, ['CYC-001']);
+    const cycle1Id = mr1.cycle_id;
+    assert.ok(cycle1Id, 'cycle_id 마커 기록됨');
+
+    // ── 사이클 2: CYC-001 는 이제 done → prepare 가 CYC-002 로 새 사이클(새 prepared_at) 시작 ──
+    const p2 = JSON.parse(runPact(['run-cycle', 'prepare', '--max=5'], dir).stdout);
+    assert.deepEqual(p2.task_prompts.map(t => t.task_id), ['CYC-002'], '사이클2 배치0 = CYC-002');
+    const cb2 = JSON.parse(fs.readFileSync(path.join(dir, '.pact/current_batch.json'), 'utf8'));
+    assert.notEqual(cb2.prepared_at, cycle1Id, '사이클2 prepared_at 은 사이클1 과 다름');
+    simWorker(dir, p2.task_prompts[0], 'src/b.ts');
+    const c2 = JSON.parse(runPact(['run-cycle', 'collect-one', 'CYC-002', '--commit-status'], dir).stdout);
+    assert.deepEqual(c2.merged, ['CYC-002']);
+
+    // 핵심: merge-result 는 이번(2번째) 사이클만 — CYC-001 이 이월돼 누적되면 안 됨.
+    const mr2 = JSON.parse(fs.readFileSync(path.join(dir, '.pact/merge-result.json'), 'utf8'));
+    assert.deepEqual(mr2.merged, ['CYC-002'], '이전 사이클(CYC-001) 이월 없이 현재 사이클만');
+    assert.equal(mr2.cycle_id, cb2.prepared_at, 'cycle_id 가 현재 사이클로 갱신됨');
+    assert.notEqual(mr2.cycle_id, cycle1Id);
+  } finally { cleanupProject(dir); }
+});
+
 test('collect-one — status.json 없으면 rejected (머지 안 함, 게이트 유지)', () => {
   const dir = makeProject();
   try {

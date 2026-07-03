@@ -629,25 +629,45 @@ function foldVerification(base, patch) {
   return out;
 }
 
-/** merge-result.json 을 단건 append 로 갱신(배열 누적 + verification fold). 기존 소비 포맷 유지. */
-function appendMergeResult(cwd, patch) {
+/** current_batch.json 의 사이클 식별자(prepared_at). merge-result 사이클 경계 판정용. 없으면 null. */
+function readCycleMarker(cwd) {
+  const cb = readCurrentBatch(cwd);
+  return cb && typeof cb.prepared_at === 'string' ? cb.prepared_at : null;
+}
+
+/**
+ * merge-result.json 을 단건 append 로 갱신(배열 누적 + verification fold). 기존 소비 포맷 유지.
+ *
+ * ORCH-1/CI-1: merge-result.json 은 '현재 사이클만' 담는 deterministic SOT 다(wrap/metrics 계약).
+ * 디스크의 파일이 **다른 사이클**(cycle_id 불일치)이면 이전 drive/사이클 산출물이므로 이월하지 않고
+ * 이번 사이클로 fresh 시작한다 — 그래야 `pact drive` 를 여러 번(또는 --cycles>1) 돌려도 두 번째
+ * 런의 collect-one 이 이전 런 위에 무한 누적하지 않는다(batch collect(doCollect)의 overwrite=
+ * 'fresh-per-cycle' 계약과 대칭). **같은 사이클**(cycle_id 일치)이면 기존대로 누적한다 —
+ * 한 사이클 내 task N개가 완료마다 collect-one 을 호출해 사이클 SOT 를 조립하는 정상 경로.
+ * cycleId 부재(current_batch 없음: 재진입·수동 호출)면 판정 불가 → 안전하게 fresh 로 취급.
+ * @param {string|null} cycleId — 이번 사이클 식별자(readCycleMarker). null 이면 fresh.
+ */
+function appendMergeResult(cwd, patch, cycleId = null) {
   const p = path.join(cwd, '.pact/merge-result.json');
   let cur = {};
   try { cur = JSON.parse(fs.readFileSync(p, 'utf8')); } catch { cur = {}; }
-  const arr = (k) => (Array.isArray(cur[k]) ? cur[k] : []);
+  const sameCycle = cycleId != null && cur.cycle_id === cycleId;
+  const base = sameCycle ? cur : {}; // 다른 사이클/판정불가 → 이월 없이 fresh
+  const arr = (k) => (Array.isArray(base[k]) ? base[k] : []);
   const out = {
     timestamp: new Date().toISOString(),
+    ...(cycleId != null ? { cycle_id: cycleId } : {}),
     single_merge: true, // 마커: collect-one append 로 조립된 사이클 결과(batch collect 와 구분).
-    eligible: (cur.eligible || 0) + (patch.eligible || 0),
+    eligible: (base.eligible || 0) + (patch.eligible || 0),
     merged: [...arr('merged'), ...(patch.merged || [])],
     already_merged: [...arr('already_merged'), ...(patch.already_merged || [])],
-    conflicted: patch.conflicted || cur.conflicted || null,
+    conflicted: patch.conflicted || base.conflicted || null,
     skipped: [...arr('skipped'), ...(patch.skipped || [])],
     rejected: [...arr('rejected'), ...(patch.rejected || [])],
     status_updates: [...arr('status_updates'), ...(patch.status_updates || [])],
     cleanup: [...arr('cleanup'), ...(patch.cleanup || [])],
     failures: [...arr('failures'), ...(patch.failures || [])],
-    verification_summary: foldVerification(cur.verification_summary, patch.verification_summary),
+    verification_summary: foldVerification(base.verification_summary, patch.verification_summary),
     decisions_to_record: [...arr('decisions_to_record'), ...(patch.decisions_to_record || [])],
   };
   fs.mkdirSync(path.join(cwd, '.pact'), { recursive: true });
@@ -713,6 +733,9 @@ function collectOne(args, opts = {}) {
 
 function doCollectOne(args, opts, cwd, taskId) {
   const journalPath = path.join(cwd, '.pact/collect-journal.json');
+  // 사이클 식별자를 mutation(removeFromCurrentBatch 가 파일 삭제 가능) 이전에 캡처 —
+  // 마지막 task 여도 이번 사이클 prepared_at 을 확보해 merge-result 사이클 경계를 판정한다.
+  const cycleId = readCycleMarker(cwd);
 
   // 재진입 복구(doCollect 와 동일 규약): dangling 머지 + journal 있으면 abort 후 재개,
   // journal 없으면 외부 머지 → 건드리지 않고 정지(자동해결 X).
@@ -778,7 +801,7 @@ function doCollectOne(args, opts, cwd, taskId) {
     failures,
     verification_summary: verification,
     decisions_to_record: decisions,
-  });
+  }, cycleId);
 
   const statusCommit = args.includes('--commit-status')
     ? commitStatusChanges(cwd, statusUpdates)
@@ -911,6 +934,9 @@ function doCollect(args, opts, cwd, cbPath) {
   // 한 번에 기록 → drive 후 /pact:wrap 가 LLM 없이 이 파일만 읽어 PROGRESS/DECISIONS 서사 갱신 가능.
   writeJsonAtomic(path.join(cwd, '.pact/merge-result.json'), {
     timestamp: new Date().toISOString(),
+    // ORCH-1/CI-1: collect-one 과 동일 사이클 마커. batch collect 는 통째 overwrite 라 이미
+    // fresh-per-cycle 이지만, 마커를 남겨 두 writer 의 SOT 사이클 규약을 일치시킨다.
+    ...(currentBatch.prepared_at ? { cycle_id: currentBatch.prepared_at } : {}),
     eligible: plan.eligible.length,
     merged: result.merged,
     already_merged: alreadyMerged,
