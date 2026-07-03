@@ -4,6 +4,16 @@ description: 워커 N개 동시 spawn (worktree 격리) → 머지 → PROGRESS 
 
 `/pact:parallel` 실행됨. 메인은 결정적 작업을 `pact run-cycle`로 묶어 호출하고 LLM 영역(워커 spawn·coordinator·사용자 보고)에 집중. 모든 안내는 한국어.
 
+## 단계 0: `pact drive` 넛지 (propose-only)
+
+이번 실행이 **task 3개 이상 + 크기(duration)가 이질적**이면, 시작 전에 한국어로 **한 번** 안내(강제 X, 사용자 선택):
+
+> 이 사이클은 task 다수·크기 편차가 커서 **헤드리스 `pact drive`(K-슬롯 파이프라인)** 가 더 빠를 수 있습니다. 인터랙티브 `/pact:parallel` 은 배치-배리어(느린 task 가 배치 전체를 잡음)라 오케스트레이터 재독 세금(~190M)을 물지만, `pact drive` 는 슬롯이 비는 즉시 다음 task 를 투입하고 오케스트레이션 토큰이 0 입니다.
+> - 헤드리스로 돌리려면: 별도 터미널에서 `pact drive --pact` (테스트 후 `--real`).
+> - 이대로 인터랙티브로 계속해도 됩니다.
+
+사용자가 답하지 않거나 "계속"이면 그대로 아래 단계로 진행(자동 전환 X — 철학 5번). 조건 미충족(task 2개 이하 또는 크기 균일)이면 이 절 생략.
+
 ## 단계 1: Review 확인 게이트
 
 한국어로 묻기: plan-task-review / plan-arch-review / plan-ui-review 중 어디까지 했는지. 답 [검토 없이] 시 PROGRESS.md에 `risk_acknowledged: true` + ts.
