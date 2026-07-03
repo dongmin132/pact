@@ -520,6 +520,15 @@ function admit(args, opts = {}) {
   }
 }
 
+/** 진행 중 사이클의 cycle_id(= merge-result.json 의 cycle_id). current_batch 가 비어 삭제된
+ *  사이클 중간에 admit 이 cycle 경계를 되살릴 fallback. 없으면 null. */
+function readMergeCycleId(cwd) {
+  try {
+    const j = JSON.parse(fs.readFileSync(path.join(cwd, '.pact/merge-result.json'), 'utf8'));
+    return typeof j.cycle_id === 'string' ? j.cycle_id : null;
+  } catch { return null; }
+}
+
 /** admit 된 task 를 current_batch.json 에 추가 기록(멱등 append). collect 가 함께 처리하게. */
 function recordAdmitted(cwd, taskId, owner) {
   const cbPath = path.join(cwd, CURRENT_BATCH_FILE);
@@ -529,10 +538,15 @@ function recordAdmitted(cwd, taskId, owner) {
   if (!ids.includes(taskId)) ids.push(taskId);
   fs.mkdirSync(path.join(cwd, '.pact'), { recursive: true });
   // STAB-1: owner 주입 시 재스탬프, 미제공이면 기존 owner 를 ...cb 로 보존(clobber 방지).
+  // ORCH-1 admit 상호작용: collect-one 이 current_batch 를 비워 삭제한 뒤 슬롯이 다시 차서
+  // admit 이 파일을 재생성할 때, prepared_at 을 새로 찍으면 cycle_id 가 갈려 merge-result 가
+  // 사이클 중간에 리셋된다(--max=1 파이프라인은 매 task 가 제 사이클이 됨). 진행 중 사이클의
+  // cycle_id(merge-result.json)를 재사용해 같은 사이클로 유지한다. 교차-run 은 prepare 가 새
+  // prepared_at 을 찍으므로(항상 current_batch 존재) 이 fallback 을 타지 않아 안전하다.
   const next = {
     ...cb,
     task_ids: ids,
-    prepared_at: cb.prepared_at || new Date().toISOString(),
+    prepared_at: cb.prepared_at || readMergeCycleId(cwd) || new Date().toISOString(),
     last_admitted_at: new Date().toISOString(),
   };
   if (owner) next.owner = ownerStamp(owner);
