@@ -3,7 +3,7 @@
 > Claude Code 위에 얹는 **계약 기반 AI 개발 운영 시스템**.
 > 문서·계약·검증·worktree 격리 병렬 에이전트로 통제하는 플러그인.
 
-[![tests](https://img.shields.io/badge/tests-221%2F221-brightgreen)](./test) [![version](https://img.shields.io/badge/version-0.7.0-blue)](./.claude-plugin/plugin.json) [![deps](https://img.shields.io/badge/deps-zero-success)](./package.json) [![license](https://img.shields.io/badge/license-MIT-blue)](#라이선스)
+[![tests](https://img.shields.io/badge/tests-532%2F532-brightgreen)](./test) [![version](https://img.shields.io/badge/version-0.9.0-blue)](./.claude-plugin/plugin.json) [![deps](https://img.shields.io/badge/deps-zero-success)](./package.json) [![license](https://img.shields.io/badge/license-MIT-blue)](#라이선스)
 
 ---
 
@@ -214,7 +214,7 @@ opt-out은 마크다운/설정/마이그레이션 task에서만: `tdd: false` fr
 
 ---
 
-## 슬래시 명령 (18개)
+## 슬래시 명령 (20개)
 
 | 명령 | 책임 |
 |---|---|
@@ -236,36 +236,55 @@ opt-out은 마크다운/설정/마이그레이션 task에서만: `tdd: false` fr
 | `/pact:worktree-status` | worktree 목록·디스크 사용량 |
 | `/pact:worktree-cleanup` | 고아 worktree 일괄 삭제 |
 | `/pact:multi-session` | 멀티세션 sibling 패턴 가이드 (v0.6.0) |
+| `/pact:wrap` | `pact drive` 후 merge-result.json만 읽어 PROGRESS/DECISIONS 1턴 갱신 (propose-only) |
+| `/pact:takeover` | escalation task를 사람이 worktree에서 인터랙티브 인계 |
 
-## CLI (`pact` 바이너리, 9개)
+## CLI (`pact` 바이너리, 23개)
 
 결정적 작업 전용 — LLM이 부르지만 LLM이 추론하지 않는다.
 
 | 명령 | 역할 |
 |---|---|
-| `pact run-cycle prepare` | `/pact:parallel` 사전검사 + batch + worktree × N + payload 렌더 (atomic 롤백) |
-| `pact run-cycle collect` | 워커 종료 후 검증 + 머지 + cleanup + summary 집계 |
+| **`pact drive [--real] [--pact] [--max=N]`** | **헤드리스 K-슬롯 파이프라인 드라이버** — 오케스트레이터 토큰 0으로 prepare→spawn→collect-one 을 슬롯 채워가며 무인 grind. 기본 병렬폭 5. `--real`은 SDK 실워커, 미지정은 mock. `--verbose`로 내부 로그 |
+| `pact run-cycle prepare [--graph] [--owner-pid=N]` | `/pact:parallel` 사전검사 + batch + worktree × N + payload 렌더 (atomic 롤백). `--graph`=전체 DAG emit, `--owner-pid`=이중 spawn 차단 소유자 스탬프 |
+| `pact run-cycle collect` | 워커 전체 종료 후 검증 + 머지 + cleanup + summary 집계 (배치-배리어) |
+| `pact run-cycle collect-one <task_id>` | 워커 완료 즉시 단건 머지(게이트 경유) — 슬롯 파이프라인용 (P2-2) |
+| `pact run-cycle admit <task_id> --in-flight=…` | 온디맨드 슬롯 배정 (경로충돌 검사 후 1건 승인) |
+| `pact resume-prompt <task_id> [--consume] [--max-resume=N]` | fresh-resume 연속 프롬프트 단일 결정적 소스 + 파일 영속 회로차단기 |
+| `pact report-gen <task_id>|--all` | status.json → report.md 결정적 렌더 (0토큰) |
 | `pact batch [-n]` | `tasks/*.md` → `.pact/batch.json` (배치 계획). `-n`은 `batches[0]`만 |
 | `pact merge [-q]` | status.json 검증 + 실제 diff 대조 + 머지 게이트. `-q`는 stderr 1줄 요약 |
-| `pact status [-s]` | state.json + worktree 표시. `-s`는 한 줄 (`cycle:N active:N worktree:N merge:clean`) |
+| `pact status [-s] [--watch [SECS]]` | state.json + worktree + drive 대시보드. `-s`는 한 줄, `--watch`는 라이브 폴링 |
 | `pact slice` | task corpus 섹션 단위 read (`--headers`, `--ids`, `--tbd`, `--status`, `--priority`) |
 | `pact slice-prd` | PRD 섹션 추출 (`--section`, `--sections`, `--headers`, `--refs-from`) |
 | `pact split-docs` | legacy `TASKS.md`/`API_CONTRACT.md`/`DB_CONTRACT.md`/`MODULE_OWNERSHIP.md` → shard |
 | `pact context-map sync` | `docs/context-map.md`의 Domains 표를 현재 shard 상태로 갱신 (idempotent) |
 | `pact context-guard [-q]` | parallel 전 긴 문서/선택 컨텍스트 위험 검사 |
+| `pact validate-status <path>` | 워커 status.json self-validate (issue #3) |
 | `pact claim <task_id> [--session <label>]` | 멀티세션에서 task 점유 (lock). v0.6.0 |
 | `pact next [--all] [--json]` | 현재 batch에서 미점유 task 한 개 (또는 전체). v0.6.0 |
-| `pact status --watch [SECS]` | 주기 폴링으로 다른 세션 진행·lock 상태 모니터. v0.6.0 |
 | `pact list-locks [--mine] [--alive] [--json]` | 잡힌 task lock 목록 (분담 모드용). v0.6.2 |
 | `pact edit-lock <target> [--session]` | 자유 수정 안전망 — 모듈/파일 lock. v0.7.0 |
 | `pact edit-release <target> [--force]` | edit-lock 해제 + drift 알림. v0.7.0 |
+
+### 레버 (propose-only, 판단 보조 — 자동 반영 X)
+
+| 명령 | 역할 |
+|---|---|
+| `pact prelude [--min=N]` | 공유표면 freeze 추출 제안 (선행 계약 후보) |
+| `pact sizecheck [--max-files=N]` | 턴소진 위험 task 사이징 제안 |
+| `pact scopecheck` | `done_criteria ⊄ allowed_paths` 계약모순 검출 |
+| `pact testguard` | test-as-law — 자기검증 테스트 수정 가능 task 플래그 |
+| `pact metrics [--cycle <prefix>]` | 사이클 계측기 (read-only 스코어카드) |
 
 ### `/pact:parallel` 흐름 (v0.4.1 run-cycle)
 
 ```
 메인 LLM
   └─ pact run-cycle prepare      # 결정적 작업 ×N개를 한 CLI로 응집
-       └─ stdout JSON: task_prompts[], coordinator_review_needed, context_warnings
+       └─ stdout JSON: task_prompts[], context_warnings (레버 경고를 fold — LLM이 못 건너뜀)
+       #  coordinator_review_needed 는 deprecated (항상 false) — pre-spawn 검토는
+       #  결정적 게이트(경로충돌·의존·TBD·스코프·머지)로 대체됨 (P1-3)
   ├─ Task tool spawn × N         # 워커 동시 spawn (메인이 하는 유일한 LLM 작업)
   └─ pact run-cycle collect      # 워커 종료 후 검증·머지·cleanup·요약
        └─ stdout JSON: verification_summary, decisions_to_record, failures
@@ -304,7 +323,7 @@ opt-out은 마크다운/설정/마이그레이션 task에서만: `tdd: false` fr
 
 ---
 
-## 릴리스 흐름 (v0.1 → v0.7.0)
+## 릴리스 흐름 (v0.1 → 0.9.0)
 
 | 버전 | 날짜 | 한 줄 |
 |---|---|---|
@@ -321,6 +340,10 @@ opt-out은 마크다운/설정/마이그레이션 task에서만: `tdd: false` fr
 | v0.6.1 | 2026-05-14 | **prepare/collect 멱등화** — `.pact/cycle.lock` + already_prepared/collected. orchestrator 세션 개념 제거. 누구든 안전하게 호출 가능 |
 | v0.6.2 | 2026-05-15 | **한 사이클 분담 모드** — `pact claim` 다중 + `pact list-locks --mine` + `/pact:parallel`이 자기 세션 점유 task만 sub-agent spawn. multi-tenant 없이 sibling 패턴 + sub-agent 결합 |
 | v0.7.0 | 2026-05-15 | **자유 수정 안전망** — `pact edit-lock`/`edit-release` + pre-tool-guard 차단. 모듈 lock은 owner_paths + shard 자동 묶음, 파일 lock으로 글로벌 md(PROGRESS·DECISIONS) 보호. 멀티세션 race 자동 차단 (ADR-021) |
+| v0.7.1 | 2026-05-26 | 토큰 절감 — shard 우선 SOT 룰 + `split-docs` domain inference 개선 (framework prefix 무시, N-function 섹션 분할) |
+| v0.8.0 | 2026-06-01 | 워커/cycle 안정성 (brewdy issue #1, 5건) — 머지 후 status sync, report.md 게이트, yolo+forbidden 검증, status.json required 완화, fallback 4종 |
+| v0.8.1 | 2026-06-01 | `decisions` 배열 schema 안내 (issue #3) — worker prompt 예시 + `pact validate-status` self-validate |
+| 0.9.0 | 2026-06-18 | `/pact:wrap` + merge-result.json 사이클 SOT 강화 + `pact drive` 안정성(context bundle bloat fix·Bash 우회 차단·`maxTurns` cap 제거) |
 
 전체 변경 사항은 [CHANGELOG.md](./CHANGELOG.md).
 
@@ -349,7 +372,7 @@ pact/
 ├── skills/init/                  # /pact:init 스킬 정의
 ├── bin/                          # pact CLI 진입점 + bin/cmds/*.js
 ├── docs/                         # CLAUDE_CODE_SPEC, WORKTREE_POLICY, context-map
-├── test/                         # node:test 단위 테스트 (18 파일, 170 통과)
+├── test/                         # node:test 단위 테스트 (39 파일, 532 통과)
 ├── ARCHITECTURE.md               # 18 ADR 매트릭스 + 매니저 명세
 ├── DECISIONS.md                  # ADR 누적 로그
 ├── TASKS.md                      # 빌드 task (v1.0 완료)
@@ -363,7 +386,7 @@ pact/
 - **다국어**: 한국어 사용자 향. v1.1+
 - **Codex 외 어댑터**: 인터페이스만 열려 있고 v1.1+에서 Gemini/Cursor 추가
 - **PRD 자동 변환**: `.docx`/`.pdf` 미지원 — `.md`로 변환 후 사용
-- **monorepo 디스크 부담**: worktree 1개당 GB 가능. 동시 워커 수 default 3, max 5
+- **monorepo 디스크 부담**: worktree 1개당 GB 가능. 동시 워커 수 기본 5, 최대 5 (prepare·drive 상한)
 - **OpenAPI 자동 검증**: v1.1+
 
 ## v1.0 out-of-scope (영구)

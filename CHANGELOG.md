@@ -1,5 +1,33 @@
 # Changelog
 
+## Unreleased (0.10.0-dev)
+
+> 슬로우니스 종합 로드맵 (stability + architecture) — `pact drive` 파이프라인화, 레버 배선, 멀티세션 안전성, 레이어 정리. **`--real` 실토큰 e2e는 미실행 — 헤드리스 SDK 통합의 최종 검증은 사용자 환경 필요.**
+
+### Added
+- **K-슬롯 파이프라인 드라이버** (`scripts/headless-driver/`) — `pact drive --pact`가 사이클-배리어(배치마다 전원 종료 대기) 대신 **K-슬롯 워커 풀**(`pool.mjs` 순수 스케줄러)로 동작. 한 슬롯이 비면 다음 ready task를 즉시 admit → cycle time을 Σmax(batch)에서 ≈total/K로 축소. `--no-pipeline`으로 레거시 배리어 폴백. ready 큐는 LPT(가장 큰 task 우선) 정렬.
+- **`pact run-cycle` 파이프라인 서브커맨드** — `prepare --graph`(전체 DAG emit) + `admit <task_id> --in-flight=…`(경로충돌 검사 후 온디맨드 슬롯 배정) + `collect-one <task_id>`(워커 완료 즉시 단건 머지, 게이트 경유).
+- **`pact resume-prompt <task_id>`** — fresh-resume 연속 프롬프트의 단일 결정적 소스. `--consume`로 resume 카운트를 `.pact/runs/<id>/resume.json`에 **영속**(파일 기반 회로차단기 — LLM 기억 비의존). 드라이버(`resume.js` 코어 공유)와 인터랙티브 예산 정합.
+- **`pact report-gen <task_id>|--all`** — status.json → report.md 결정적 렌더(0토큰). status.json에 `summary` 자유 서술 필드 추가 → 워커 종료 ceremony(report.md 수기 10줄)를 제거하고 결정적 렌더로 대체.
+- **슬로우니스 레버 propose-only 배선** — `run-cycle prepare` emit이 size/scope/ownership/bundle 경고를 `context_warnings`에 **fold**(prose 지시 대신 JSON — LLM이 못 건너뜀, 0 추가턴).
+- **멀티세션 이중 spawn 차단** — `run-cycle prepare --owner-pid=N`이 장수 pid를 `current_batch.json`에 스탬프, adopt 분기에서 살아있는 타 세션 소유 시 spawn 전 거부. `pact drive`는 `.pact/drive-owner.json` belt 락(`acquireDriveLock`)으로 이중 드라이버 exit 4.
+- **재발버그 계약 테스트** (TST-1) — `runWorkerReal`의 SDK query를 주입식으로 만들고 스크립트된 가짜 async-generator로 zombie·spent_usd 0·SIGINT 고착 3종을 고정. 훅 스모크 백필.
+
+### Changed
+- **헤드리스 드라이버 승격** — `experiments/headless-driver/` → `scripts/headless-driver/`(production). 순수 실험물(`measure-concurrency`·`trace-worker`·`fixture-setup`)만 `experiments/`에 잔류.
+- **레이어 정리** — `planMerge`(→`scripts/merge-coordinator.js`)·`collectLongDocs`(→`scripts/context-guard.js`)를 코어로 co-locate. `bin/cmds/*.js`는 `../../scripts`만 import하도록 `test/layer-lint.test.js`가 정적 강제(형제 bin/cmds import 차단).
+- **pre-spawn coordinator 검토 제거** — MODULE_OWNERSHIP 교차검토를 결정적 게이트로 승계. `coordinator_review_needed`는 deprecated(항상 false).
+- **워커 종료 메시지 구조화** — 종료 요약을 1~2줄 구조화 페이로드로 규약화 + `context_refs` 재나열 제거 → 메인 컨텍스트 누적 차단.
+- **worker Bash 경계 분류** — 형제 worktree·본체 트리 쓰기는 deny, 자기 `.pact/runs`·`/dev`·tmp는 allow. heredoc-aware 스캔.
+
+### Fixed
+- **락 획득 TOCTOU** (STAB-2) — `writeFileExclusive`(완성 tmp → linkSync 배타 공개)로 lock/cycle/edit-lock 획득 교체. stale은 rename 후 재공개, 단일 승자 수렴.
+- **미커밋 작업물 데이터 손실** (STAB-3) — `reconcileWorktree`에 dirty 게이트 → force-remove 차단.
+- **yaml-mini 주석 제거 오류** (STAB-8) — quote/flow 인지형으로 교체(따옴표·flow 안 `#` 값 보존).
+- **손상 ownership fail-open** (STAB-9) — `countOwnershipParseErrors` 진단 + 비차단 경고 표면화.
+- **boot_epoch 락 자가치유** (STAB-5) — 재부팅 후 pid 재사용 영구락을 boot_epoch 양자화로 stale 판정 + 24h TTL 백스톱, 회수 사유 표면화.
+- **검수/후속 수리** — RC-1(인터랙티브 resume 예산 off-by-one), WC-2(standalone `pact merge`가 planMerge 전 report-gen 렌더 → report 미작성 워커 전량 reject 회귀 해소), LG-1(boot_epoch 회수 전 isAlive 우선 — 살아있는 락 보존), ORCH-1/CI-1(collect-one이 cycle_id 경계에서 merge-result fresh 시작), LG-2(here-string `<<<`를 heredoc 오프너로 오탐하던 Bash 경계 fail-open), ORCH-2·CI-2(`pact drive`·`run-cycle` help 문구 실제값 정합).
+
 ## 0.9.0 — 2026-06-18
 
 ### Added

@@ -123,3 +123,12 @@ Read:
 
 Do not read:
 - backend contract shards unless UI task explicitly references them
+
+## pact 내부 레이아웃 (핵심 경로)
+
+pact 레포 자체를 탐색할 때의 실행 경로 — 리팩토링 반영. (SOT는 `scripts/`, `bin/cmds/*.js`는 얇은 CLI 레이어)
+
+- `scripts/headless-driver/` — `pact drive` 헤드리스 드라이버(`driver.mjs`·`pool.mjs`·`sdk-check.mjs`). 구 `experiments/headless-driver`에서 승격. 순수 실험물(`measure-concurrency`·`trace-worker`·`fixture-setup`)만 `experiments/`에 잔류.
+- `scripts/context-guard.js` — `collectLongDocs` 코어 (bin/cmds 형제 import 해소).
+- `scripts/merge-coordinator.js` — `planMerge` 코어 co-locate (레이어 역전 해소).
+- 레이어 규칙: `bin/cmds/*.js`는 `../../scripts`만 import (`test/layer-lint.test.js`가 정적 강제).

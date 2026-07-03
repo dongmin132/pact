@@ -162,12 +162,13 @@ pact run-cycle collect    # 워커 종료 후의 모든 결정적 작업
 
 ### prepare 책임 (atomic)
 1. preflight (CLAUDE.md / task source / TBD / MERGE_HEAD / git env)
-2. `buildBatches` → `batches[0]` 추출 + `coordinator_review_needed` 자동 판단
+2. `buildBatches` → `batches[0]` 추출 (경로충돌·의존·TBD·스코프는 결정적 게이트가 판정)
 3. worktree 생성 × N (createWorktree에서 node_modules symlink 자동)
 4. payload + spawn-worker 렌더 × N (`prompt.md`/`context.md` 작성)
 5. 실패 시 모든 created worktree 롤백
 6. `.pact/current_batch.json` 영속 (collect가 사용)
-7. stdout JSON: `task_prompts`, `coordinator_review_needed`, `context_warnings`
+7. stdout JSON: `task_prompts`, `context_warnings` (레버 경고 fold). `coordinator_review_needed`는
+   deprecated — pre-spawn LLM 검토를 결정적 게이트로 대체(P1-3), 하위호환 위해 항상 `false`로만 emit.
 
 ### collect 책임
 1. `planMerge` → `mergeAll` → `merge-result.json`
