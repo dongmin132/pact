@@ -21,6 +21,9 @@ const {
   acquireDriveLock,
   releaseDriveLock,
   driveOwnerPath,
+  currentBootEpoch,
+  staleReason,
+  isHeld,
 } = require('../scripts/lock.js');
 
 function tmpProject() {
@@ -341,5 +344,239 @@ test('releaseDriveLock — 다른 PID 소유는 force 없이 거부', () => {
     assert.equal(rel.ok, false);
     assert.match(rel.error, /force/);
     assert.ok(fs.existsSync(driveOwnerPath(dir))); // 여전히 존재
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+// ─── STAB-5: boot_epoch self-heal (PID 재사용 영구락 자가치유, P3-B) ────────
+
+const TTL_MS = 24 * 60 * 60 * 1000;
+
+test('currentBootEpoch — 10초 버킷으로 양자화된 부팅 시각', () => {
+  const be = currentBootEpoch();
+  assert.equal(typeof be, 'number');
+  assert.ok(Number.isFinite(be));
+  assert.equal(be % 10, 0, '10초 배수여야 함');
+  // (now - uptime) 근사값과 1버킷 이내
+  const expected = Math.round((Date.now() / 1000 - os.uptime()) / 10) * 10;
+  assert.ok(Math.abs(be - expected) <= 10);
+});
+
+test('staleReason — 다른 boot_epoch면 살아있는 pid여도 stale (reclaimedByReboot)', () => {
+  const cur = 1000;
+  const holder = { pid: ALIVE_PID, boot_epoch: cur - 1000, acquired_at: new Date().toISOString() };
+  assert.equal(staleReason(holder, { bootEpoch: cur }), 'reclaimedByReboot');
+  assert.equal(isHeld(holder, { bootEpoch: cur }), false);
+});
+
+test('staleReason — 같은 boot_epoch + 살아있는 pid + 최근이면 유지(null)', () => {
+  const cur = 1000;
+  const holder = { pid: ALIVE_PID, boot_epoch: cur, acquired_at: new Date().toISOString() };
+  assert.equal(staleReason(holder, { bootEpoch: cur, now: Date.now() }), null);
+  assert.equal(isHeld(holder, { bootEpoch: cur, now: Date.now() }), true);
+});
+
+test('staleReason — 같은 boot_epoch + 죽은 pid → deadPid', () => {
+  const cur = 1000;
+  const holder = { pid: DEAD_PID, boot_epoch: cur, acquired_at: new Date().toISOString() };
+  assert.equal(staleReason(holder, { bootEpoch: cur }), 'deadPid');
+});
+
+test('staleReason — 같은 boot_epoch + 살아있음 + 24h TTL 초과 → reclaimedByTTL', () => {
+  const cur = 1000;
+  const now = Date.now();
+  const holder = { pid: ALIVE_PID, boot_epoch: cur, acquired_at: new Date(now - TTL_MS - 60000).toISOString() };
+  assert.equal(staleReason(holder, { bootEpoch: cur, now }), 'reclaimedByTTL');
+});
+
+test('staleReason — 1버킷(10초) 차이는 같은 부팅으로 관대하게 취급', () => {
+  const cur = 1000;
+  const holder = { pid: ALIVE_PID, boot_epoch: cur - 10, acquired_at: new Date().toISOString() };
+  assert.equal(staleReason(holder, { bootEpoch: cur, now: Date.now() }), null);
+});
+
+test('staleReason — boot_epoch 부재 + 살아있는 pid → 유지 (하위호환)', () => {
+  assert.equal(staleReason({ pid: ALIVE_PID }, { bootEpoch: 1000 }), null);
+});
+
+test('staleReason — boot_epoch 부재 + 죽은 pid → deadPid (기존 동작)', () => {
+  assert.equal(staleReason({ pid: DEAD_PID }, { bootEpoch: 1000 }), 'deadPid');
+});
+
+test('staleReason — holder null → deadPid (파싱 불가 정리 대상)', () => {
+  assert.equal(staleReason(null), 'deadPid');
+});
+
+test('acquireLock — 획득 시 boot_epoch 기록', () => {
+  const dir = tmpProject();
+  try {
+    acquireLock('TASK-001', { cwd: dir, pid: ALIVE_PID });
+    const holder = JSON.parse(fs.readFileSync(lockPath(dir, 'TASK-001'), 'utf8'));
+    assert.equal(typeof holder.boot_epoch, 'number');
+    assert.equal(holder.boot_epoch % 10, 0);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('acquireLock — 재부팅 감지 시 살아있는 pid여도 takeover', () => {
+  const dir = tmpProject();
+  try {
+    // 살아있는 pid + 다른 부팅(=재부팅 후 pid 재사용 시나리오)
+    fs.writeFileSync(
+      lockPath(dir, 'TASK-001'),
+      JSON.stringify({ pid: ALIVE_PID, boot_epoch: currentBootEpoch() - 100000, acquired_at: new Date().toISOString() }),
+    );
+    const r = acquireLock('TASK-001', { cwd: dir, pid: ALIVE_PID });
+    assert.equal(r.ok, true);
+    assert.equal(r.action, 'takeover');
+    const holder = JSON.parse(fs.readFileSync(lockPath(dir, 'TASK-001'), 'utf8'));
+    assert.ok(Math.abs(holder.boot_epoch - currentBootEpoch()) <= 10, '현재 부팅으로 갱신');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('acquireLock — 24h TTL 초과 락은 takeover', () => {
+  const dir = tmpProject();
+  try {
+    fs.writeFileSync(
+      lockPath(dir, 'TASK-001'),
+      JSON.stringify({ pid: ALIVE_PID, boot_epoch: currentBootEpoch(), acquired_at: new Date(Date.now() - TTL_MS - 60000).toISOString() }),
+    );
+    const r = acquireLock('TASK-001', { cwd: dir, pid: ALIVE_PID });
+    assert.equal(r.ok, true);
+    assert.equal(r.action, 'takeover');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('acquireLock — boot_epoch 부재 + 살아있는 pid는 여전히 거부 (하위호환)', () => {
+  const dir = tmpProject();
+  try {
+    fs.writeFileSync(
+      lockPath(dir, 'TASK-001'),
+      JSON.stringify({ pid: ALIVE_PID, task_id: 'TASK-001', acquired_at: new Date().toISOString() }),
+    );
+    const r = acquireLock('TASK-001', { cwd: dir, pid: ALIVE_PID });
+    assert.equal(r.ok, false);
+    assert.match(r.error, /이미 점유/);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('cleanStaleLocks — 회수 사유 구분 (reclaimedByReboot / deadPid)', () => {
+  const dir = tmpProject();
+  try {
+    // TASK-001: 살아있는 pid, boot_epoch 없음 → 보존 (하위호환)
+    acquireLock('TASK-001', { cwd: dir, pid: ALIVE_PID });
+    // TASK-002: 살아있는 pid + 다른 부팅 → reclaimedByReboot
+    fs.writeFileSync(
+      lockPath(dir, 'TASK-002'),
+      JSON.stringify({ pid: ALIVE_PID, boot_epoch: currentBootEpoch() - 100000, acquired_at: new Date().toISOString() }),
+    );
+    // 세 번째 task: 죽은 pid → deadPid
+    fs.mkdirSync(path.join(dir, '.pact', 'runs', 'TASK-003'), { recursive: true });
+    fs.writeFileSync(
+      lockPath(dir, 'TASK-003'),
+      JSON.stringify({ pid: DEAD_PID, boot_epoch: currentBootEpoch(), acquired_at: new Date().toISOString() }),
+    );
+
+    const r = cleanStaleLocks({ cwd: dir });
+    assert.ok(r.cleaned.includes('TASK-002'));
+    assert.ok(r.cleaned.includes('TASK-003'));
+    assert.ok(!r.cleaned.includes('TASK-001'), 'boot_epoch 없는 살아있는 락 보존');
+    assert.deepEqual(r.reclaimedByReboot, ['TASK-002']);
+    assert.deepEqual(r.deadPid, ['TASK-003']);
+    assert.deepEqual(r.reclaimedByTTL, []);
+    assert.ok(fs.existsSync(lockPath(dir, 'TASK-001')));
+    assert.ok(!fs.existsSync(lockPath(dir, 'TASK-002')));
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('cleanStaleLocks — TTL 초과 락은 reclaimedByTTL로 구분', () => {
+  const dir = tmpProject();
+  try {
+    fs.writeFileSync(
+      lockPath(dir, 'TASK-001'),
+      JSON.stringify({ pid: ALIVE_PID, boot_epoch: currentBootEpoch(), acquired_at: new Date(Date.now() - TTL_MS - 60000).toISOString() }),
+    );
+    const r = cleanStaleLocks({ cwd: dir });
+    assert.deepEqual(r.reclaimedByTTL, ['TASK-001']);
+    assert.ok(r.cleaned.includes('TASK-001'));
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('acquireCycleLock — boot_epoch 기록 + 재부팅 시 takeover', () => {
+  const dir = tmpProject();
+  try {
+    // fresh 획득 시 boot_epoch 기록
+    acquireCycleLock({ cwd: dir, pid: ALIVE_PID, stage: 'prepare' });
+    const held = JSON.parse(fs.readFileSync(cycleLockPath(dir), 'utf8'));
+    assert.equal(typeof held.boot_epoch, 'number');
+    releaseCycleLock({ cwd: dir, pid: ALIVE_PID });
+
+    // 살아있는 pid + 다른 부팅 → takeover
+    fs.writeFileSync(
+      cycleLockPath(dir),
+      JSON.stringify({ pid: ALIVE_PID, boot_epoch: currentBootEpoch() - 100000, stage: 'collect', acquired_at: new Date().toISOString() }),
+    );
+    const r = acquireCycleLock({ cwd: dir, pid: ALIVE_PID, stage: 'prepare' });
+    assert.equal(r.ok, true);
+    assert.equal(r.action, 'takeover');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('acquireDriveLock — boot_epoch 기록 + 재부팅 시 live 타 pid여도 takeover', () => {
+  const dir = tmpProject();
+  try {
+    acquireDriveLock({ cwd: dir, pid: ALIVE_PID, session: 'drive' });
+    const held = JSON.parse(fs.readFileSync(driveOwnerPath(dir), 'utf8'));
+    assert.equal(typeof held.boot_epoch, 'number');
+    releaseDriveLock({ cwd: dir, pid: ALIVE_PID });
+
+    // 살아있는 타 pid 소유지만 다른 부팅 → takeover 허용
+    fs.writeFileSync(
+      driveOwnerPath(dir),
+      JSON.stringify({ pid: ALIVE_PID, boot_epoch: currentBootEpoch() - 100000, session: 'old', acquired_at: new Date().toISOString() }),
+    );
+    const r = acquireDriveLock({ cwd: dir, pid: DEAD_PID });
+    assert.equal(r.ok, true);
+    assert.equal(r.action, 'takeover');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('session-start hook — 재부팅 회수 사유를 systemMessage로 표면화', () => {
+  const { spawnSync } = require('child_process');
+  const dir = tmpProject();
+  try {
+    // 재부팅으로 stale 된 (살아있는 pid) 락 — deadPid 아님, reclaimedByReboot
+    fs.writeFileSync(
+      lockPath(dir, 'TASK-001'),
+      JSON.stringify({ pid: ALIVE_PID, boot_epoch: currentBootEpoch() - 100000, acquired_at: new Date().toISOString() }),
+    );
+    const hook = path.join(__dirname, '..', 'hooks', 'session-start.js');
+    const res = spawnSync(process.execPath, [hook], {
+      input: JSON.stringify({ cwd: dir, permission_mode: 'default' }),
+      encoding: 'utf8',
+    });
+    assert.equal(res.status, 0);
+    const out = JSON.parse(res.stdout);
+    assert.match(out.systemMessage, /재부팅|reboot/i);
+    assert.match(out.systemMessage, /TASK-001/);
+    // 회수됐으므로 락 파일 삭제됨
+    assert.ok(!fs.existsSync(lockPath(dir, 'TASK-001')));
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('session-start hook — deadPid만 회수되면 메시지 표면화 안 함(노이즈 억제)', () => {
+  const { spawnSync } = require('child_process');
+  const dir = tmpProject();
+  try {
+    fs.writeFileSync(
+      lockPath(dir, 'TASK-001'),
+      JSON.stringify({ pid: DEAD_PID, acquired_at: new Date().toISOString() }),
+    );
+    const hook = path.join(__dirname, '..', 'hooks', 'session-start.js');
+    const res = spawnSync(process.execPath, [hook], {
+      input: JSON.stringify({ cwd: dir, permission_mode: 'default' }),
+      encoding: 'utf8',
+    });
+    assert.equal(res.status, 0);
+    assert.equal(res.stdout.trim(), '', 'deadPid 정리는 조용히');
+    assert.ok(!fs.existsSync(lockPath(dir, 'TASK-001')));
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
