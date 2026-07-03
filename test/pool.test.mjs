@@ -5,7 +5,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { runPipeline } from '../experiments/headless-driver/pool.mjs';
+import { runPipeline } from '../scripts/headless-driver/pool.mjs';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const overlapsBy = (a, b) => a.some((x) => b.includes(x));

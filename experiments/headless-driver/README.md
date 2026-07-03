@@ -1,7 +1,9 @@
-# pact 헤드리스 드라이버 (PoC)
+# pact 헤드리스 드라이버 (측정 실험 아카이브)
 
-> ⚠️ **실험용. v1.0 코어 아님.** 인터랙티브 `/pact:parallel`의 "오케스트레이터 재독 세금"을
-> 없애는 방향(standalone Agent SDK 드라이버)의 최소 검증.
+> 📦 **엔진 승격됨(STR-3):** production 드라이버 `driver.mjs`·`pool.mjs`·`sdk-check.mjs`·`package.json`·`package-lock.json` 는 이제 **`scripts/headless-driver/`** 에 있다(`pact drive` 가 여기서 실행). 이 디렉토리는 벤치·측정 실험물(`measure-concurrency.mjs`·`fixture-setup.mjs`·`trace-worker.mjs`)만 잔류하며, 아래 `node driver.mjs …` 예시는 `scripts/headless-driver/` 기준의 히스토릭 기록이다.
+
+> 이 문서는 인터랙티브 `/pact:parallel`의 "오케스트레이터 재독 세금"을
+> 없애는 방향(standalone Agent SDK 드라이버)의 초기 검증·성능 측정 기록이다.
 
 ## 무엇을 증명하나
 

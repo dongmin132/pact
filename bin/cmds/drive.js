@@ -13,7 +13,7 @@ const path = require('path');
 const { spawnSync } = require('child_process');
 
 const PLUGIN_ROOT = path.join(__dirname, '..', '..');
-const DRIVER = path.join(PLUGIN_ROOT, 'experiments', 'headless-driver', 'driver.mjs');
+const DRIVER = path.join(PLUGIN_ROOT, 'scripts', 'headless-driver', 'driver.mjs');
 const DRIVER_DIR = path.dirname(DRIVER);
 
 function sdkInstalled() {

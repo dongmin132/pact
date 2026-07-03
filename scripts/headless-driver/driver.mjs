@@ -2,7 +2,7 @@
 'use strict';
 
 // ============================================================================
-// pact 헤드리스 드라이버 — PoC v2 (하드닝판). experiments, v1.0 코어 아님.
+// pact 헤드리스 드라이버 — production 헤드리스 드라이버 (하드닝판). scripts/headless-driver/ (v1.0 코어).
 // ----------------------------------------------------------------------------
 // v1 증명: 오케스트레이터 = 스크립트 → 코디네이션 토큰 0, 워커만 지불.
 // v2 추가: "아무도 안 보는데 에러나면?" 에 대한 답 — 6가지 안전장치.
@@ -48,14 +48,21 @@
 // ============================================================================
 
 import { execSync } from 'node:child_process';
-import { readFileSync, existsSync, mkdtempSync, mkdirSync } from 'node:fs';
+import { readFileSync, existsSync, mkdtempSync, mkdirSync, realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createRequire } from 'node:module';
 import { runPipeline } from './pool.mjs';
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+// 직접 실행(`node driver.mjs` / `pact drive` 의 spawn) 여부 판정. 테스트가 import 하면 false →
+// 아래 main()·process.exit 를 건너뛰고 순수 워커 함수(runWorkerReal 등)만 노출한다(계약 테스트용).
+const isMain = (() => {
+  try { return !!process.argv[1] && realpathSync(process.argv[1]) === realpathSync(__filename); }
+  catch { return false; }
+})();
 const PLUGIN_ROOT = join(__dirname, '..', '..');
 const PACT_BIN = join(PLUGIN_ROOT, 'bin', 'pact');
 
@@ -212,8 +219,11 @@ function measureCount(task) {
 
 // ---- 워커 러너 (real) — SDK + 타임아웃 + 가드 + 예산 ------------------------
 function stripFrontmatter(s) { const m = /^---\n[\s\S]*?\n---\n/.exec(s); return m ? s.slice(m[0].length) : s; }
-async function runWorkerReal(task /*, attempt */) {
-  const { query } = await import('@anthropic-ai/claude-agent-sdk');
+async function runWorkerReal(task, opts = {}) {
+  // SDK query 주입 가능 — 기본은 동적 import(프로덕션). 테스트는 가짜 async-generator 를 주입해
+  // 실제 SDK/네트워크 없이 재발버그(zombie·spent_usd 0·SIGINT 고착) 계약을 고정한다.
+  // (프로덕션에선 attempt 번호가 opts 로 넘어오나 primitive 라 opts.query/timeoutMs = undefined → 무해.)
+  const query = opts.query || (await import('@anthropic-ai/claude-agent-sdk')).query;
   let systemPrompt = { type: 'preset', preset: 'claude_code' };
   const wmd = join(PLUGIN_ROOT, 'agents', 'worker.md');
   if (existsSync(wmd)) systemPrompt = stripFrontmatter(readFileSync(wmd, 'utf8'));
@@ -221,12 +231,13 @@ async function runWorkerReal(task /*, attempt */) {
   // 끝까지 두고 폭주는 budget 으로 막는다(워크플로우 방식). 턴/시간은 작업을 자르지 않는
   // 넉넉한 backstop. wall-clock 발화 시 abort 만으론 SDK 가 안 죽을 수 있어 q.close()로 실제 종료.
   const ac = new AbortController();
+  const timeoutMs = opts.timeoutMs || TIMEOUT_MS; // 테스트가 짧은 backstop 주입 → abort/정리 경로 검증
   let q, timedOut = false;
   const timer = setTimeout(() => {
     timedOut = true;
     try { ac.abort(); } catch { /* noop */ }
     try { if (q && typeof q.close === 'function') q.close(); } catch { /* noop */ }
-  }, TIMEOUT_MS);
+  }, timeoutMs);
 
   // usage/cost 는 모든 메시지에서 갱신 — 중간에 끊겨도 마지막 본 값 보존(비용 0 방지).
   let usage = null, turns = 0, subtype = 'error_during_execution', cost = 0;
@@ -275,11 +286,12 @@ const runWorker = REAL ? runWorkerReal : runWorkerMock;
 const getTasks = USE_PACT ? getTasksPact : getTasksDemo;
 
 // ---- (1)+(5) 태스크 1건: 재시도 루프 + 격리 (절대 throw 안 함) -------------
-async function attemptTask(task) {
+async function attemptTask(task, opts = {}) {
+  const worker = opts.runWorker || runWorker; // 테스트가 가짜 runner 주입 → resume 오케스트레이션 검증
   let last;
   for (let attempt = 1; attempt <= RETRIES + 1; attempt++) {
     try {
-      const r = await runWorker(task, attempt);
+      const r = await worker(task, attempt);
       r.task_id = task.task_id; r.attempts = attempt;
       ledger.spentUsd += r.cost || 0;
       if (r.ok) return { ...r, status: 'done' };
@@ -299,10 +311,10 @@ async function attemptTask(task) {
 // ---- (2.2) 일반 task: 턴/예산 소진(incomplete) 시 같은 worktree 에 fresh 워커 재투입 ----
 // 같은 워커 재시도는 무의미하지만 부분작업이 worktree 에 보존되므로, FRESH 워커가 "처음부터"
 // 가 아니라 "이어서" 마저 끝낼 수 있다(사람 salvage 제거). resume-cap·예산 초과 시 위임(보존).
-async function runResumableTask(task) {
+async function runResumableTask(task, opts = {}) {
   let cur = task;
   for (let resume = 0; ; resume++) {
-    const r = await attemptTask(cur);
+    const r = await attemptTask(cur, opts);
     // 미완(턴/예산 소진)이 아니면 그대로 (done/denied/일반 escalate) — 기존 동작 불변
     if (!(r.status === 'escalated' && r.incomplete)) return { ...r, resumes: resume };
     if (ledger.spentUsd >= BUDGET)
@@ -428,7 +440,10 @@ async function runCyclePipeline(c, tasks, graph) {
 }
 
 // ---- 메인 루프 (오케스트레이터 = 이 코드 = 토큰 0) -------------------------
-console.log('=== pact 헤드리스 드라이버 PoC v2 (하드닝) ===');
+// import.meta.url 가드용으로 main() 에 감싼다 — 직접 실행(isMain)일 때만 아래에서 호출된다.
+// 테스트가 이 모듈을 import 하면 main() 은 안 돌고 순수 워커 함수만 노출 → 부수효과·process.exit 없음.
+async function main() {
+console.log('=== pact 헤드리스 드라이버 (production, 하드닝) ===');
 console.log(`mode: ${REAL ? 'REAL' : 'MOCK'} | ${USE_PACT ? 'PACT' : 'DEMO'} | max=${MAX} cycles=${CYCLES} budget=$${BUDGET}(cap) timeout=${TIMEOUT_MS / 1000}s(backstop) retries=${RETRIES}`);
 
 // 가드 self-test (토큰 0, worker-guard 로직 자체 검증)
@@ -443,7 +458,7 @@ console.log(`가드 self-test: 허용=${stOk?'✓':'✗'} scope밖거부=${stNo1
 if (REAL) {
   try { nodeRequire.resolve('@anthropic-ai/claude-agent-sdk'); }
   catch {
-    console.error('✗ SDK 미설치 — cd experiments/headless-driver && npm i @anthropic-ai/claude-agent-sdk (점검: node sdk-check.mjs)');
+    console.error('✗ SDK 미설치 — cd scripts/headless-driver && npm i @anthropic-ai/claude-agent-sdk (점검: node sdk-check.mjs)');
     process.exit(4);
   }
 }
@@ -565,7 +580,14 @@ writeDriverState({ phase: 'done', active_workers: [], stopped_reason: ledger.sto
 
 if (ledger.orchestratorTokens !== 0) { console.error('\n✗ INVARIANT 실패'); process.exit(1); }
 console.log('\n✓ 불변식 유지: 오케스트레이션 = 0 토큰. 기계적 에러는 드라이버가 흡수, 판단 에러는 위임.');
-if (!REAL) console.log('[MOCK] 실제 spawn: cd experiments/headless-driver && npm i @anthropic-ai/claude-agent-sdk && node driver.mjs --real');
+if (!REAL) console.log('[MOCK] 실제 spawn: cd scripts/headless-driver && npm i @anthropic-ai/claude-agent-sdk && node driver.mjs --real');
 
 // 위임이 있으면 비정상 종료코드(자동화 파이프라인이 감지하도록)
 process.exit(ledger.escalations.length || ledger.stoppedReason ? 3 : 0);
+}
+
+// 직접 실행일 때만 메인 루프 구동. import(테스트) 시엔 실행 안 됨 = 부수효과·process.exit 없음.
+if (isMain) main().catch((e) => { console.error(e); process.exit(1); });
+
+// 테스트 계약용 export — 프로덕션 실행 경로(main)는 이 export 에 의존하지 않는다.
+export { runWorkerReal, attemptTask, runResumableTask, runLoopTask, ledger };

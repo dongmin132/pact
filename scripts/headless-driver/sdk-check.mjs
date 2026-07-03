@@ -21,7 +21,7 @@ try {
     sdkVersion = JSON.parse(require('fs').readFileSync(dir + '/package.json', 'utf8')).version;
   } catch { sdkVersion = 'installed (version unknown)'; }
 } catch {
-  problems.push('@anthropic-ai/claude-agent-sdk 미설치 → cd experiments/headless-driver && npm i @anthropic-ai/claude-agent-sdk');
+  problems.push('@anthropic-ai/claude-agent-sdk 미설치 → cd scripts/headless-driver && npm i @anthropic-ai/claude-agent-sdk');
 }
 
 // 2) claude CLI 확인 (SDK가 내부적으로 사용 + 인증 매개)
