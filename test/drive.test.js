@@ -20,6 +20,8 @@ test('pact drive --help — 사용법 출력', () => {
   assert.match(r.stdout, /헤드리스/);
   assert.match(r.stdout, /--real/);
   assert.match(r.stdout, /--pact/);
+  // ORCH-2: --max 기본값 문구는 driver.mjs 실제값(5)과 일치해야 한다.
+  assert.match(r.stdout, /--max=N\s+사이클당 워커 수 \(기본 5\)/);
 });
 
 test('pact drive (mock demo) — 오케스트레이터 토큰 0 으로 동작', () => {

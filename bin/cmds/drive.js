@@ -37,7 +37,7 @@ const HELP = [
   '',
   '  --real          실제 Agent SDK 로 워커 spawn (SDK 설치 + claude 로그인 필요)',
   '  --pact          pact run-cycle prepare/collect 연동 (현 디렉토리 = pact 프로젝트)',
-  '  --max=N         사이클당 워커 수 (기본 3)',
+  '  --max=N         사이클당 워커 수 (기본 5)',
   '  --cycles=N      사이클 반복 (기본 1)',
   '  --model=NAME    워커 모델 (기본 sonnet)',
   '  --budget=USD    누적 비용 상한 — 넘으면 정지 (기본 10)',

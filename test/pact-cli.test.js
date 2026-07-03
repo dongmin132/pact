@@ -82,6 +82,8 @@ test('pact (인자 없음) — usage 출력 + exit 0', () => {
   const r = runPact([], process.cwd());
   assert.equal(r.status, 0);
   assert.match(r.stderr, /Usage:/);
+  // CI-2: run-cycle 서브커맨드 목록이 실제 구현(collect-one 포함)과 일치해야 한다.
+  assert.match(r.stderr, /run-cycle <prepare\|collect\|collect-one\|admit>/);
 });
 
 test('pact <unknown> — usage 출력 + exit 1', () => {
