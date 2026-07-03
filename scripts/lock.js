@@ -63,8 +63,13 @@ function currentBootEpoch() {
 
 /**
  * 락 holder 가 stale(회수 가능)인지 판정하고 사유를 돌려준다.
- * - boot_epoch 가 현재와 1버킷(10초) 초과 차이 → 재부팅 후 PID 재사용, isAlive 무관 stale.
- * - 같은 부팅: 죽은 pid 는 즉시 stale, 살아있어도 acquired_at 기준 24h TTL 초과면 stale.
+ * - **살아있는 pid 는 절대 회수하지 않는다**(LG-1): 벽시계 스텝(NTP 초기 동기·VM save/restore·
+ *   수동 시계변경)은 재부팅 없이도 boot_epoch 를 점프시켜 false-reboot 를 낸다. 이때 살아있는
+ *   pid 는 그 락의 실제 소유자이므로 회수하면 격리(STAB-1/5)가 깨진다. 재부팅 후 pid 재사용
+ *   (coincidental)으로 인한 영구락은 24h TTL 백스톱이 정리한다(즉시 아님, 안전 우선).
+ * - 죽은 pid: boot_epoch 가 현재와 1버킷(10초) 초과 차이면 재부팅 잔재(reclaimedByReboot),
+ *   같은 부팅이면 deadPid — 둘 다 회수하되 사유만 구분(STAB-5 표면화용).
+ * - 같은 부팅 + 살아있음: acquired_at 기준 24h TTL 초과면 reclaimedByTTL.
  * - boot_epoch 부재(구버전 락): 순수 isAlive 판정(기존 동작, 하위호환).
  * @param {object|null} holder — readLock 결과(파싱 실패면 null)
  * @param {object} [opts]
@@ -77,9 +82,10 @@ function staleReason(holder, opts = {}) {
   const hasBoot = typeof holder.boot_epoch === 'number' && Number.isFinite(holder.boot_epoch);
   if (hasBoot) {
     const cur = typeof opts.bootEpoch === 'number' ? opts.bootEpoch : currentBootEpoch();
-    if (Math.abs(holder.boot_epoch - cur) > BOOT_EPOCH_BUCKET) return 'reclaimedByReboot';
-    if (!isAlive(holder.pid)) return 'deadPid';
-    // 살아있음 — 같은 부팅 내 pid 재사용/락만 남은 세션 대비 24h TTL 백스톱.
+    const rebooted = Math.abs(holder.boot_epoch - cur) > BOOT_EPOCH_BUCKET;
+    // 죽은 pid 만 boot_epoch 로 회수 사유를 구분. 살아있으면 재부팅 신호가 있어도 회수 X.
+    if (!isAlive(holder.pid)) return rebooted ? 'reclaimedByReboot' : 'deadPid';
+    // 살아있음 — 재부팅 신호 무시(false-reboot 방어). pid 재사용/락만 남은 세션은 24h TTL 백스톱.
     const acquiredMs = holder.acquired_at ? Date.parse(holder.acquired_at) : NaN;
     if (Number.isFinite(acquiredMs)) {
       const now = typeof opts.now === 'number' ? opts.now : Date.now();
