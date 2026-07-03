@@ -178,6 +178,49 @@ test('E2E — init → plan → batch → 워커 3 → merge 모두 성공', () 
   } finally { cleanupProject(dir); }
 });
 
+test('WC-2 — standalone `pact merge` 는 report.md 수기본 없어도 status.json 에서 렌더 후 머지', () => {
+  // 신규 종료 ceremony 의 워커는 report.md 를 손으로 쓰지 않는다(status.json 만). collect 를
+  // 거치지 않는 standalone `pact merge` 도 planMerge 의 report.md 존재 게이트를 스스로 충족해야 한다.
+  const dir = makeProject();
+  try {
+    simulateInit(dir);
+    simulatePlan(dir, [{ id: 'PROJ-001', title: 'a', allowed_paths: ['src/a.ts'] }]);
+    simulateWorker(dir, 'PROJ-001', 'src/a.ts', 'export const a = 1;\n');
+
+    // 신규 ceremony 재현: 워커가 report.md 를 남기지 않음.
+    const reportPath = path.join(dir, '.pact/runs/PROJ-001/report.md');
+    fs.rmSync(reportPath, { force: true });
+
+    const mergeR = runPact(['merge'], dir);
+    assert.equal(mergeR.status, 0, `report.md 없어도 머지 성공해야: ${mergeR.stdout}\n${mergeR.stderr}`);
+
+    const result = JSON.parse(fs.readFileSync(path.join(dir, '.pact/merge-result.json'), 'utf8'));
+    assert.deepEqual(result.merged, ['PROJ-001'], 'report.md missing 으로 reject 되면 안 됨');
+    assert.ok(!(result.rejected || []).some(r => /report\.md missing/.test(r.reason)), 'report.md missing reject 없음');
+    // report-gen 이 status.json 에서 report.md 를 렌더해 게이트를 tautology 화
+    assert.ok(fs.existsSync(reportPath), 'report.md 가 status.json 에서 렌더됨');
+    assert.ok(fs.existsSync(path.join(dir, 'src/a.ts')), 'main 에 머지됨');
+  } finally { cleanupProject(dir); }
+});
+
+test('WC-2 — standalone `pact merge` 는 워커 수기 report.md 를 존중(덮어쓰기 X)', () => {
+  const dir = makeProject();
+  try {
+    simulateInit(dir);
+    simulatePlan(dir, [{ id: 'PROJ-001', title: 'a', allowed_paths: ['src/a.ts'] }]);
+    simulateWorker(dir, 'PROJ-001', 'src/a.ts', 'export const a = 1;\n');
+
+    // 워커가 직접 쓴 report.md — report-gen 이 존중해 그대로 보존해야 한다(5철학 정합).
+    const reportPath = path.join(dir, '.pact/runs/PROJ-001/report.md');
+    const handWritten = '# 수기 리포트\n워커가 직접 작성한 서사.\n';
+    fs.writeFileSync(reportPath, handWritten);
+
+    const mergeR = runPact(['merge'], dir);
+    assert.equal(mergeR.status, 0, mergeR.stderr);
+    assert.equal(fs.readFileSync(reportPath, 'utf8'), handWritten, '수기 report.md 보존');
+  } finally { cleanupProject(dir); }
+});
+
 test('E2E — 충돌 시나리오 (한 워커가 conflict 야기)', () => {
   const dir = makeProject();
   try {

@@ -13,10 +13,18 @@ const path = require('path');
 
 const { planMerge, mergeAll } = require(path.join(__dirname, '..', '..', 'scripts', 'merge-coordinator.js'));
 const { setTaskStatus } = require(path.join(__dirname, '..', '..', 'scripts', 'task-sources.js'));
+const { generateAll: generateReports } = require(path.join(__dirname, '..', '..', 'scripts', 'report-gen.js'));
 
 function executeMerge(args) {
   const quiet = args.includes('--quiet') || args.includes('-q');
   const cwd = process.cwd();
+
+  // WC-2: planMerge 는 report.md 존재를 게이트한다. 신규 종료 ceremony 의 워커는 report.md 를
+  // 수기 작성하지 않으므로(status.json 만), collect 를 거치지 않는 standalone `pact merge` 도
+  // collect/collect-one 과 동일하게 status.json → report.md 를 게이트 이전에 결정적으로 렌더한다.
+  // 수기 report.md 는 존중(generateReports 가 존재 시 skip). 없으면 렌더 → 존재 게이트 tautology 화.
+  generateReports({ cwd });
+
   const plan = planMerge({ cwd });
 
   if (plan.missing === 'runs_dir') {
