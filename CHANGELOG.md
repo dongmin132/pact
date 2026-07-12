@@ -2,7 +2,7 @@
 
 ## Unreleased (0.10.0-dev)
 
-> 슬로우니스 종합 로드맵 (stability + architecture) — `pact drive` 파이프라인화, 레버 배선, 멀티세션 안전성, 레이어 정리. **`--real` 실토큰 e2e는 미실행 — 헤드리스 SDK 통합의 최종 검증은 사용자 환경 필요.**
+> 슬로우니스 종합 로드맵 (stability + architecture) — `pact drive` 파이프라인화, 레버 배선, 멀티세션 안전성, 레이어 정리. `--real` 실토큰 e2e 검증 완료(단일 워커 스모크 + `--real --pact` 풀사이클 3워커 — K-슬롯 풀·admit·collect-one 머지·오케스트레이터 0토큰 실증).
 
 ### Added
 - **K-슬롯 파이프라인 드라이버** (`scripts/headless-driver/`) — `pact drive --pact`가 사이클-배리어(배치마다 전원 종료 대기) 대신 **K-슬롯 워커 풀**(`pool.mjs` 순수 스케줄러)로 동작. 한 슬롯이 비면 다음 ready task를 즉시 admit → cycle time을 Σmax(batch)에서 ≈total/K로 축소. `--no-pipeline`으로 레거시 배리어 폴백. ready 큐는 LPT(가장 큰 task 우선) 정렬.
@@ -26,7 +26,18 @@
 - **yaml-mini 주석 제거 오류** (STAB-8) — quote/flow 인지형으로 교체(따옴표·flow 안 `#` 값 보존).
 - **손상 ownership fail-open** (STAB-9) — `countOwnershipParseErrors` 진단 + 비차단 경고 표면화.
 - **boot_epoch 락 자가치유** (STAB-5) — 재부팅 후 pid 재사용 영구락을 boot_epoch 양자화로 stale 판정 + 24h TTL 백스톱, 회수 사유 표면화.
-- **검수/후속 수리** — RC-1(인터랙티브 resume 예산 off-by-one), WC-2(standalone `pact merge`가 planMerge 전 report-gen 렌더 → report 미작성 워커 전량 reject 회귀 해소), LG-1(boot_epoch 회수 전 isAlive 우선 — 살아있는 락 보존), ORCH-1/CI-1(collect-one이 cycle_id 경계에서 merge-result fresh 시작), LG-2(here-string `<<<`를 heredoc 오프너로 오탐하던 Bash 경계 fail-open), ORCH-2·CI-2(`pact drive`·`run-cycle` help 문구 실제값 정합).
+- **검수/후속 수리** — RC-1(인터랙티브 resume 예산 off-by-one), WC-2(standalone `pact merge`가 planMerge 전 report-gen 렌더 → report 미작성 워커 전량 reject 회귀 해소), LG-1(boot_epoch 회수 전 isAlive 우선 — 살아있는 락 보존), ORCH-1/CI-1(collect-one이 cycle_id 경계에서 merge-result fresh 시작 + admit이 사이클 중간 재생성 시 진행 중 cycle_id 재사용), LG-2(here-string `<<<`를 heredoc 오프너로 오탐하던 Bash 경계 fail-open), ORCH-2·CI-2(`pact drive`·`run-cycle` help 문구 실제값 정합).
+
+### 감사 2라운드 (전체 플러그인 재감사 후 확정 20건 수리)
+- **드라이버 거짓 성공 제거** — 워커 done이어도 머지 게이트에서 rejected/conflicted면 완료로 계상하지 않고 ⛔ 별도 표기 + exit 3 (DRV-2, 레거시 경로 대칭). `already_prepared` 재개도 `--graph`를 재emit해 미-admit DAG 누락 차단 + 최종보고 직전 잔여 pending 스캔(DRV-1).
+- **예산 안전장치 실효화** — per-worker `maxBudgetUsd`를 동시 in-flight 수로 분할 — 동시 K 워커의 K×BUDGET 폭주 차단, 마지막 워커는 잔여 전액(DRV-3).
+- **관측 복구** — `pact status --watch`의 done/escalation 카운터가 종료 전까지 0 고착이던 것을 라이브 카운터로(DX-2). escalate 워커의 status.json을 드라이버 권위 데이터로 합성(자기보고 보존)해 metrics "비용0/failed" 오집계 수리(IMP-2).
+- **effective_parallelism 실측** — 파이프라인 dispatch/settle 타이밍을 `.pact/driver-events.jsonl`로 영속, `pact metrics`가 유효 병렬폭·actual_width를 measured로 산출(이벤트 부재 시 기존 출력 불변)(IMP-1).
+- **인터랙티브 재개 체인 복구** — parallel.md의 허구 재개 안내(`/pact:resume`의 state/batch 픽업)를 `/pact:parallel` 멱등 재개로 교정(CMD-1), collect `--commit-status` 대칭화 + 단계 7.5 bookkeeping 커밋으로 다음 batch preflight 통과(CMD-2), report.md 수기 지시 잔재 제거(AP-1/AP-3).
+- **`pact next` 크래시 수리** — `current_batch.json` 1차 read + `batch.json` 폴백의 실제 포맷 파싱(CLI-NEXT-1/BATCHFILE-2), multi-session 게이트 파일명 통일(CMD-3).
+- **codex 어댑터 결정적 캡처** — stdout 정규식 스크레이핑 → `--output-last-message` 파일 캡처(실패 시 폴백)(XREV-CODEX-3).
+- **context_budget_tokens 활성화** — 번들 총량 추정이 예산 초과 시 `over_budget` 경고(anchor 우회 커버, propose-only)(IMP-3).
+- 문서: drive `--help` 슬롯 의미 정정+`--no-pipeline` 노출(DX-5), escalation에 `/pact:takeover` 병기(DX-3), prepare 실패를 actionable fix로 노출(DX-1), `worker_concurrency` 죽은 노브 제거(DX-4), MODULE_OWNERSHIP 가드 주체 정정(AP-6).
 
 ## 0.9.0 — 2026-06-18
 
