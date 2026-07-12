@@ -254,7 +254,7 @@ echo '{"version": 1, "current_cycle": 0, "active_workers": []}' > .pact/state.js
 기본 설정 (CLAUDE.md에서 확인·수정 가능):
 - yolo_mode: false
 - cross_review.adapter: null
-- worker_concurrency: default 3 / max 5
+- 병렬 폭(동시 워커 수): pact run-cycle prepare --max=N / pact drive --max=N (기본·상한 5)
 
 다음 단계:
   /pact:plan "첫 작업 한 줄 설명"

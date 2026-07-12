@@ -1,8 +1,10 @@
 # 모듈 권한 경계 — <project-name>
 
 > architect가 `/pact:contracts`에서 생성·갱신.
-> 각 task의 `allowed_paths`가 여기 정의된 모듈 안에 들어가야 함 (검증 강제).
-> `pre-tool-guard` hook이 워커의 파일 수정 차단에 사용.
+> architect가 각 task의 `allowed_paths` 경계를 정하는 소스. `allowed_paths ⊆ 모듈` 준수는
+> `pact scopecheck` / prepare의 `ownership_warnings`로 propose-only 표면화 (경고만, 차단 X — 철학5).
+> `pre-tool-guard` hook은 이 파일로 **메인 에이전트**의 모듈 밖 쓰기를 차단.
+> **워커**는 task의 `allowed_paths`로 가드됨 (ownership 검사 스킵 — MODULE_OWNERSHIP은 payload 부재 시에만 워커 fallback).
 
 ---
 

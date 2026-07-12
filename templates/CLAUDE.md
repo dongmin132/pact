@@ -34,10 +34,8 @@ cross_review:
 # 교육 모드 — 워커가 코드 짜며 docs/learning/ 노트도 생성
 educational_mode: false  # 매 /pact:plan 시점에 다시 묻지만, 기본값 박을 수 있음
 
-# 워커 동시 한도
-worker_concurrency:
-  default: 3
-  max: 5
+# 워커 동시 한도(병렬 폭)는 설정 파일이 아니라 CLI로 제어:
+#   pact run-cycle prepare --max=N  /  pact drive --max=N   (기본·상한 5)
 
 # /pact:verify가 실행할 명령 (4축 검증 중 Code 축)
 verify_commands:
