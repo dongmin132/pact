@@ -153,9 +153,26 @@ test('doc-lint: parallel.md 는 collect-one·admit 슬롯 파이프라인을 쓴
   assert.match(md, /run-cycle collect-one/, '완료마다 단건 게이트 머지(collect-one)를 써야 함');
   assert.match(md, /run-cycle admit/, '슬롯이 비면 다음 task 온디맨드 투입(admit)을 써야 함');
   assert.match(md, /--graph/, 'prepare --graph 로 전체 DAG(다음 투입 후보)를 확보해야 함');
+
+  // 배리어 회귀 차단(강화). 과거의 `/모든 워커 종료 후 collect/` 정확-문구 doesNotMatch 는 사실상
+  // 무력(한 글자만 달라도 통과)이었다. 실질 패턴으로 두 갈래를 막는다:
+  //   (a) "전원/모든 워커가 완료/종료된 후 (배치) collect 호출" 형태의 지시 자체가 없어야 한다.
+  //       collect-one(단건)은 negative-lookahead 로 제외(그게 정상 경로).
   assert.doesNotMatch(
     md,
-    /모든 워커 종료 후 collect/,
-    '배치-배리어("모든 워커 종료 후 collect") 지시로 회귀하면 안 됨 — collect-one 이 완료마다 머지',
+    /(전원|모든 워커)[^\n]*(완료|종료)[^\n]*\bcollect\b(?!-one)/,
+    '배리어 회귀: "전원/모든 워커 완료 후 배치 collect" 지시 금지 — collect-one 이 완료마다 머지',
   );
+
+  //   (b) 배치 `run-cycle collect`(collect-one 아님)를 메인 머지 단계로 지시하지 않는지. 정당한
+  //       언급(fan-out 전 abort 정리 / "다시 부르지 않는다" 금지문 / 수동 cleanup)만 허용하고,
+  //       그 문맥 밖에서 배치 collect 가 등장하면 배리어 회귀로 간주해 실패시킨다.
+  for (const m of md.matchAll(/run-cycle collect\b(?!-one)/g)) {
+    const ctx = md.slice(Math.max(0, m.index - 160), m.index + 80);
+    const legit = /않는다|fan-out 전|abort|수동 cleanup|정리 안내/.test(ctx);
+    assert.ok(
+      legit,
+      `배치 run-cycle collect 가 정당한 문맥(정리/abort/금지문) 밖에서 지시됨 — 배리어 회귀 의심: "...${ctx.replace(/\n/g, ' ')}..."`,
+    );
+  }
 });
