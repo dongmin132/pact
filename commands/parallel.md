@@ -41,7 +41,11 @@ stdout JSON 분기:
 - `ok: false` → `stage`별 한국어 안내 후 중단 (`stage`: `preflight` / `task-parse` / `tbd` / `batch` / `worktree` / `spawn-prepare` / `cycle-busy`). 각 errors[i].fix 그대로 사용자에게 표시. `cycle-busy` 는 다른 세션(pid)이 소유 중이라는 뜻 — `error` 문구 그대로 보여주고 종료(그 세션 종료 대기 또는 `pact status`).
 - `ok: true, empty: true` → "실행 가능 task 없음. /pact:status 또는 /pact:plan." 종료.
 - `ok: true` → 단계 2.5 이후로 진행.
-- `already_prepared: true` (재개) → 크래시·`/exit` 후 재호출. `ready_to_collect: true` 면 모든 워커가 이미 done — spawn 스킵하고 **남은 task 를 collect-one 으로만** 소비(단계 4a 부터). 아니면 미완 task 를 이어서 파이프라인 진행.
+- `already_prepared: true` (재개) → 크래시·`/exit` 후 재호출. **단계 3(fan-out)을 스킵**하고, 혼합 상태(일부 done·미머지 + 일부 미완)를 오분류 없이 라우팅한다 — `current_batch` 의 각 task_id 에 대해 **먼저 `collect-one <id> --commit-status`** 를 호출해 상태를 판정한 뒤 그 결과 필드로 분기:
+  - `merged`/`already_merged` → 그 슬롯은 비었으니 **4d(admit)** 로 다음 ready task 투입.
+  - `rejected`/`failures`(미완) → **4c(resume-prompt 재투입)** 로 같은 슬롯에 이어서.
+  - `conflicted` → **4b(정지)**.
+  이 재개 경로에서는 done 워커를 절대 재spawn 하지 않는다(단계 3 fan-out 미실행). `ready_to_collect: true`(모든 워커 done)면 위 collect-one 루프가 전부 merged/already 로 끝나 자연히 4d·종료로 수렴한다.
 
 prepare가 반환한 키:
 - `task_prompts: [{task_id, title, task_prompt, status_path, working_dir, allowed_paths, ...}]` — batch0 워커들.
@@ -111,6 +115,7 @@ node ${CLAUDE_PLUGIN_ROOT}/bin/pact run-cycle collect-one <id> --commit-status
 - `already_merged: [<id>]` → 이미 머지됨(재진입) `✓ <id> (이미 머지됨)`. → 4d.
 - `conflicted: {...}` (null 아님) → **4b (정지)**.
 - `rejected: [{task_id, reason}]` 또는 `failures: [{task_id, status, blockers}]` → `⛔ <id> rejected: <reason>` → **4c (재투입/위임)**.
+- `ok: false, stage: "merge-in-progress"` → **이미 앞선 충돌(4b)로 정지 중**이라 base 에 미해결 머지(MERGE_HEAD)가 남아 collect-one 이 게이트 이전에 거부된 것. 정상적 거부다(머지 성사 아님) — 머지 재시도·admit·resume 하지 말고 `⏸ <id> 보류 (머지 정지 중)` 1줄 보고 후 worktree 보존(`.pact/worktrees/<id>`). 충돌 해결 후 재개 대상.
 
 ### 4b. conflicted — **전체 정지** (자동해결 영구 금지, 철학 3·5번)
 
@@ -119,7 +124,7 @@ node ${CLAUDE_PLUGIN_ROOT}/bin/pact run-cycle collect-one <id> --commit-status
 - 즉시 사용자에게 한국어 보고 후 이 루프 종료:
 > ⚠️ 머지 충돌 — `<id>`(파일 `<conflicted.files>`). 이후 task 투입을 멈췄습니다. 성공: `<지금까지 merged>`. 해결: `/pact:resolve-conflict` 또는 `git merge --abort`. worktree 보존: `.pact/worktrees/<id>`.
 
-이후 남은 워커가 완료되면 각각 4a 로 collect-one(머지 게이트)만 시도할 수 있으나, 새 task admit 은 하지 않는다.
+이후 남은 워커가 완료돼 4a 로 collect-one 을 호출하면, base 에 미해결 머지(MERGE_HEAD)가 남아 있어 게이트 이전에 `ok: false, stage: "merge-in-progress"` 로 **거부된다**(머지 성사 아님 — 4a 표의 해당 케이스로 보류 처리). 그 산출물은 worktree 에 보존되고 충돌 해결 후 재개한다. 새 task admit 도 하지 않는다.
 
 ### 4c. rejected/incomplete — resume-prompt 로 재투입 (직접 salvage 금지, 워커-완료 2.2)
 
@@ -130,7 +135,7 @@ node ${CLAUDE_PLUGIN_ROOT}/bin/pact resume-prompt <id> --consume
 ```
 
 stdout JSON `{continuationPrompt, resumes_remaining, escalate, resume_needed, incomplete_reason?}` 분기(**`escalate` 로만** 판정 — `resumes_remaining` 은 정보용):
-- `escalate: true` → 재개 상한(`MAX_RESUME`=2) 도달(`--consume` 이 카운트를 못 늘리고 거부됨). **재투입 X** → 단계 4.5(메인 fallback) 시도 또는 사용자 위임(아래 안내). `--consume` 이 카운트를 영속 증가시키므로 헤드리스 드라이버와 **동일하게 2회 재투입** 예산(과거 인터랙티브 1회 재투입 off-by-one 해소).
+- `escalate: true` → 재개 상한(`MAX_RESUME`=2) 도달(`--consume` 이 카운트를 못 늘리고 거부됨). **재투입 X**(슬롯은 비운 채) → 단계 4.5(메인 fallback) 시도 또는 사용자 위임(아래 안내). **위임/fallback 처리 후에도 이 슬롯은 비었으므로 4d(admit)로 흘러 다음 ready task 를 투입한다** — escalate 된 task 가 마지막 in-flight 이고 ready 큐가 남아 있어도 루프가 멈추지 않게 하는 재충전 경로다(4d 는 4a `merged` 뿐 아니라 이 경로에서도 도달). `--consume` 이 카운트를 영속 증가시키므로 헤드리스 드라이버와 **동일하게 2회 재투입** 예산(과거 인터랙티브 1회 재투입 off-by-one 해소).
 - 아니면 `continuationPrompt` 문자열을 **그대로** worker 서브에이전트 prompt 로 **같은 슬롯에 fresh 재spawn**(`subagent_type: worker`, working_dir = 그 task 의 worktree = 부분작업 보존). 이 재spawn 워커도 완료되면 다시 4a 로 들어온다. → (재투입했으므로 4d 는 스킵 — 슬롯이 이 task 로 다시 찼다.)
 
 escalate 로 위임할 때 사용자 안내:
@@ -153,17 +158,21 @@ ready 후보를 다 시도해도 지금 투입할 게 없으면(전부 path_over
 
 ### 4e. 루프 종료 조건
 
-**ready 큐 소진(보류 포함 dep 미충족만 남음이 아니라 실제 투입 후보 없음) + in-flight 0** 이면 루프 종료 → 단계 5. 보류 큐에 path_overlap 대기만 남았는데 in-flight 도 0 이면, 그 task 들은 서로 겹치지 않으므로 하나씩 admit 되어 결국 소진된다(라운드마다 최소 1개 투입 보장).
+루프는 **in-flight 가 K 미만이고 실제 투입 후보(ready 큐 + dep 이 방금 충족된 task + path_overlap 보류분)가 남아 있으면 능동적으로 admit(4d)을 재개**한다 — 완료 이벤트뿐 아니라 escalate(4c)·path_overlap 보류(4d)로 슬롯이 빈 경우에도 스스로 다음 후보를 시도한다(수동 재충전, hang 방지).
+
+**실제 투입 후보가 하나도 없고(전부 dep 미충족이거나 이미 소진) in-flight 0** 이면 루프 종료 → 단계 5.
+
+보류 큐에 path_overlap 대기만 남고 in-flight 0 인 경우: in-flight 가 0 이면 admit 의 pathsOverlap 재검사에 비교할 대상이 없어 **후보 중 최소 1개는 반드시 admit 된다**. 그 task 완료가 다음 admit 을 트리거하므로, 보류 task 들이 **서로 겹치더라도** 라운드마다 한 개씩 순차 투입돼 결국 소진된다(진행 보장 — "서로 겹치지 않아서"가 아니라 "in-flight 0 → 겹칠 대상 없음 → 순차 admit").
 
 > **배치 collect 재호출 금지 (이중 머지 방지)**: `collect-one` 이 완료마다 이미 머지·상태커밋·SOT 누적을 다 했다. 루프 종료 후 `pact run-cycle collect`(배치)를 다시 부르지 **않는다** — 이미 머지된 걸 재머지하려다 오류·이중집계가 난다. `merge-result.json` 은 collect-one 이 조립해 둔 완성 SOT 다.
 
 ## 단계 4.5: 메인 fallback (ADR-053) — resume 로 안 풀리는 머지 거부
 
-4c 에서 `escalate: true` 이거나 resume 재투입이 반복 실패할 때, **reason 이 아래 4종이면** 메인이 사용자 승인 후 수동 처리하고 `pact merge <id>` 재시도 가능(추측·자동수정 X). 그 외 reason(`ownership 위반`·`verify fail`·`git diff에 allowed_paths 외 파일` 등)은 워커 spec drift/실결함이라 **메인이 임의 우회 X** → 사용자 결정.
+4c 에서 `escalate: true` 이거나 resume 재투입이 반복 실패할 때, **reason 이 아래 4종이면** 메인이 사용자 승인 후 수동 처리하고 **그 task 의 단건 게이트를 재실행**(`pact run-cycle collect-one <id> --commit-status`) 가능(추측·자동수정 X). 재머지는 반드시 이 `collect-one <id>` 로 한다 — `pact merge <id>` 는 positional id 를 파싱하지 않아(오직 `--quiet`) **배치 전체를 재머지**하고 `merge-result.json`(사이클 SOT: `single_merge`/`cycle_id`/`failures`/`verification_summary`/`decisions_to_record`)을 통째 덮어써 collect-one 이 쌓은 누적을 파괴하므로 쓰지 않는다. 그 외 reason(`ownership 위반`·`verify fail`·`git diff에 allowed_paths 외 파일` 등)은 워커 spec drift/실결함이라 **메인이 임의 우회 X** → 사용자 결정.
 
-1. **status.json 미작성** (`reason: "status.json missing"`) — worktree(`.pact/worktrees/<id>`) 보존. `git status`로 산출물 확인 → 있으면 메인이 status.json 작성(verify_results 는 실측 가능한 것만, 나머지 `skip`) 후 재머지, 없으면 `/pact:resume <id>` 안내. **report.md 는 수기 작성 X**(merge/collect 시 report-gen 이 status.json 에서 결정 렌더).
-2. **commit 미작성 + worktree 변경 존재** — worktree 안에서 메인이 직접 commit(`pact: salvage <id> (worker incomplete)`) 후 재머지.
-3. **decisions schema 위반** — 메인이 schema 정합 형태로 정규화 후 status.json 덮어쓰기(위반 원본은 `.pact/runs/<id>/decisions.raw.json` 보존) 후 재머지.
+1. **status.json 미작성** (`reason: "status.json missing"`) — worktree(`.pact/worktrees/<id>`) 보존. `git status`로 산출물 확인 → 있으면 메인이 status.json 작성(verify_results 는 실측 가능한 것만, 나머지 `skip`) 후 `collect-one <id>` 재실행, 없으면 `/pact:resume <id>` 안내. **report.md 는 수기 작성 X**(collect 시 report-gen 이 status.json 에서 결정 렌더).
+2. **commit 미작성 + worktree 변경 존재** — worktree 안에서 메인이 직접 commit(`pact: salvage <id> (worker incomplete)`) 후 `collect-one <id>` 재실행.
+3. **decisions schema 위반** — 메인이 schema 정합 형태로 정규화 후 status.json 덮어쓰기(위반 원본은 `.pact/runs/<id>/decisions.raw.json` 보존) 후 `collect-one <id>` 재실행.
 4. **회로 차단기**: 같은 task 2회 fallback 실패 시 사용자 위임(`/pact:abort <id>` 안내).
 
 ## 단계 5: PROGRESS/DECISIONS 갱신 (통합)
