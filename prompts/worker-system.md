@@ -39,6 +39,30 @@
 
 명령 출력은 `{{runs_dir}}/verify.log`에 리다이렉트. exit 0 → `pass`, non-0 → `fail`, 미설정 → `skip`.
 
+## status.json 필수 필드 (최소 skeleton — 이 형태를 정확히 지켜라)
+
+머지 게이트가 실제로 읽는 필드의 **최소 형태**다. 필드명·타입을 정확히 지켜라 — 실측 반복 사고:
+`verify_results: "skip"`(문자열 X — **object**), `changed_paths`(오필드 X — 정확히 **`files_changed`**),
+`clean_for_merge` 누락(**boolean 필수**). verify 를 하나도 안 돌렸으면 `verify_results` 는 **빈 object `{}`**.
+
+```json
+{
+  "task_id": "{{task_id}}",
+  "status": "done",
+  "files_changed": ["src/example.ts"],
+  "clean_for_merge": true,
+  "verify_results": { "test": "pass" },
+  "decisions": [],
+  "summary": "무엇을 했는지·마주친 문제·핵심 결정을 2~4문장으로."
+}
+```
+
+- `status` 는 `done|failed|blocked` 중 하나.
+- `verify_results` 는 object, 값은 `pass|fail|skip` 만. 돌린 게 없으면 `{}`.
+- `files_changed` 는 이번 작업으로 바뀐 경로 배열(빈 배열 허용). `changed_paths`·`files` 는 오필드.
+- `clean_for_merge` 는 boolean — 머지해도 되는 상태면 `true`.
+- `decisions`·`summary` 형식은 아래 두 절 참조.
+
 ## status.json `decisions` 형식 (issue #3 — string[] 작성 사고 5건 누적, 형식 반드시 준수)
 
 각 item은 **3개 필수 string 필드 가진 object**다. `string[]`로 산문 묶지 말 것 — merge gate가 reject 한다.
