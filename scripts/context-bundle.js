@@ -86,6 +86,10 @@ function readContextRef(ref, opts = {}) {
 // anchor·task_id 매칭 없이 통째 번들되는 shard 의 bloat 경고 임계 (줄). 인라인 경고와 동일 상수.
 const NO_ANCHOR_WARN_LINES = 200;
 
+// IMP-3: 번들 총량 예산 기본값. payload.context_budget_tokens 미지정 시 이 값과 비교.
+// (run-cycle.js 도 payload 주입 시 동일 기본값 20000 을 씀 — 정합.)
+const DEFAULT_CONTEXT_BUDGET_TOKENS = 20000;
+
 // content 문자열 + bundle_warnings 를 함께 계산한다.
 // renderContextBundle(문자열만) 과 writeContextBundle({path,content,bundle_warnings}) 가 공유 — DRY.
 function buildContextBundle(payload, opts = {}) {
@@ -119,6 +123,9 @@ function buildContextBundle(payload, opts = {}) {
   // canonical 로 이미 열거하므로(prompt.md {{context_refs}} 도 함께 제거) 3중 중복을 1중으로.
   out.push('## Slices');
   out.push('');
+  // IMP-3: 앵커/auto_sliced 콘텐츠는 per-ref 200줄 경고(NO_ANCHOR_WARN_LINES)를 우회하므로,
+  // 앵커 유무 무관하게 모든 slice content 문자를 누적해 번들 총량 예산 게이트를 건다.
+  let totalContentChars = 0;
   for (const ref of refs) {
     const r = readContextRef(ref, { ...opts, taskId: payload.task_id });
     out.push(`### ${ref}`);
@@ -128,6 +135,7 @@ function buildContextBundle(payload, opts = {}) {
       out.push('');
       continue;
     }
+    totalContentChars += r.content.length;
     if (r.auto_sliced) {
       out.push(`> (pact: anchor 없음 → task_id \`${r.anchor}\` 섹션만 자동 슬라이스. 전체는 \`pact slice\` 로.)`);
       out.push('');
@@ -140,6 +148,14 @@ function buildContextBundle(payload, opts = {}) {
     }
     out.push(r.content);
     out.push('');
+  }
+
+  // IMP-3: 죽은 노브였던 context_budget_tokens 를 실제 게이트 임계로 배선.
+  // 총 slice content 추정 토큰(≈문자수/4)이 예산 초과면 propose-only 경고(자르지 않음, 철학5).
+  const budget = payload.context_budget_tokens || DEFAULT_CONTEXT_BUDGET_TOKENS;
+  const est_tokens = Math.ceil(totalContentChars / 4);
+  if (est_tokens > budget) {
+    bundle_warnings.push({ reason: 'over_budget', est_tokens, budget });
   }
 
   return { content: out.join('\n').trimEnd() + '\n', bundle_warnings };
