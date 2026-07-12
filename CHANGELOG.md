@@ -14,7 +14,8 @@
 - **재발버그 계약 테스트** (TST-1) — `runWorkerReal`의 SDK query를 주입식으로 만들고 스크립트된 가짜 async-generator로 zombie·spent_usd 0·SIGINT 고착 3종을 고정. 훅 스모크 백필.
 
 ### Changed
-- **인터랙티브 `/pact:parallel` 이벤트 루프 슬롯 파이프라인화** — 사이클-배리어("모든 워커 종료 후 배치 collect")를 폐기하고, 워커를 백그라운드 spawn 후 **완료마다 `collect-one`(단건 게이트 머지) → 슬롯이 비면 `admit`(다음 ready task 온디맨드 투입)** 하는 이벤트 루프로 재작성. `prepare --graph` 로 DAG 확보. wall-time 이 헤드리스 `pact drive` 와 대등하면서 사람이 루프 안에서 매 완료·충돌·escalation 을 관찰·개입(신뢰성). "판단은 CLI, 릴레이는 LLM" 명문화. CC <v2.1.198 은 동일 지시가 배리어로 우아하게 강등.
+- **인터랙티브 `/pact:parallel` 이벤트 루프 슬롯 파이프라인화** — 사이클-배리어("모든 워커 종료 후 배치 collect")를 폐기하고, 워커를 백그라운드 spawn 후 **완료마다 `collect-one`(단건 게이트 머지) → 슬롯이 비면 `admit`(다음 ready task 온디맨드 투입)** 하는 이벤트 루프로 재작성. `prepare --graph` 로 DAG 확보. wall-time 이 헤드리스 `pact drive` 와 대등하면서 사람이 루프 안에서 매 완료·충돌·escalation 을 관찰·개입(신뢰성). "판단은 CLI, 릴레이는 LLM" 명문화. CC <v2.1.198 은 동일 지시가 배리어로 우아하게 강등. **실워커 dogfood e2e 완주**(3 task + 재투입 3회 + admit 파이프라이닝 + 게이트 거부/회복 + coordinator/bookkeeping — 거짓 머지 0).
+- **dogfood 발견 수리 4건** — merge-result 사이클 내 stale rejected 화해(머지 성공 task가 Blocked 로 오기록되던 SOT 오염, DOG-1) · 워커 status.json 필수 필드 skeleton 예시 + 스키마 drift 방지 테스트(실워커 2/3 이 verify_results/clean_for_merge/files_changed 형태 실수, DOG-2) · resume 연속 프롬프트에 머지 거부 사유 주입(재투입 워커가 뭘 고칠지 즉시 인지 — 드라이버 공용 코어, DOG-3) · parallel.md 슬롯 회계 보강(재투입 대기 포함 K 초과 방지, DOG-4).
 - **헤드리스 드라이버 승격** — `experiments/headless-driver/` → `scripts/headless-driver/`(production). 순수 실험물(`measure-concurrency`·`trace-worker`·`fixture-setup`)만 `experiments/`에 잔류.
 - **레이어 정리** — `planMerge`(→`scripts/merge-coordinator.js`)·`collectLongDocs`(→`scripts/context-guard.js`)를 코어로 co-locate. `bin/cmds/*.js`는 `../../scripts`만 import하도록 `test/layer-lint.test.js`가 정적 강제(형제 bin/cmds import 차단).
 - **pre-spawn coordinator 검토 제거** — MODULE_OWNERSHIP 교차검토를 결정적 게이트로 승계. `coordinator_review_needed`는 deprecated(항상 false).
