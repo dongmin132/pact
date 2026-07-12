@@ -10,7 +10,8 @@
 // 5. Task tool에 넘길 compact prompt + 보고 경로 반환
 //
 // **메인 Claude는 CLI stdout의 task_prompt만 Task tool 호출 시 prompt 인자로 사용한다.**
-// 워커는 자기 시스템 프롬프트의 지시대로 종료 직전 status.json + report.md 작성.
+// 워커는 자기 시스템 프롬프트의 지시대로 종료 직전 status.json 만 작성한다
+// (report.md 는 수기 X — collect/merge 의 report-gen 이 status.json 에서 결정적 렌더).
 
 const fs = require('fs');
 const path = require('path');
@@ -126,7 +127,7 @@ function makeTaskPrompt(payload, paths) {
     `1. Read ${paths.prompt_path}.`,
     `2. Read ${paths.context_path}.`,
     `3. Work only inside ${payload.working_dir}.`,
-    `4. Write final status to ${paths.status_path} and report to ${paths.report_path}.`,
+    `4. Write final status to ${paths.status_path} (report.md is rendered by pact report-gen — do NOT hand-write it).`,
     '',
     'Do not read full legacy SOT documents unless prompt.md explicitly names a needed section.',
     // TOK-1: caller 반환(최종 메시지)은 1~2줄 구조화 요약만. 서술은 status.json/report.md 에.
