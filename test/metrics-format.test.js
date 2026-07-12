@@ -75,3 +75,36 @@ test('formatJson: 파싱 가능 + generated_at 유지', () => {
   const parsed = JSON.parse(formatJson(card));
   assert.equal(parsed.generated_at, '2026-06-23T00:00:00Z');
 });
+
+// ── IMP-1: driver-events 로 유효 병렬폭 measured 승격 ────────────
+test('buildScorecard: driverEvents 있으면 effective/actual_width measured 승격', () => {
+  const c = sampleCollected();
+  c.driverEvents = [
+    { ts: 0, type: 'dispatch', task_id: 'A' },
+    { ts: 0, type: 'dispatch', task_id: 'B' },
+    { ts: 100, type: 'settle', task_id: 'A', status: 'done' },
+    { ts: 100, type: 'settle', task_id: 'B', status: 'done' },
+  ];
+  const card = buildScorecard(c, { generatedAt: '2026-06-23T00:00:00Z' });
+  assert.equal(card.parallelism.effective, 2, '완전 겹침 2개 = 2.0');
+  assert.equal(card.parallelism.actual_width, 2);
+  assert.equal(card.confidence.effective_parallelism, 'measured');
+  assert.equal(card.confidence.actual_width, 'measured');
+  assert.ok(!card.deferred_to_event_emission.includes('effective_parallelism'), 'deferred 에서 제거');
+  assert.ok(!card.deferred_to_event_emission.includes('actual_width'));
+  assert.ok(card.deferred_to_event_emission.includes('time_attribution'), '나머지는 여전히 deferred');
+  const human = formatHuman(card);
+  assert.match(human, /유효 병렬폭\(실측\)/);
+  assert.match(human, /measured/);
+});
+
+test('buildScorecard: driverEvents 부재 → 기존 출력 100% 불변(하위호환)', () => {
+  const card = buildScorecard(sampleCollected(), { generatedAt: '2026-06-23T00:00:00Z' });
+  assert.equal(card.parallelism.effective, undefined, '측정 필드 미추가');
+  assert.equal(card.parallelism.actual_width, undefined);
+  assert.equal(card.confidence.effective_parallelism, undefined);
+  assert.ok(card.deferred_to_event_emission.includes('effective_parallelism'), '여전히 deferred');
+  assert.ok(card.deferred_to_event_emission.includes('actual_width'));
+  const human = formatHuman(card);
+  assert.doesNotMatch(human, /유효 병렬폭\(실측\)/);
+});

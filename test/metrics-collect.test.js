@@ -9,7 +9,7 @@ const path = require('path');
 const os = require('os');
 const { execFileSync } = require('child_process');
 
-const { readRuns, readMergeResults, readTasks, computeCalendar, collectAll } = require('../scripts/metrics/collect.js');
+const { readRuns, readMergeResults, readTasks, computeCalendar, collectAll, readDriverEvents } = require('../scripts/metrics/collect.js');
 const { git, READONLY } = require('../scripts/metrics/git-ro.js');
 
 function tmp() { return fs.mkdtempSync(path.join(os.tmpdir(), 'pact-metrics-')); }
@@ -59,6 +59,30 @@ test('readTasks: tasks/*.md frontmatter 에서 allowed_paths 파싱', () => {
   const { byId } = readTasks(d);
   assert.ok(byId['FOO-1'], 'FOO-1 파싱됨');
   assert.deepEqual(byId['FOO-1'].allowed_paths, ['src/foo/**']);
+});
+
+// ── readDriverEvents (IMP-1) ────────────────────────────────────
+test('readDriverEvents: JSONL 파싱 · 깨진/빈 줄 무시 · 부재 → []', () => {
+  const d = tmp();
+  write(path.join(d, '.pact/driver-events.jsonl'), [
+    JSON.stringify({ ts: '2026-01-01T00:00:00Z', type: 'cycle', cycle: 1, cycle_id: 'c1' }),
+    JSON.stringify({ ts: '2026-01-01T00:00:00.000Z', type: 'dispatch', task_id: 'A' }),
+    'not-json-garbage',
+    JSON.stringify({ ts: '2026-01-01T00:00:00.100Z', type: 'settle', task_id: 'A', status: 'done' }),
+    '',
+  ].join('\n'));
+  const evs = readDriverEvents(path.join(d, '.pact'));
+  assert.equal(evs.length, 3, '깨진 줄·빈 줄 제외한 3개');
+  assert.equal(evs[1].type, 'dispatch');
+  assert.equal(evs[2].status, 'done');
+  assert.equal(readDriverEvents(path.join(tmp(), '.pact')).length, 0, '파일 부재 → []');
+});
+
+test('collectAll: driverEvents 포함(부재 시 빈 배열)', () => {
+  const d = tmp();
+  const c = collectAll(d);
+  assert.ok(Array.isArray(c.driverEvents), 'driverEvents 필드 존재');
+  assert.equal(c.driverEvents.length, 0);
 });
 
 // ── computeCalendar ─────────────────────────────────────────────

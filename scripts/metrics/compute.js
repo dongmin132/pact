@@ -129,6 +129,59 @@ function totalCost(runs = []) {
   return runs.reduce((sum, r) => sum + (Number(r.tokens_used) || 0), 0);
 }
 
+// ── (IMP-1) 파이프라인 타이밍: 유효 병렬폭 + 실측 동시폭 ──────────
+// driver-events.jsonl 의 dispatch/settle 이벤트로 task별 in-flight 구간 [dispatch, settle]
+// 를 복원해 두 실측 지표를 낸다 — 지금까지 "실측 duration 소스 부재"로 deferred 였던 것:
+//   effective_parallelism = Σ(task_span) / wall_span   (완전 겹침 2개 = 2.0 = makespan 압축배)
+//   actual_width          = 시간축 동시 in-flight 최대 (구간 스윕)
+// ts 는 epoch ms(number, pool.mjs) 또는 ISO(string, driver append) 둘 다 허용.
+// requeue 는 admit 레이스로 재큐된 것 → 직전 dispatch 를 폐기(실제 실행 구간만 계상).
+// 이벤트가 없으면(레거시 배리어 런·이벤트 파일 부재) null 반환 → format 이 기존 출력을 100%
+// 유지한다(하위호환). 순수함수 — IO 없음.
+function pipelineTiming(events = []) {
+  const toMs = (t) => (typeof t === 'number' ? t : Date.parse(t));
+  const dispatched = new Map(); // task_id -> 최근 dispatch ms
+  const intervals = [];         // [start, end]
+  for (const e of events) {
+    if (!e || !e.type) continue;
+    const ms = toMs(e.ts);
+    if (!Number.isFinite(ms)) continue;
+    if (e.type === 'dispatch') dispatched.set(e.task_id, ms);
+    else if (e.type === 'requeue') dispatched.delete(e.task_id); // 재큐 = 미실행 → 폐기
+    else if (e.type === 'settle') {
+      const start = dispatched.get(e.task_id);
+      if (start != null) { intervals.push([start, ms]); dispatched.delete(e.task_id); }
+    }
+  }
+  if (!intervals.length) return null;
+
+  let busy = 0, minStart = Infinity, maxEnd = -Infinity;
+  for (const [s, en] of intervals) {
+    busy += Math.max(0, en - s);
+    if (s < minStart) minStart = s;
+    if (en > maxEnd) maxEnd = en;
+  }
+  const wall = maxEnd - minStart;
+  if (wall <= 0) { // 모든 구간이 사실상 동시각(0폭) — 스윕 대신 겹침수로 직접 산출.
+    return { tasks: intervals.length, effective_parallelism: intervals.length, actual_width: intervals.length, wall_ms: 0, busy_ms: busy };
+  }
+  // actual_width: 구간 시작 +1, 끝 -1 스윕. 동일 ts 는 끝(-1)을 시작(+1)보다 먼저 처리해
+  // 인접(end==start) 구간이 겹침으로 세지지 않게 한다.
+  const pts = [];
+  for (const [s, en] of intervals) { pts.push([s, 1]); pts.push([en, -1]); }
+  pts.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  let cur = 0, actualWidth = 0;
+  for (const [, d] of pts) { cur += d; if (cur > actualWidth) actualWidth = cur; }
+
+  return {
+    tasks: intervals.length,
+    effective_parallelism: busy / wall,
+    actual_width: actualWidth,
+    wall_ms: wall,
+    busy_ms: busy,
+  };
+}
+
 module.exports = {
   computeOutcomes,
   scopeDrift,
@@ -136,4 +189,5 @@ module.exports = {
   idealWavesAndTax,
   mergeStats,
   totalCost,
+  pipelineTiming,
 };

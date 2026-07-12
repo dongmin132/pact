@@ -63,6 +63,23 @@ function readTasks(projectDir) {
   return { tasks, byId };
 }
 
+// .pact/driver-events.jsonl → 파이프라인 dispatch/settle 타이밍 이벤트 배열(JSONL).
+// (IMP-1) compute.pipelineTiming 의 유일 소스. 파일 부재 = [] → 지표 미표시(하위호환:
+// 레거시 배리어 런·이벤트 emit 이전 프로젝트는 이벤트가 없어 기존 출력 100% 유지).
+// 깨진 줄·빈 줄은 조용히 건너뛴다(best-effort read-only).
+function readDriverEvents(pactDir) {
+  const p = path.join(pactDir, 'driver-events.jsonl');
+  if (!fs.existsSync(p)) return [];
+  let raw;
+  try { raw = fs.readFileSync(p, 'utf8'); } catch { return []; }
+  const out = [];
+  for (const line of raw.split('\n')) {
+    if (!line.trim()) continue;
+    try { out.push(JSON.parse(line)); } catch { /* 깨진 줄 무시 */ }
+  }
+  return out;
+}
+
 function readVerifyLogs(pactDir) {
   if (!fs.existsSync(pactDir)) return [];
   return fs.readdirSync(pactDir)
@@ -146,6 +163,7 @@ function collectAll(projectDir) {
     mergeResults: readMergeResults(pactDir),
     gitMerges: countMergesFromGit(projectDir),
     verifyLogs: readVerifyLogs(pactDir),
+    driverEvents: readDriverEvents(pactDir),
     salvageTouches: detectSalvage(projectDir, runs),
     calendar: computeCalendar(runs),
   };
@@ -158,6 +176,7 @@ module.exports = {
   countMergesFromGit,
   readTasks,
   readVerifyLogs,
+  readDriverEvents,
   detectSalvage,
   computeCalendar,
 };

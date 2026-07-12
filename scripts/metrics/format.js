@@ -8,7 +8,7 @@
 const path = require('path');
 const {
   computeOutcomes, scopeDrift, couplingChokepoints,
-  idealWavesAndTax, mergeStats, totalCost,
+  idealWavesAndTax, mergeStats, totalCost, pipelineTiming,
 } = require('./compute.js');
 
 const r2 = (x) => Math.round(x * 100) / 100;
@@ -30,7 +30,7 @@ function buildScorecard(c, opt = {}) {
   const o = computeOutcomes(c.runs, c.salvageTouches);
   const merge = mergeFrom(c);
   const waves = idealWavesAndTax(c.tasks);
-  return {
+  const card = {
     project: path.basename(c.projectDir || '.'),
     generated_at: opt.generatedAt || new Date().toISOString(),
     range: {
@@ -59,6 +59,20 @@ function buildScorecard(c, opt = {}) {
     confidence: { salvage: 'heuristic', scope_drift: 'reliable', parallelism_ideal: 'reliable', coupling: 'reliable' },
     deferred_to_event_emission: ['time_attribution', 'effective_parallelism', 'actual_width', 'verify_qa_tail'],
   };
+
+  // (IMP-1) driver-events.jsonl 이 있으면 유효 병렬폭·실측 동시폭을 deferred → measured 로 승격.
+  // 이벤트 부재 시엔 timing=null → card 를 그대로 반환해 기존 출력을 100% 유지(하위호환).
+  const timing = pipelineTiming(c.driverEvents || []);
+  if (timing) {
+    card.parallelism.effective = r2(timing.effective_parallelism); // makespan 압축배(Σspan/wall)
+    card.parallelism.actual_width = timing.actual_width;           // 시간축 동시 in-flight 최대
+    card.parallelism.wall_seconds = r2(timing.wall_ms / 1000);
+    card.confidence.effective_parallelism = 'measured';
+    card.confidence.actual_width = 'measured';
+    card.deferred_to_event_emission = card.deferred_to_event_emission
+      .filter((x) => x !== 'effective_parallelism' && x !== 'actual_width');
+  }
+  return card;
 }
 
 function formatJson(card) {
@@ -82,6 +96,8 @@ function formatHuman(card) {
   const p = card.parallelism;
   L.push('⚡  병렬성 (이상치 — 계획상)                                    ✅');
   L.push(`   ideal waves ${p.ideal_waves} · width 평균 ${p.width_avg}/최대 ${p.width_max} · 직렬화세금 ${p.serialization_tax}쌍`);
+  // (IMP-1) 이벤트 실측이 있을 때만 measured 라인 추가 — 부재 시 기존 출력 불변.
+  if (p.effective != null) L.push(`   유효 병렬폭(실측) ${p.effective}× · 실측 동시폭 ${p.actual_width} · wall ${p.wall_seconds}s   📊 measured`);
   L.push('');
 
   L.push('🔗  커플링 병목 (공유 top)                                      ✅');

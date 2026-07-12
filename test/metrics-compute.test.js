@@ -12,6 +12,7 @@ const {
   idealWavesAndTax,
   mergeStats,
   totalCost,
+  pipelineTiming,
 } = require('../scripts/metrics/compute.js');
 
 // ── computeOutcomes ─────────────────────────────────────────────
@@ -116,4 +117,70 @@ test('totalCost: tokens_used 합 (없으면 0)', () => {
     { task_id: 'C' },
   ];
   assert.equal(totalCost(runs), 1500);
+});
+
+// ── pipelineTiming (IMP-1) ──────────────────────────────────────
+test('pipelineTiming: 완전 겹침 2개 → effective 2.0, actual_width 2', () => {
+  const events = [
+    { ts: 0, type: 'dispatch', task_id: 'A' },
+    { ts: 0, type: 'dispatch', task_id: 'B' },
+    { ts: 100, type: 'settle', task_id: 'A', status: 'done' },
+    { ts: 100, type: 'settle', task_id: 'B', status: 'done' },
+  ];
+  const t = pipelineTiming(events);
+  assert.equal(t.effective_parallelism, 2, 'Σspan(200)/wall(100)=2.0');
+  assert.equal(t.actual_width, 2, '시간축 동시 in-flight 최대 2');
+  assert.equal(t.wall_ms, 100);
+  assert.equal(t.busy_ms, 200);
+});
+
+test('pipelineTiming: 순차(무겹침) → effective 1.0, actual_width 1', () => {
+  const events = [
+    { ts: 0, type: 'dispatch', task_id: 'A' },
+    { ts: 50, type: 'settle', task_id: 'A', status: 'done' },
+    { ts: 50, type: 'dispatch', task_id: 'B' }, // A 끝난 그 순간 시작(인접) — 겹침 아님
+    { ts: 100, type: 'settle', task_id: 'B', status: 'done' },
+  ];
+  const t = pipelineTiming(events);
+  assert.equal(t.effective_parallelism, 1);
+  assert.equal(t.actual_width, 1, '인접(end==start)은 동시로 세지 않음');
+});
+
+test('pipelineTiming: 부분 겹침 → Σspan/wall, actual_width 반영', () => {
+  const events = [
+    { ts: 0, type: 'dispatch', task_id: 'A' },
+    { ts: 50, type: 'dispatch', task_id: 'B' },
+    { ts: 100, type: 'settle', task_id: 'A', status: 'done' },
+    { ts: 150, type: 'settle', task_id: 'B', status: 'done' },
+  ];
+  const t = pipelineTiming(events); // span A=100, B=100 → 200/150
+  assert.equal(Math.round(t.effective_parallelism * 100) / 100, 1.33);
+  assert.equal(t.actual_width, 2, '[50,100] 구간 겹침');
+});
+
+test('pipelineTiming: ISO 문자열 ts 도 파싱', () => {
+  const events = [
+    { ts: '2026-05-01T00:00:00.000Z', type: 'dispatch', task_id: 'A' },
+    { ts: '2026-05-01T00:00:00.100Z', type: 'settle', task_id: 'A', status: 'done' },
+  ];
+  const t = pipelineTiming(events);
+  assert.equal(t.wall_ms, 100);
+  assert.equal(t.actual_width, 1);
+});
+
+test('pipelineTiming: requeue 는 직전 dispatch 폐기(실제 실행 구간만)', () => {
+  const events = [
+    { ts: 0, type: 'dispatch', task_id: 'A' },
+    { ts: 5, type: 'requeue', task_id: 'A' },   // admit 레이스 재큐 → [0,5] 은 미실행
+    { ts: 10, type: 'dispatch', task_id: 'A' },
+    { ts: 60, type: 'settle', task_id: 'A', status: 'done' },
+  ];
+  const t = pipelineTiming(events);
+  assert.equal(t.busy_ms, 50, '[10,60] 만 계상');
+  assert.equal(t.wall_ms, 50);
+});
+
+test('pipelineTiming: 이벤트 없거나 마커만 → null (하위호환)', () => {
+  assert.equal(pipelineTiming([]), null);
+  assert.equal(pipelineTiming([{ ts: 0, type: 'cycle', cycle: 1, cycle_id: 'x' }]), null, 'cycle 마커만은 구간 0');
 });
