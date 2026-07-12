@@ -9,6 +9,9 @@
 // 테스트 가능하도록 runner 주입 패턴.
 
 const { spawnSync } = require('child_process');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
 
 const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000;
 
@@ -40,25 +43,46 @@ function buildReviewPrompt(input) {
   ].join('\n');
 }
 
+// 임의의 파싱 결과(any) → 정규화된 Finding[]. 배열이 아니면 null.
+function normalizeFindings(arr) {
+  if (!Array.isArray(arr)) return null;
+  return arr.filter(f => f && typeof f.file === 'string' && typeof f.message === 'string')
+    .map(f => ({
+      file: f.file,
+      line: typeof f.line === 'number' ? f.line : undefined,
+      severity: ['info', 'warn', 'error'].includes(f.severity) ? f.severity : 'info',
+      message: f.message,
+      confidence: typeof f.confidence === 'number' ? f.confidence : undefined,
+    }));
+}
+
 function parseFindings(stdout) {
   if (!stdout) return [];
-  // JSON 배열을 찾아 추출 (codex 출력에 다른 텍스트 섞일 수 있음)
+  // JSON 배열을 찾아 추출 (codex 사람용 stdout 에 다른 텍스트 섞일 수 있음 — 폴백 경로)
   const m = stdout.match(/\[\s*\{[\s\S]*?\}\s*\]|\[\s*\]/);
   if (!m) return [];
   try {
-    const arr = JSON.parse(m[0]);
-    if (!Array.isArray(arr)) return [];
-    return arr.filter(f => f && typeof f.file === 'string' && typeof f.message === 'string')
-      .map(f => ({
-        file: f.file,
-        line: typeof f.line === 'number' ? f.line : undefined,
-        severity: ['info', 'warn', 'error'].includes(f.severity) ? f.severity : 'info',
-        message: f.message,
-        confidence: typeof f.confidence === 'number' ? f.confidence : undefined,
-      }));
+    const norm = normalizeFindings(JSON.parse(m[0]));
+    return norm === null ? [] : norm;
   } catch {
     return [];
   }
+}
+
+// XREV-CODEX-3: --output-last-message 로 캡처한 '최종 assistant 메시지 파일' 파싱.
+// 파일 전체를 JSON 으로 직접 parse 우선 (중첩 배열·message 내 `}]` 리터럴에서
+// parseFindings 의 비그리디 정규식이 조기 절단하는 것을 회피). 순수 JSON 이
+// 아니면 parseFindings 정규식 스크레이핑으로 폴백. 비어있으면 null(→ stdout 폴백 신호).
+function parseCapturedMessage(captured) {
+  const trimmed = (captured || '').trim();
+  if (!trimmed) return null;
+  try {
+    const norm = normalizeFindings(JSON.parse(trimmed));
+    if (norm !== null) return norm;
+  } catch {
+    /* 순수 JSON 아님 → 아래 정규식 폴백 */
+  }
+  return parseFindings(captured);
 }
 
 function createCodexAdapter(opts = {}) {
@@ -75,17 +99,49 @@ function createCodexAdapter(opts = {}) {
 
     async call_review(input) {
       const prompt = buildReviewPrompt(input);
-      const r = runner(['exec', prompt], { timeout_ms });
-      if (!r || r.status !== 0) {
-        return [{
-          file: '(adapter)',
-          severity: 'warn',
-          message: `codex 호출 실패 또는 timeout: ${r && r.stderr ? r.stderr.trim().slice(0, 200) : 'unknown'}`,
-        }];
+      // XREV-CODEX-3: 결정적 출력 캡처.
+      // codex exec 의 최종 assistant 메시지만 --output-last-message 로 파일에 받아
+      // 그 파일을 파싱한다. 기본 stdout 에는 추론·툴호출·프롬프트 에코가 섞여
+      // 첫 `[{…}]` 매치가 가짜 finding(file:'<path>')이 될 위험이 있어 이를 구조적으로 회피.
+      // 파일 미기록/파싱 실패/mkdtemp 실패 시엔 기존 stdout 스크레이핑으로 폴백(하위호환).
+      // (2단계: --output-schema <schema.json> 로 Finding[] 스키마 강제 — 이번 스코프 밖)
+      let tmpDir = null;
+      let lastMsgFile = null;
+      try {
+        tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pact-codex-'));
+        lastMsgFile = path.join(tmpDir, 'last-message.txt');
+      } catch {
+        tmpDir = null;
+        lastMsgFile = null;
       }
-      return parseFindings(r.stdout);
+      const args = lastMsgFile
+        ? ['exec', '--output-last-message', lastMsgFile, prompt]
+        : ['exec', prompt];
+      try {
+        const r = runner(args, { timeout_ms });
+        if (!r || r.status !== 0) {
+          return [{
+            file: '(adapter)',
+            severity: 'warn',
+            message: `codex 호출 실패 또는 timeout: ${r && r.stderr ? r.stderr.trim().slice(0, 200) : 'unknown'}`,
+          }];
+        }
+        // 1차(결정적): 최종 메시지 파일이 있으면 그것만 신뢰.
+        if (lastMsgFile) {
+          let captured = null;
+          try { captured = fs.readFileSync(lastMsgFile, 'utf8'); } catch { captured = null; }
+          const parsed = parseCapturedMessage(captured);
+          if (parsed !== null) return parsed;
+        }
+        // 2차(폴백): stdout 스크레이핑 — 파일 미기록/빈 파일/mkdtemp 실패 시.
+        return parseFindings(r.stdout);
+      } finally {
+        if (tmpDir) {
+          try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* noop */ }
+        }
+      }
     },
   };
 }
 
-module.exports = { createCodexAdapter, buildReviewPrompt, parseFindings };
+module.exports = { createCodexAdapter, buildReviewPrompt, parseFindings, parseCapturedMessage, normalizeFindings };
