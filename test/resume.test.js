@@ -40,6 +40,41 @@ test('withContinuation: task_prompt 교체, 원본 불변', () => {
   assert.equal(task.task_prompt, 'ORIG', '원본 task 불변');
 });
 
+// DOG-3: 거부 사유를 continuationPrompt 에 접어 넣기 — 재투입 워커가 뭘 고칠지 알게 한다.
+// 실측: resume-prompt 출력엔 incomplete_reason 이 있는데 continuationPrompt 텍스트엔 없어
+// 메인이 수동 주입해야 했음.
+test('continuationPrompt(DOG-3): 게이트 거부 사유 있으면 [직전 거부 사유] 한 줄 접어 넣기', () => {
+  const p = continuationPrompt({ task_prompt: 'DO', working_dir: '/wt' }, 1, 'schema 위반: decisions 는 object[]');
+  assert.match(p, /직전 거부 사유/);
+  assert.match(p, /schema 위반: decisions 는 object\[\]/, '사유 원문 포함');
+  assert.match(p, /바로잡아라/);
+  assert.match(p, /DO/, '원 task 유지');
+});
+
+test('continuationPrompt(DOG-3): 머지 거부 사유는 턴소진이 아닌 게이트 거부 서사로 분기', () => {
+  const gate = continuationPrompt({ task_prompt: 'X' }, 1, 'clean_for_merge=false');
+  assert.match(gate, /게이트/, '게이트 거부 서사');
+  assert.doesNotMatch(gate, /턴\/예산 소진으로 미완 종료/, '턴소진 서사 아님');
+});
+
+test('continuationPrompt(DOG-3): 턴소진형 사유(reason 없음/timeout)는 기존 서사 유지 + 사유 줄 없음', () => {
+  const none = continuationPrompt({ task_prompt: 'X', working_dir: '/wt' }, 2);
+  assert.match(none, /RESUME 2/);
+  assert.match(none, /턴\/예산 소진/);
+  assert.doesNotMatch(none, /직전 거부 사유/);
+  // 드라이버가 넘기는 턴소진형 사유(error_max_turns/timeout)는 게이트 거부로 오분류하지 않는다(회귀 방지).
+  const turn = continuationPrompt({ task_prompt: 'X' }, 1, 'error_max_turns');
+  assert.match(turn, /턴\/예산 소진/);
+  assert.doesNotMatch(turn, /직전 거부 사유/);
+});
+
+test('withContinuation(DOG-3): reason 을 continuationPrompt 로 전달', () => {
+  const c = withContinuation({ task_id: 'T', task_prompt: 'ORIG' }, 1, 'status.json missing');
+  assert.match(c.task_prompt, /직전 거부 사유/);
+  assert.match(c.task_prompt, /status\.json missing/);
+  assert.match(c.task_prompt, /ORIG/);
+});
+
 // classifyRealResult — 실 SDK 워커 결과를 {ok, incomplete, reason}로 분류.
 // 핵심: abort/timeout 시 SDK 가 throw 아니라 subtype='error_during_execution' result 를
 // 반환하는 실제 동작(라이브 --real 로 발견) → incomplete 로 안 잡혀 resume 대신 retry 되던 버그.

@@ -141,7 +141,8 @@ module.exports = function resumePrompt(args) {
 
   // [RESUME n] 라벨: 소비했으면 방금 소비한 n(=count), 조회면 다음에 예정된 재개(count+1, cap clamp).
   const n = consume ? Math.max(1, count) : Math.min(count + 1, maxResume || count + 1);
-  const prompt = continuationPrompt(task, n);
+  // DOG-3: 거부 사유를 continuationPrompt 에 접어 넣어 재투입 워커가 뭘 고칠지 알게 한다.
+  const prompt = continuationPrompt(task, n, need.reason || null);
 
   emit({
     task_id: taskId,

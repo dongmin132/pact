@@ -470,7 +470,9 @@ async function runResumableTask(task, opts = {}) {
     if (!shouldResume(r, resume, MAX_RESUME))
       return { ...r, status: 'escalated', salvageable: true, resumes: resume, reason: `${r.reason || '턴 소진'} — fresh 워커 ${resume}회 재개 후 위임` };
     if (VERBOSE) vlog(`  [${task.task_id}] 🔁 미완 → fresh 워커 resume ${resume + 1}/${MAX_RESUME} (같은 worktree, 이어서)`);
-    cur = withContinuation(task, resume + 1);
+    // DOG-3: 직전 사유를 continuationPrompt 로 전달(같은 코어). 드라이버 사유는 전부 턴소진형이라
+    // 서사·출력은 종전과 동일 — 게이트 거부 사유가 흐를 경우에만 [직전 거부 사유] 줄이 붙는다.
+    cur = withContinuation(task, resume + 1, r.reason || null);
   }
 }
 

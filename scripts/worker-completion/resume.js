@@ -30,22 +30,42 @@ function classifyRealResult({ subtype, timedOut = false, aborted = false } = {})
   return { ok: false, incomplete, reason: subtype };
 }
 
+// DOG-3: 재개 사유를 두 유형으로 구분한다.
+//  - 턴/예산 소진(=고칠 것 없음, 그냥 이어서 완료): timeout/max_turns/max_budget/dirty 등.
+//  - 게이트·검증 거부(=바로잡을 사유가 있음): schema 위반·clean_for_merge=false·status.json missing 등.
+// 후자면 [직전 거부 사유] 한 줄을 접어 넣어 재투입 워커가 뭘 고칠지 알게 한다(실측: 사유가
+// continuationPrompt 에 없어 메인이 수동 주입해야 했음). 드라이버가 넘기는 사유는 전부 턴소진형
+// 이라 서사·출력이 종전과 동일(회귀 없음).
+const TURN_EXHAUSTION_RE = /timeout|max_turns|max_budget|budget|\bturn\b|소진|예산|dirty|미완/i;
+
+function isGateRejection(reason) {
+  return typeof reason === 'string' && reason.trim() !== '' && !TURN_EXHAUSTION_RE.test(reason);
+}
+
 // fresh 워커용 연속 프롬프트 — "처음부터 다시 X, 부분작업 이어서".
-function continuationPrompt(task, n) {
+// reason(선택): 직전 거부/미완 사유. 게이트 거부면 서사 분기 + [직전 거부 사유] 한 줄.
+function continuationPrompt(task, n, reason = null) {
   const orig = task.task_prompt || '';
-  return [
-    `[RESUME ${n}] 이전 워커가 턴/예산 소진으로 미완 종료했다. 부분 작업이 이 worktree(${task.working_dir || '현재'})에 그대로 보존돼 있다.`,
+  const wt = task.working_dir || '현재';
+  const gate = isGateRejection(reason);
+  const lead = gate
+    ? `[RESUME ${n}] 직전 산출물이 게이트/검증에서 거부됐다 — 턴 소진이 아니라 고쳐야 할 사유가 있다. 부분 작업은 이 worktree(${wt})에 그대로 보존돼 있다.`
+    : `[RESUME ${n}] 이전 워커가 턴/예산 소진으로 미완 종료했다. 부분 작업이 이 worktree(${wt})에 그대로 보존돼 있다.`;
+  const lines = [lead];
+  if (gate) lines.push(`[직전 거부 사유] ${reason} — 이것부터 바로잡아라.`);
+  lines.push(
     '처음부터 다시 하지 말 것. 먼저 `git status` + 변경 파일을 확인해 어디까지 됐는지 파악한 뒤,',
     '남은 done_criteria 만 이어서 마저 완료하라. allowed_paths 경계는 동일하게 지킨다.',
     '',
     '--- 원 task ---',
     orig,
-  ].join('\n');
+  );
+  return lines.join('\n');
 }
 
-// 연속 프롬프트로 교체한 task 클론 (원본 불변).
-function withContinuation(task, n) {
-  return { ...task, task_prompt: continuationPrompt(task, n), _resume: n };
+// 연속 프롬프트로 교체한 task 클론 (원본 불변). reason 은 continuationPrompt 로 전달.
+function withContinuation(task, n, reason = null) {
+  return { ...task, task_prompt: continuationPrompt(task, n, reason), _resume: n };
 }
 
 // ---- 영속 회로차단기 (STR-2 / P2-A) ----
