@@ -144,3 +144,18 @@ test('doc-lint: parallel.md 는 resume-prompt CLI 를 호출하고 인라인 연
     'fresh-resume 프롬프트 인라인 리터럴은 resume.js 단일소스로 이관됐어야 함',
   );
 });
+
+// ---- doc-lint: parallel.md 는 이벤트 루프 슬롯 파이프라인이다 (배치-배리어 아님) ----
+//   완료마다 collect-one(단건 게이트 머지) + 슬롯이 비면 admit(다음 task 온디맨드) 을 써야 하고,
+//   "모든 워커 종료 후 배치 collect" 배리어 지시로 회귀하면 안 된다(이중 머지 방지).
+test('doc-lint: parallel.md 는 collect-one·admit 슬롯 파이프라인을 쓴다 (배리어 회귀 금지)', () => {
+  const md = fs.readFileSync(path.join(__dirname, '..', 'commands', 'parallel.md'), 'utf8');
+  assert.match(md, /run-cycle collect-one/, '완료마다 단건 게이트 머지(collect-one)를 써야 함');
+  assert.match(md, /run-cycle admit/, '슬롯이 비면 다음 task 온디맨드 투입(admit)을 써야 함');
+  assert.match(md, /--graph/, 'prepare --graph 로 전체 DAG(다음 투입 후보)를 확보해야 함');
+  assert.doesNotMatch(
+    md,
+    /모든 워커 종료 후 collect/,
+    '배치-배리어("모든 워커 종료 후 collect") 지시로 회귀하면 안 됨 — collect-one 이 완료마다 머지',
+  );
+});
