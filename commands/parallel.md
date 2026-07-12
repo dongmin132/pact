@@ -138,6 +138,8 @@ stdout JSON `{continuationPrompt, resumes_remaining, escalate, resume_needed, in
 - `escalate: true` → 재개 상한(`MAX_RESUME`=2) 도달(`--consume` 이 카운트를 못 늘리고 거부됨). **재투입 X**(슬롯은 비운 채) → 단계 4.5(메인 fallback) 시도 또는 사용자 위임(아래 안내). **위임/fallback 처리 후에도 이 슬롯은 비었으므로 4d(admit)로 흘러 다음 ready task 를 투입한다** — escalate 된 task 가 마지막 in-flight 이고 ready 큐가 남아 있어도 루프가 멈추지 않게 하는 재충전 경로다(4d 는 4a `merged` 뿐 아니라 이 경로에서도 도달). `--consume` 이 카운트를 영속 증가시키므로 헤드리스 드라이버와 **동일하게 2회 재투입** 예산(과거 인터랙티브 1회 재투입 off-by-one 해소).
 - 아니면 `continuationPrompt` 문자열을 **그대로** worker 서브에이전트 prompt 로 **같은 슬롯에 fresh 재spawn**(`subagent_type: worker`, working_dir = 그 task 의 worktree = 부분작업 보존). 이 재spawn 워커도 완료되면 다시 4a 로 들어온다. → (재투입했으므로 4d 는 스킵 — 슬롯이 이 task 로 다시 찼다.)
 
+> **슬롯 회계 (K 초과 금지)**: rejected 직후 재spawn 전까지의 짧은 틈에도 그 슬롯은 **재투입 대기**로 잡아 둔다 — 아직 escalate 판정이 안 났으면 그 task 가 곧 슬롯을 되찾을 후보이므로, 그 슬롯을 4d/4e 의 새 admit 으로 채우지 않는다. 즉 **재투입 대기 task 도 슬롯 회계상 in-flight 로 계산**한다. 4a 가 `rejected` 를 낸 직후 곧바로 4e 능동 admit 으로 빈 슬롯을 메우면, 이어지는 이 재투입이 K 를 초과(K+1 워커)한다. escalate 로 재투입을 포기(슬롯 반납)한 뒤에만 그 슬롯이 새 admit 대상이 된다.
+
 escalate 로 위임할 때 사용자 안내:
 > 🚨 `<id>` 재개 상한 도달 — 사람 위임. `/pact:takeover <id>`(보존된 worktree 직접 인계) 또는 `/pact:resume <id>`(fresh 재시도).
 
@@ -158,7 +160,7 @@ ready 후보를 다 시도해도 지금 투입할 게 없으면(전부 path_over
 
 ### 4e. 루프 종료 조건
 
-루프는 **in-flight 가 K 미만이고 실제 투입 후보(ready 큐 + dep 이 방금 충족된 task + path_overlap 보류분)가 남아 있으면 능동적으로 admit(4d)을 재개**한다 — 완료 이벤트뿐 아니라 escalate(4c)·path_overlap 보류(4d)로 슬롯이 빈 경우에도 스스로 다음 후보를 시도한다(수동 재충전, hang 방지).
+루프는 **(in-flight + 재투입 대기)가 K 미만이고 실제 투입 후보(ready 큐 + dep 이 방금 충족된 task + path_overlap 보류분)가 남아 있으면 능동적으로 admit(4d)을 재개**한다 — 완료 이벤트뿐 아니라 escalate(4c)·path_overlap 보류(4d)로 슬롯이 빈 경우에도 스스로 다음 후보를 시도한다(수동 재충전, hang 방지). **재투입 대기(4c 에서 아직 escalate 안 난 rejected)는 슬롯 회계에 포함**하므로, 능동 admit 은 `(in-flight + 재투입 대기) < K` 일 때만 한다. 재투입 대기가 있으면 새 admit 보다 그쪽을 우선해 슬롯이 비는 즉시 재spawn 한다(4c) — 그래야 4c 재투입과 4e 능동 admit 이 겹쳐 K 를 초과하지 않는다.
 
 **실제 투입 후보가 하나도 없고(전부 dep 미충족이거나 이미 소진) in-flight 0** 이면 루프 종료 → 단계 5.
 
