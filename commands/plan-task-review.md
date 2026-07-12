@@ -36,7 +36,7 @@ Task tool:
 
 **리뷰는 propose-only** (철학 5번) — reviewer 서브에이전트는 ⚠️/❌ 권장사항을 prose로 낼 뿐 `tasks/*.md`를 직접 고치지 않는다 (일회용 워커가 SOT를 건드리면 안 됨). 단 "자동 반영 X"가 막는 건 **무승인 자동 적용**이지, **사용자 승인 후 적용**은 정상 흐름이다.
 
-워커는 `tasks/*.md`(task SOT)만 보고 일하므로(`pact run-cycle prepare`가 `tasks/*.md` → `.pact/batch.json` → `task_prompts`), 권장사항을 실제 작업에 넣으려면 `/pact:parallel` **전에** 반영해야 한다. 반영 주체·방법:
+워커는 `tasks/*.md`(task SOT)만 보고 일하므로(`pact run-cycle prepare`가 `tasks/*.md` → `.pact/current_batch.json` → `task_prompts`), 권장사항을 실제 작업에 넣으려면 `/pact:parallel` **전에** 반영해야 한다. 반영 주체·방법:
 
 - **작은 fix** (done_criteria 문구, context_refs/allowed_paths 한 줄 등) → **메인이 권장사항을 요약 → 사용자 승인 → 메인이 해당 task만 `pact slice --ids`로 읽고 `tasks/<domain>.md`를 직접 `Edit`.** `/pact:plan` 재호출은 불필요 (planner 재spawn = 토큰 낭비 + 멀쩡한 다른 task drift 위험).
 - **구조 변경** (task 분할, 의존성 재배치) → `/pact:plan`으로 domain shard 재분해 (planner가 schema 정합 출력 보장).

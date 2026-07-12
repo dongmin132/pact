@@ -1,6 +1,8 @@
 'use strict';
 
-// pact next — .pact/batch.json의 batches[0]에서 미점유 task 한 개 출력.
+// pact next — 현재 batch에서 미점유 task 한 개 출력.
+// SOT: .pact/current_batch.json (modern prepare/admit이 쓰는 라이브 in-flight 집합, task_ids 평탄 배열).
+// 부재 시에만 레거시 .pact/batch.json(`pact batch` 산출, batches[0]={index,task_ids})로 폴백.
 // --all: 미점유 전부, --json: JSON
 
 const fs = require('fs');
@@ -14,27 +16,49 @@ function parseArgs(args) {
   };
 }
 
+// entry가 문자열이든 {id|task_id} 객체든 task_id 문자열로 정규화.
+function normalizeEntries(entries) {
+  if (!Array.isArray(entries)) return [];
+  return entries.map(t => (typeof t === 'string' ? t : t && (t.id || t.task_id))).filter(Boolean);
+}
+
+// 현재 batch의 task_id 목록을 읽는다.
+// 1순위: current_batch.json.task_ids (평탄 문자열 배열).
+// 2순위: batch.json.batches[0].task_ids (레거시 객체 포맷; 구(舊) 배열 포맷도 방어).
+// 어느 파일도 없으면 null.
+function readCurrentTaskIds(cwd) {
+  const currentBatchPath = path.join(cwd, '.pact', 'current_batch.json');
+  if (fs.existsSync(currentBatchPath)) {
+    const cb = JSON.parse(fs.readFileSync(currentBatchPath, 'utf8'));
+    return normalizeEntries(cb.task_ids || []);
+  }
+  const batchPath = path.join(cwd, '.pact', 'batch.json');
+  if (fs.existsSync(batchPath)) {
+    const batch = JSON.parse(fs.readFileSync(batchPath, 'utf8'));
+    const first = (batch.batches && batch.batches[0]) || {};
+    // first는 {index, task_ids} 객체 (batch.js:50-53). 구 배열 포맷도 수용.
+    return normalizeEntries(Array.isArray(first) ? first : (first.task_ids || []));
+  }
+  return null;
+}
+
 module.exports = function next(args) {
   const { all, json } = parseArgs(args);
   const cwd = process.cwd();
 
-  const batchPath = path.join(cwd, '.pact', 'batch.json');
-  if (!fs.existsSync(batchPath)) {
-    if (json) process.stdout.write(JSON.stringify({ ok: false, error: 'batch.json 없음 (pact batch 또는 pact run-cycle prepare 먼저)' }) + '\n');
-    else console.error('batch.json 없음. pact batch 또는 pact run-cycle prepare 먼저.');
-    process.exit(2);
-  }
-
-  let batch;
+  let taskIds;
   try {
-    batch = JSON.parse(fs.readFileSync(batchPath, 'utf8'));
+    taskIds = readCurrentTaskIds(cwd);
   } catch (e) {
-    console.error('batch.json 파싱 실패:', e.message);
+    console.error('batch 파일 파싱 실패:', e.message);
     process.exit(2);
   }
 
-  const currentBatch = (batch.batches && batch.batches[0]) || [];
-  const taskIds = currentBatch.map(t => (typeof t === 'string' ? t : t.id || t.task_id)).filter(Boolean);
+  if (taskIds === null) {
+    if (json) process.stdout.write(JSON.stringify({ ok: false, error: 'current_batch.json 없음 (/pact:parallel 또는 pact run-cycle prepare 먼저)' }) + '\n');
+    else console.error('current_batch.json 없음. /pact:parallel 또는 pact run-cycle prepare 먼저.');
+    process.exit(2);
+  }
 
   // 살아있는 lock 잡힌 task 제외
   const heldByAlive = new Set(
