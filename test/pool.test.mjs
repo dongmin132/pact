@@ -128,6 +128,21 @@ test('pool — admit path_overlap(레이스) 는 재큐 후 성공', async () =>
   assert.ok(calls >= 2, '재큐 후 admit 재호출');
 });
 
+test('pool — dispatch/settle 이벤트에 ts 포함 (IMP-1 타이밍 소스)', async () => {
+  const h = harness({ A: { size: 1 } });
+  const evs = [];
+  const r = await runPipeline({
+    slots: 1, tasks: h.tasks, admit: h.admit, runTask: h.runTask, mergeOne: h.mergeOne,
+    onEvent: (e) => evs.push(e),
+  });
+  assert.equal(r.outcomes.length, 1);
+  const disp = evs.find((e) => e.type === 'dispatch' && e.id === 'A');
+  const settle = evs.find((e) => e.type === 'settle' && e.id === 'A');
+  assert.ok(disp && typeof disp.ts === 'number', 'dispatch 에 ts(number)');
+  assert.ok(settle && typeof settle.ts === 'number', 'settle 에 ts(number)');
+  assert.ok(settle.ts >= disp.ts, 'settle ts ≥ dispatch ts');
+});
+
 test('pool — 데모 모드(mergeOne 없음): 워커 done 이 곧 done, deps 정상 해소', async () => {
   const h = harness({ A: { size: 1 }, B: { size: 1, deps: ['A'] } }, { delays: { A: 20 } });
   const r = await runPipeline({ slots: 2, tasks: h.tasks, admit: h.admit, runTask: h.runTask, mergeOne: null });

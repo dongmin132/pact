@@ -347,7 +347,7 @@ function prepare(args, opts = {}) {
       process.exit(1);
     }
     const rebuilt = rebuildTaskPrompts(cwd);
-    emit({
+    const out = {
       ok: true,
       already_prepared: true,
       task_prompts: rebuilt.task_prompts,
@@ -356,7 +356,21 @@ function prepare(args, opts = {}) {
       message: rebuilt.ready_to_collect
         ? '이미 prepare 완료 + 모든 워커 done — collect 로 진행 권장.'
         : '이미 prepare 완료 — 미완료 task 재개 가능 (--force 로 재생성).',
-    });
+    };
+    // DRV-1: 재개(already_prepared)에서도 --graph 면 전체 DAG 를 다시 emit 해야 한다. 안 그러면
+    // 크래시-재개/부분 사이클에서 파이프라인이 current_batch 에 남은 task 만 drain 하고, 아직
+    // admit 안 된 하위 DAG(예: dep 완료 후 투입될 task)를 pull 대상으로 못 봐 조용히 누락된다
+    // (→ 기본 --cycles=1 이면 잔여 task 가 있어도 exit 0 성공 오보). fresh prepare(doPrepare)와
+    // 동일 소스: task source 를 재파싱해 buildTaskGraph. 파싱 실패해도 재개 자체는 진행(방어).
+    if (args.includes('--graph')) {
+      try {
+        const cb = readCurrentBatch(cwd) || {};
+        const batch0 = (cb.task_ids || []).map((id) => ({ id }));
+        const parsed = parseTaskFiles(discoverTaskFiles({ cwd }), { cwd });
+        out.task_graph = buildTaskGraph(parsed.tasks, batch0);
+      } catch { /* task source 재파싱 실패 시 graph 생략 — 재개는 계속 진행 */ }
+    }
+    emit(out);
     return;
   }
 

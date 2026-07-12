@@ -92,7 +92,8 @@ export async function runPipeline(cfg) {
   const inFlightIds = () => [...inFlight.keys()];
 
   async function dispatch(id) {
-    onEvent({ type: 'dispatch', id, in_flight: inFlightIds() });
+    // (IMP-1) ts 를 payload 에 실어 driver 가 driver-events.jsonl 로 영속 → makespan 재구성 소스.
+    onEvent({ type: 'dispatch', id, ts: Date.now(), in_flight: inFlightIds() });
     const admitRes = await admit(id, inFlightIds().filter((x) => x !== id));
     if (!admitRes || !admitRes.ok) {
       // path_overlap = 레이스(in-flight 가 pick 이후 변함) → 재큐. 그 외 = admit 실패(escalate).
@@ -128,13 +129,13 @@ export async function runPipeline(cfg) {
     if (res.requeue) {
       // in-flight 해소를 기다렸다 재시도 — 다음 루프의 pickDispatchable 이 재검사.
       notStarted.add(res.id);
-      onEvent({ type: 'requeue', id: res.id });
+      onEvent({ type: 'requeue', id: res.id, ts: Date.now() });
       continue;
     }
     if (res.admitFailed) {
       const o = { task_id: res.id, status: 'escalated', reason: `admit 실패: ${res.reason}` };
       outcomes.push(o);
-      onEvent({ type: 'settle', id: res.id, outcome: o, in_flight: inFlightIds() });
+      onEvent({ type: 'settle', id: res.id, ts: Date.now(), outcome: o, in_flight: inFlightIds() });
       continue;
     }
 
@@ -151,7 +152,7 @@ export async function runPipeline(cfg) {
     } else if (res.outcome && res.outcome.status === 'done') {
       done.add(res.id); // 데모(머지 없음): 워커 done 이 곧 done
     }
-    onEvent({ type: 'settle', id: res.id, outcome: res.outcome, merge: res.merge, in_flight: inFlightIds() });
+    onEvent({ type: 'settle', id: res.id, ts: Date.now(), outcome: res.outcome, merge: res.merge, in_flight: inFlightIds() });
   }
 
   return { outcomes, merges, stoppedReason, conflicted, skipped: [...notStarted] };

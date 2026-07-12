@@ -20,8 +20,10 @@ test('pact drive --help — 사용법 출력', () => {
   assert.match(r.stdout, /헤드리스/);
   assert.match(r.stdout, /--real/);
   assert.match(r.stdout, /--pact/);
-  // ORCH-2: --max 기본값 문구는 driver.mjs 실제값(5)과 일치해야 한다.
-  assert.match(r.stdout, /--max=N\s+사이클당 워커 수 \(기본 5\)/);
+  // DX-5: --max 는 '사이클당 워커 수'(오도) 가 아니라 driver.mjs 헤더와 정렬된 '동시 슬롯 수 K'.
+  assert.match(r.stdout, /--max=N\s+동시 슬롯 수 K \(기본 5\)/);
+  // DX-5: 레거시 배치-배리어 탈출구(--no-pipeline)를 --help 에서 발견 가능해야 한다.
+  assert.match(r.stdout, /--no-pipeline/);
 });
 
 test('pact drive (mock demo) — 오케스트레이터 토큰 0 으로 동작', () => {
@@ -119,4 +121,47 @@ test('drive (demo, --pact 아님) — belt skip (drive-owner.json 미생성)', (
     assert.equal(r.status, 0, `${r.stdout}\n${r.stderr}`);
     assert.equal(fs.existsSync(path.join(dir, '.pact', 'drive-owner.json')), false);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+// ─── DX-1: prepare 실패를 'Command failed' 셸 덤프 대신 actionable fix 로 노출 ───
+test('drive --pact (준비 안 된 프로젝트) — prepare 실패 시 stage+fix 노출("Command failed" 덤프 아님)', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pact-drive-dx1-'));
+  try {
+    // 빈 디렉토리 = CLAUDE.md/tasks/git 없음 → prepare 가 preflight 에서 fix 담긴 JSON emit 후 exit 1.
+    const r = runPact(['drive', '--pact', '--max=1'], { cwd: dir });
+    const out = `${r.stdout}\n${r.stderr}`;
+    assert.match(out, /preflight/, `실패 stage 가 노출돼야 함:\n${out}`);
+    assert.match(out, /pact:init|pact:plan|git 환경 정리/, `actionable fix 가 노출돼야 함:\n${out}`);
+    assert.doesNotMatch(out, /Command failed/, `원시 셸 명령 덤프가 아니어야 함:\n${out}`);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+// ─── DX-3: escalation 안내가 salvageable 이면 목적특화 /pact:takeover 를 병기 ───
+test('drive escalation — salvageable(부분작업 보존) 은 /pact:takeover 인계를 안내', () => {
+  // loop-stuck → 정체 escalate(salvageable). resume 만이 아니라 takeover on-ramp 도 노출돼야 한다.
+  const r = runPact(['drive', '--max=1', '--loop=DEMO-001:4', '--loop-stuck=DEMO-001']);
+  assert.equal(r.status, 3, r.stdout);
+  assert.match(r.stdout, /\/pact:takeover DEMO-001/, `salvageable escalation 은 takeover 병기:\n${r.stdout}`);
+});
+
+test('drive escalation — non-salvageable 은 /pact:resume 만 안내(takeover 아님)', () => {
+  // --fail → 재시도 소진 escalate(부분작업 없음). 인계할 worktree 가 없으니 resume 만.
+  const r = runPact(['drive', '--max=1', '--fail=DEMO-001']);
+  assert.equal(r.status, 3, r.stdout);
+  const esc = r.stdout.split('\n').filter((l) => l.includes('DEMO-001') && l.includes('/pact:'));
+  assert.ok(esc.some((l) => /\/pact:resume DEMO-001/.test(l)), `resume 안내가 있어야 함:\n${r.stdout}`);
+  assert.ok(!esc.some((l) => /takeover/.test(l)), `non-salvageable 은 takeover 안내 아님:\n${r.stdout}`);
+});
+
+// ─── DRV-2: 워커 done ≠ 머지 done — rejected 머지는 done 계상 X + exit 3 ───
+test('drive — 머지 rejected 면 워커 done 이어도 done 미계상 + ⛔ 표기 + exit 3', () => {
+  // MOCK 머지 게이트가 DEMO-001 을 reject → 워커는 done 이나 base 미반영. DEMO-002 는 정상 머지.
+  const r = runPact(['drive', '--max=2', '--merge-reject=DEMO-001']);
+  assert.equal(r.status, 3, `미머지(rejected) 존재 → exit 3:\n${r.stdout}`);
+  // 완료 카운트는 실제 머지된 1개만 (rejected 는 제외)
+  assert.match(r.stdout, /완료 ✓1/, `done 은 머지 성공 1개만:\n${r.stdout}`);
+  // DEMO-001 은 done 이 아니라 rejected 로 표기(⛔), DEMO-002 는 done
+  assert.doesNotMatch(r.stdout, /DEMO-001.*\[done\]/, `rejected task 를 done 으로 표기하면 안 됨:\n${r.stdout}`);
+  assert.match(r.stdout, /DEMO-001.*\[rejected\]/, `rejected 표기:\n${r.stdout}`);
+  assert.match(r.stdout, /DEMO-002.*\[done\]/, `머지 성공 task 는 done(=merged→done 경로 방어):\n${r.stdout}`);
 });

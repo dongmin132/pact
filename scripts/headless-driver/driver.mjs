@@ -36,6 +36,7 @@
 //   --fail=ID,ID      이 태스크를 매번 실패 → 재시도 후 escalate 시연
 //   --flaky=ID,ID     attempt1만 실패, 재시도서 성공 → 회복 시연
 //   --deny=ID,ID      scope 밖 쓰기 시도 → 가드 deny 시연
+//   --merge-reject=ID,ID  이 task 의 단건 머지를 rejected 로 강제 → 워커 done≠머지 done 시연(DRV-2)
 //   --cost=USD        mock 워커 1개당 비용 (기본 0.9) — budget 차단 시연용
 //   --loop=ID:N       [MOCK] loop task 시작 카운트(콤마 다수) — loop-until-dry 시연
 //   --loop-step=K     [MOCK] iteration당 감소량 (기본 2)
@@ -48,7 +49,7 @@
 // ============================================================================
 
 import { execSync } from 'node:child_process';
-import { readFileSync, existsSync, mkdtempSync, mkdirSync, realpathSync } from 'node:fs';
+import { readFileSync, existsSync, mkdtempSync, mkdirSync, realpathSync, appendFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -86,6 +87,7 @@ const MAX_RESUME = Math.floor(getNum('--max-resume', 2)); // (2.2) 턴소진 시
 const FAIL = getSet('--fail');
 const FLAKY = getSet('--flaky');
 const DENY = getSet('--deny');
+const MERGE_REJECT = getSet('--merge-reject'); // [MOCK] 이 task 들의 단건 머지를 rejected 로 강제(DRV-2 시연)
 const MOCK_COST = getNum('--cost', 0.9);
 // loop-until-dry mock 시뮬레이션 (REAL 모드는 measureCount 가 실제 loop_until.count 실행)
 const getLoopMap = (n) => new Map((getStr(n, '') || '').split(',').filter(Boolean)
@@ -97,7 +99,16 @@ const LOOP_STUCK = getSet('--loop-stuck');  // 줄지 않음 → 정체 시연
 const loopState = new Map(LOOP);            // 가변 남은 카운트
 
 // ---- 토큰 원장 (orchestratorTokens 는 절대 안 늘어남 = 불변식) -------------
-const ledger = { orchestratorTokens: 0, spentUsd: 0, attempts: [], escalations: [], stoppedReason: null };
+// DRV-2: mergeRejected/skipped 도 원장에 담아 최종 exit code 에 반영한다. 워커가 SDK 상 done 이어도
+// 단건 머지가 rejected/conflicted 면 base 에 미반영이므로 done 이 아니며, 미투입(skipped)도 미완이다.
+// 이들을 exit 0(성공)으로 오보하지 않게 escalations 와 대칭으로 위임 신호(exit 3)로 취급한다.
+// DX-2: live = 라이브 진행 카운터. 파이프라인 settle 마다 즉시 증가해 writeDriverState 가 매 write 에
+// 실어 보낸다 → pact status --watch(drive 의 유일 관측창)가 '완료 N·escalation N' 을 실시간으로 본다.
+// 기존엔 done 이 terminal 1회에만, escalations 는 runCyclePipeline 반환 후에야 채워져 실행 내내 0 고착.
+const ledger = { orchestratorTokens: 0, spentUsd: 0, attempts: [], escalations: [], mergeRejected: [], skipped: [], stoppedReason: null, live: { done: 0, escalated: 0, rejected: 0 } };
+// DRV-3: 현재 in-flight 워커 수(pool onEvent 로 갱신). runWorkerReal 이 per-worker 예산 cap 을
+// '남은예산/동시수' 로 나누는 분모 — 동시 K 워커가 각자 예산 전액을 받아 K×BUDGET 로 폭주하는 것 방지.
+let liveInFlight = 0;
 const tokOf = (u) => u ? (u.input_tokens || 0) + (u.output_tokens || 0) + (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0) : 0;
 
 // ---- (verbose) 내부 동작 로그 — 토큰 0 (콘솔만). 워커 도구 호출·사이클 단계 가시화 -------
@@ -123,6 +134,8 @@ const { shouldResume, classifyRealResult, withContinuation } = nodeRequire(join(
 // LPT 정렬용 file_count 추정(sizecheck). 둘 다 CJS 라 nodeRequire.
 const { pathsOverlap } = nodeRequire(join(PLUGIN_ROOT, 'batch-builder.js'));
 const { assessTask: sizeAssess } = nodeRequire(join(PLUGIN_ROOT, 'scripts', 'sizecheck.js'));
+// DRV-1 2차 방어: 최종보고 직전 task source 를 결정적 스캔해 잔여 미완 task 를 잡는다(성공 오보 차단).
+const { discoverTaskFiles, parseTaskFiles } = nodeRequire(join(PLUGIN_ROOT, 'scripts', 'task-sources.js'));
 
 // ---- (P5) 관측성: driver-state.json 단일 writer (atomic) -------------------
 // 드라이버가 죽어도 디스크에 마지막 상태가 남아 사람이 pact status / 파일로 진행 파악.
@@ -137,9 +150,127 @@ function writeDriverState(patch) {
       spent_usd: Number(ledger.spentUsd.toFixed(2)),
       budget: BUDGET, // pact status 가 비용 진행률 바를 그리는 분모
       escalations: ledger.escalations.length,
+      // DX-2: 라이브 진행 카운터를 항상 포함 → status 대시보드가 종료 전에도 진행을 본다.
+      // (writeJsonAtomic 은 매 호출 전체 재기록이라 patch 에만 넣으면 다음 write 에 사라진다 → base 에 상주.)
+      // terminal write 는 patch 로 최종 tally 를 덮어 authoritative 값을 남긴다.
+      done: ledger.live.done,
+      escalated: ledger.live.escalated,
+      rejected: ledger.live.rejected,
       ...patch,
     });
   } catch { /* 관측은 best-effort — 실패해도 작업엔 영향 없음 */ }
+}
+
+// ---- (DX-2) 라이브 진행 카운터: settle 로 즉시 증가 (종료 tally 와 정합) ------
+// 종료 시 allOutcomes tally(=merge-rejected 를 done→rejected 로 재라벨한 뒤의 집계)와 정확히
+// 일치하도록, outcome.status 와 단건 머지 결과를 함께 본다: 워커가 done 이어도 머지가 rejected/
+// conflicted 면 base 미반영이라 done 아님 → rejected 로 센다. 비-settle 이벤트는 무시.
+function tallySettle(counters, evt) {
+  if (!evt || evt.type !== 'settle') return counters;
+  const st = evt.outcome && evt.outcome.status;
+  const mergeBad = evt.merge && (evt.merge.result === 'rejected' || evt.merge.result === 'conflicted');
+  if (st === 'done') { if (mergeBad) counters.rejected++; else counters.done++; }
+  else if (st === 'escalated') counters.escalated++;
+  else if (st === 'rejected') counters.rejected++;
+  return counters;
+}
+
+// ---- (IMP-2) settle 시 워커 미보고 status.json 합성 (드라이버 = 권위 소스) ----
+// escalate/timeout/budget 로 죽은 워커는 종료 step("Write final status")에 못 가 status.json 을 안
+// 남긴다 → metrics(collect.js:27)가 '비용0·failed' 로 오집계한다. 드라이버는 SDK 실측 cost/usage·
+// resume 횟수·salvageable 을 쥔 사이클의 유일 권위 소스이므로, status.json 부재 시 그걸로 합성한다.
+// 워커 자기보고(status.json 존재)는 절대 덮지 않는다 → metrics 리더 무변경으로 기존 경로에서 정확 집계.
+function metricStatusOf(o) {
+  if (!o) return 'failed';
+  if (o.status === 'done') return 'done';
+  if (o.status === 'escalated') return o.salvageable ? 'blocked' : 'failed'; // 부분작업 보존=blocked, 하드실패=failed
+  if (o.status === 'rejected') return 'blocked'; // 머지 게이트 거부 = base 미반영, 사람 필요
+  return 'failed'; // denied 등
+}
+function synthesizeRunStatus(outcome, opts = {}) {
+  const runsRoot = opts.runsRoot || join(process.cwd(), '.pact', 'runs');
+  const id = outcome && outcome.task_id;
+  if (!id) return { written: false, reason: 'no_task_id' };
+  const statusPath = join(runsRoot, id, 'status.json');
+  try {
+    if (existsSync(statusPath)) return { written: false, reason: 'self_reported' }; // 워커 자기보고 보존
+    mkdirSync(join(runsRoot, id), { recursive: true });
+    const status = metricStatusOf(outcome);
+    writeJsonAtomic(statusPath, {
+      task_id: id,
+      status,
+      tokens_used: tokOf(outcome.usage),
+      cost_usd: Number(outcome.cost || 0),
+      resumes: outcome.resumes || 0,
+      attempts: outcome.attempts || 0,
+      salvageable: !!outcome.salvageable,
+      reason: outcome.reason || null,
+      synthesized_by: 'driver', // metrics/디버깅용 마커 — 워커 자기보고와 구분
+      completed_at: new Date().toISOString(),
+    });
+    return { written: true, status, path: statusPath };
+  } catch (e) { return { written: false, reason: 'error:' + ((e && e.message) || e) }; }
+}
+
+// ---- (IMP-1) 파이프라인 타이밍 이벤트 영속: .pact/driver-events.jsonl ---------
+// pool.mjs 스케줄러가 유일 권위 소스로 dispatch/settle(+ts)를 발화한다. 그걸 JSONL 로 흘려
+// 두면 metrics(compute.pipelineTiming)가 사후에 유효 병렬폭·실측 동시폭을 잰다 —
+// drive 의 헤드라인 가치(makespan 압축)를 self-reported deferred 가 아니라 실측으로 승격.
+// 결정적 파일 IO 라 오케스트레이터 토큰은 여전히 0. 관측은 best-effort(실패해도 작업 무영향).
+function driverEventsPath(opts = {}) {
+  return opts.eventsPath || join(process.cwd(), '.pact', 'driver-events.jsonl');
+}
+
+// pool 이벤트(id 키) → JSONL 레코드({ts(ISO), type, task_id, ...}). settle 은 결말/머지도 남긴다.
+function driverEventLine(evt) {
+  const ms = typeof evt.ts === 'number' ? evt.ts : Date.now();
+  const rec = { ts: new Date(ms).toISOString(), type: evt.type, task_id: evt.id };
+  if (evt.type === 'settle') {
+    if (evt.outcome && evt.outcome.status) rec.status = evt.outcome.status;
+    if (evt.merge && evt.merge.result) rec.merge = evt.merge.result;
+  }
+  return rec;
+}
+
+// JSONL 한 줄 append(원자적 append). USE_PACT 아니고 eventsPath 주입도 없으면 무시(demo).
+function appendDriverEvent(evt, opts = {}) {
+  if (!USE_PACT && !opts.eventsPath) return { written: false, reason: 'demo' };
+  try {
+    const p = driverEventsPath(opts);
+    mkdirSync(dirname(p), { recursive: true });
+    appendFileSync(p, JSON.stringify(evt) + '\n');
+    return { written: true, path: p };
+  } catch (e) { return { written: false, reason: 'error:' + ((e && e.message) || e) }; }
+}
+
+// 사이클 시작 경계 처리(무한 성장 방지 + merge-result cycle_id 정합): 파일의 마지막 cycle 마커
+// cycle_id 가 같으면(=같은 사이클 resume/admit) 이월(append 유지), 다르거나 없으면(=새 사이클)
+// 회전(truncate) 후 새 cycle 마커. merge-result.json 의 fresh-per-cycle/사이클내-누적과 대칭.
+function beginCycleEvents(cycleId, cycleNum, opts = {}) {
+  if (!USE_PACT && !opts.eventsPath) return;
+  try {
+    const p = driverEventsPath(opts);
+    let sameCycle = false;
+    if (cycleId != null && existsSync(p)) {
+      const lines = readFileSync(p, 'utf8').split('\n').filter(Boolean);
+      for (let i = lines.length - 1; i >= 0; i--) {
+        let j; try { j = JSON.parse(lines[i]); } catch { continue; }
+        if (j && j.type === 'cycle') { sameCycle = j.cycle_id === cycleId; break; }
+      }
+    }
+    mkdirSync(dirname(p), { recursive: true });
+    if (!sameCycle) writeFileSync(p, ''); // 회전: 새 사이클이면 이전 이벤트 폐기
+    appendFileSync(p, JSON.stringify({ ts: new Date().toISOString(), type: 'cycle', cycle: cycleNum, cycle_id: cycleId || null }) + '\n');
+  } catch { /* best-effort — 관측 실패해도 작업엔 영향 없음 */ }
+}
+
+// 진행 중 사이클의 cycle_id = current_batch.json 의 prepared_at(merge-result 와 동일 소스).
+function readCycleId(opts = {}) {
+  try {
+    const p = opts.currentBatchPath || join(process.cwd(), '.pact', 'current_batch.json');
+    const j = JSON.parse(readFileSync(p, 'utf8'));
+    return typeof j.prepared_at === 'string' ? j.prepared_at : null;
+  } catch { return null; }
 }
 
 // canUseTool 콜백 팩토리 — worker-guard 로 worktree 경계 + allowed_paths(glob) + SOT/Bash 검사
@@ -170,9 +301,20 @@ function getTasksPact() {
   // (makeTaskPrompt 단일 소스) → 드라이버 자체 reconstruct 불필요 = drift 근원 제거.
   // P2-2 · SPD-2: --graph 로 batch0 밖 전체 DAG 도 받아 슬롯 풀이 pull 대상을 안다.
   // STAB-1: 장수 드라이버 pid 를 owner 로 주입 → 인터랙티브/타 세션이 같은 사이클 재개 시 cycle-busy 거부.
-  const out = execSync(`node ${PACT_BIN} run-cycle prepare --max=${MAX} --graph --owner-pid=${process.pid} --session=drive`, { encoding: 'utf8' });
-  const j = JSON.parse(out);
-  if (j.ok === false) throw new Error('prepare 실패: ' + JSON.stringify(j.stage || j.errors));
+  // DX-1: prepare 실패(cycle-busy/preflight/tbd)는 exit≠0 이라 execSync 가 throw 하지만, fix 담긴
+  // JSON 은 stdout 에 emit 돼 있다. makeAdmit/mergeOnePact 와 동형으로 e.stdout 에서 JSON 을 살려
+  // 읽어, 'Command failed' 셸 덤프 대신 stage + message + actionable fix 를 리포트에 노출한다.
+  let out;
+  try { out = execSync(`node ${PACT_BIN} run-cycle prepare --max=${MAX} --graph --owner-pid=${process.pid} --session=drive`, { encoding: 'utf8' }); }
+  catch (e) { out = (e.stdout || '').toString(); }
+  let j;
+  try { j = JSON.parse(out); }
+  catch { throw new Error('prepare 응답 파싱 실패' + (out ? ': ' + out.slice(0, 200) : ' (빈 출력)')); }
+  if (j.ok === false) {
+    const msgs = (j.errors || []).map((x) => x.message).filter(Boolean).join('; ');
+    const fixes = (j.errors || []).map((x) => x.fix).filter(Boolean).join(' / ');
+    throw new Error(`prepare ${j.stage || '실패'}: ${msgs || JSON.stringify(j.errors)}${fixes ? ` → ${fixes}` : ''}`);
+  }
   // P1-1 · SPD-4: 슬로우니스 경고는 헤드리스(사람 부재)라 행동에 못 옮김 → 로그 1줄만.
   const warnN = (j.size_warnings || []).length + (j.scope_warnings || []).length + (j.bundle_warnings || []).length;
   if (warnN > 0) console.log(`  ⚠️ 슬로우니스 경고 ${warnN}건 (size:${(j.size_warnings || []).length} scope:${(j.scope_warnings || []).length} bundle:${(j.bundle_warnings || []).length}) — 분해는 인터랙티브 /pact:plan 에서.`);
@@ -232,6 +374,12 @@ async function runWorkerReal(task, opts = {}) {
   // 넉넉한 backstop. wall-clock 발화 시 abort 만으론 SDK 가 안 죽을 수 있어 q.close()로 실제 종료.
   const ac = new AbortController();
   const timeoutMs = opts.timeoutMs || TIMEOUT_MS; // 테스트가 짧은 backstop 주입 → abort/정리 경로 검증
+  // DRV-3: per-worker 예산 cap 을 '동시 실행 워커 수'로 나눠 배정. 이전엔 각 워커가 (BUDGET-spent)
+  // 전액을 받아 동시 K 워커면 실효 상한이 K×BUDGET 로 새어 나갔다(헤더 안전장치 #4 무력화).
+  // activeWorkers = 현재 in-flight 수(liveInFlight) → 동시 K 는 각 BUDGET/K, 마지막 1개는 잔여 전액(적응적).
+  const capBudget = (typeof opts.budget === 'number') ? opts.budget : BUDGET;
+  const activeWorkers = (typeof opts.activeWorkers === 'number') ? opts.activeWorkers : liveInFlight;
+  const workerBudgetUsd = Math.max(0.5, (capBudget - ledger.spentUsd) / Math.max(1, activeWorkers));
   let q, timedOut = false;
   const timer = setTimeout(() => {
     timedOut = true;
@@ -251,7 +399,7 @@ async function runWorkerReal(task, opts = {}) {
         canUseTool: makeCanUseTool(task),
         permissionMode: 'default',
         maxTurns: 200,                                          // 넉넉한 backstop (작업 안 자름)
-        maxBudgetUsd: Math.max(0.5, BUDGET - ledger.spentUsd),  // ★ 진짜 cap = 예산
+        maxBudgetUsd: workerBudgetUsd,                          // ★ 진짜 cap = 예산 (DRV-3: 동시수로 분할)
         abortController: ac,
         systemPrompt,
       },
@@ -358,9 +506,17 @@ function sizeOfTask(id, allowedPaths) {
   catch { return 0; }
 }
 
+// [MOCK] 단건 머지 시뮬 — 데모/파이프라인에서 planMerge reject 경로(DRV-2)를 실 pact 없이 재현.
+// --merge-reject=ID 에 든 task 는 rejected(base 미반영), 그 외는 merged. 플래그 없으면 미사용(mergeOne=null).
+async function mergeOneMock(id) {
+  if (MERGE_REJECT.has(id)) return { result: 'rejected', detail: { task_id: id, reason: 'mock 머지 게이트 거부(--merge-reject)' } };
+  return { result: 'merged', detail: {} };
+}
+
 // 워커 산출 1건 콘솔 보고(파이프라인/레거시 공용).
 function reportOutcome(o) {
-  const icon = { done: '✓', failed: '✗', denied: '⛔', escalated: '🚨' }[o.status] || '?';
+  // DRV-2: rejected = 워커는 done 이나 머지 게이트에서 거부돼 base 에 미반영(done 아님) → ⛔.
+  const icon = { done: '✓', failed: '✗', denied: '⛔', escalated: '🚨', rejected: '⛔' }[o.status] || '?';
   const tok = o.usage ? (tokOf(o.usage) / 1e6).toFixed(2) + 'M' : '—';
   const extra = o.status === 'done' ? `${o.turns}턴 ${tok}` : (o.reason || '');
   console.log(`  ${icon} ${o.task_id}  [${o.status}]  시도 ${o.attempts || '?'}회  ${extra}`);
@@ -371,12 +527,16 @@ function collectBatch() {
   const out = execSync(`node ${PACT_BIN} run-cycle collect --commit-status`, { encoding: 'utf8' });
   const cj = JSON.parse(out);
   const committed = cj.status_commit && cj.status_commit.committed ? 'committed' : 'no-commit';
-  console.log(`  collect: merged=${(cj.merged || []).length} conflicted=${cj.conflicted ? 'YES' : 'no'} failures=${(cj.failures || []).length} status=${committed}`);
+  const rejected = cj.rejected || [];
+  console.log(`  collect: merged=${(cj.merged || []).length} conflicted=${cj.conflicted ? 'YES' : 'no'} rejected=${rejected.length} failures=${(cj.failures || []).length} status=${committed}`);
   if (VERBOSE) {
     vlog(`  [collect] merged=${JSON.stringify(cj.merged || [])}`);
-    for (const r of cj.rejected || []) vlog(`  [collect] ✗ ${r.task_id}: ${r.reason}`);
+    for (const r of rejected) vlog(`  [collect] ✗ ${r.task_id}: ${r.reason}`);
     for (const f of cj.failures || []) vlog(`  [collect] ⚠ ${f.task_id}: ${f.status} ${(f.blockers || []).join('; ')}`);
   }
+  // DRV-2(레거시 대칭): 배치 collect 의 rejected(게이트 통과 실패 → base 미반영)도 원장에 기록해
+  // 최종 tally·exit 에 반영한다. 파이프라인은 인라인 재라벨, 레거시는 최종보고의 정규화 패스가 처리.
+  for (const r of rejected) ledger.mergeRejected.push({ task_id: r.task_id, reason: r.reason || '머지 게이트 거부' });
   if (cj.conflicted) { ledger.stoppedReason = '머지 충돌 — 자동해결 안 함, 사람 위임(/pact:resolve-conflict)'; return 'conflict'; }
   return 'ok';
 }
@@ -432,11 +592,35 @@ async function runCyclePipeline(c, tasks, graph) {
     tasks: map,
     admit: makeAdmit(cachedPayloads),
     runTask: (task) => (task.loop_until ? runLoopTask(task) : runResumableTask(task)),
-    mergeOne: USE_PACT ? mergeOnePact : null,          // demo: 머지 없음 → 워커 done 이 곧 done
+    // demo: 머지 없음 → 워커 done 이 곧 done. 단 --merge-reject 시연 시엔 mock 머지 게이트를 꽂는다.
+    mergeOne: USE_PACT ? mergeOnePact : (MERGE_REJECT.size ? mergeOneMock : null),
     overlaps: USE_PACT ? pathsOverlap : () => false,   // demo: 개별 tmpdir → 무충돌
-    onEvent: (evt) => { if (evt.in_flight) writeDriverState({ phase: 'spawning', cycle: c, active_workers: evt.in_flight }); },
+    onEvent: (evt) => {
+      // DX-2: settle 마다 라이브 진행 카운터 증가(→ 아래 write 에 항상 실려 status --watch 가 실시간 관측).
+      // IMP-2: 워커가 status.json 을 못 남기고 죽었으면 드라이버 권위 데이터로 합성(자기보고는 안 덮음).
+      if (evt.type === 'settle') { tallySettle(ledger.live, evt); if (USE_PACT) synthesizeRunStatus(evt.outcome); }
+      // IMP-1: dispatch/settle 을 driver-events.jsonl 로 영속(makespan 재구성 소스, 0토큰).
+      if (evt.type === 'dispatch' || evt.type === 'settle') appendDriverEvent(driverEventLine(evt));
+      if (evt.in_flight) { liveInFlight = evt.in_flight.length; writeDriverState({ phase: 'spawning', cycle: c, active_workers: evt.in_flight }); } // liveInFlight: DRV-3 예산 분할 분모
+    },
     shouldStop: () => (ledger.spentUsd >= BUDGET ? `예산 초과 ($${ledger.spentUsd.toFixed(2)} ≥ $${BUDGET})` : null),
   });
+}
+
+// DRV-1 2차 방어: task source 를 결정적으로 스캔해 done/failed 아닌 잔여 task id 를 반환.
+// --graph emit 이 누락/회귀해도(재개 경로 등) 무인 자동화가 미완 task 를 두고 exit 0 성공 오보하는
+// 것을 막는다. USE_PACT 에서만 의미(demo 는 레포 상태 없음). 토큰 0 · best-effort(파싱 실패 시 []).
+function scanRemainingPending() {
+  if (!USE_PACT) return [];
+  try {
+    const cwd = process.cwd();
+    const files = discoverTaskFiles({ cwd });
+    if (!files.length) return [];
+    const parsed = parseTaskFiles(files, { cwd });
+    return (parsed.tasks || [])
+      .filter((t) => t.status !== 'done' && t.status !== 'failed')
+      .map((t) => t.id);
+  } catch { return []; }
 }
 
 // ---- 메인 루프 (오케스트레이터 = 이 코드 = 토큰 0) -------------------------
@@ -521,15 +705,29 @@ for (let c = 1; c <= CYCLES; c++) {
     console.log(`\ncycle ${c}: K-슬롯 풀 (슬롯=${MAX}, ready=${tasks.length}${graphN ? ` +graph=${graphN}` : ''}) — freed slot 이 다음 ready+무겹침 task pull (오케스트레이터 = 0 토큰)`);
     if (VERBOSE) for (const t of tasks) vlog(`  [spawn] ${t.task_id} → worktree ${t.working_dir}`);
     writeDriverState({ phase: 'spawning', cycle: c, active_workers: tasks.map((t) => t.task_id) });
+    // IMP-1: 사이클 경계 마커 + 회전(새 cycle_id 면 이전 이벤트 폐기 → 무한 성장 방지).
+    beginCycleEvents(readCycleId(), c);
 
     const pr = await runCyclePipeline(c, tasks, graph);
+    // DRV-2: 워커 done(o.status) 과 단건 머지 결과(pr.merges)를 대조한다. 머지가 rejected/conflicted 면
+    // base 에 미반영이므로 done 으로 계상하지 않고 'rejected' 로 재라벨(⛔) + 원장 기록(→ exit 3).
+    const mergeById = new Map((pr.merges || []).map((m) => [m.id, m]));
     for (const o of pr.outcomes) {
+      const mg = mergeById.get(o.task_id);
+      if (o.status === 'done' && mg && (mg.result === 'rejected' || mg.result === 'conflicted')) {
+        o.status = 'rejected';
+        o.reason = o.reason || (mg.detail && (mg.detail.reason || mg.detail.error)) || `머지 ${mg.result}`;
+        ledger.mergeRejected.push({ task_id: o.task_id, reason: o.reason });
+      }
       allOutcomes.push(o);
       if (o.status === 'escalated') ledger.escalations.push(o);
       reportOutcome(o);
     }
     if (VERBOSE) for (const m of pr.merges) vlog(`  [merge] ${m.id}: ${m.result}`);
-    if (pr.skipped.length) console.log(`  ⏭  미투입(skipped) ${pr.skipped.length}: ${pr.skipped.join(', ')}  (dep reject / budget / 정지)`);
+    if (pr.skipped.length) {
+      for (const s of pr.skipped) ledger.skipped.push(s); // 미투입 = 미완 → exit 성공 오보 방지
+      console.log(`  ⏭  미투입(skipped) ${pr.skipped.length}: ${pr.skipped.join(', ')}  (dep reject / budget / 정지)`);
+    }
 
     // 머지 충돌 = 판단 에러 → 자동해결 X, 정지+위임. (그 외 정지사유=예산 등도 루프 중단)
     if (pr.conflicted) { ledger.stoppedReason = pr.stoppedReason || '머지 충돌 — 자동해결 안 함, 사람 위임(/pact:resolve-conflict)'; break; }
@@ -544,12 +742,15 @@ for (let c = 1; c <= CYCLES; c++) {
   if (VERBOSE) for (const t of tasks) vlog(`  [spawn] ${t.task_id} → worktree ${t.working_dir}`);
 
   // (1) ★ allSettled — 한 워커가 터져도 나머지 결과는 보존됨
+  liveInFlight = tasks.length; // DRV-3: 레거시 배리어는 배치 전원 동시 실행 → 예산 분할 분모=배치폭
   const settled = await Promise.allSettled(tasks.map((t) => t.loop_until ? runLoopTask(t) : runResumableTask(t)));
   const outcomes = settled.map((s, i) =>
     s.status === 'fulfilled' ? s.value : { task_id: tasks[i].task_id, status: 'escalated', reason: 'driver 예외: ' + s.reason });
   for (const o of outcomes) {
     allOutcomes.push(o);
     if (o.status === 'escalated') ledger.escalations.push(o);
+    tallySettle(ledger.live, { type: 'settle', outcome: o }); // DX-2: 레거시도 라이브 카운터 갱신
+    if (USE_PACT) synthesizeRunStatus(o);                     // IMP-2: 워커 미보고 시 권위 데이터 합성(자기보고 보존)
     reportOutcome(o);
   }
 
@@ -561,33 +762,81 @@ for (let c = 1; c <= CYCLES; c++) {
 }
 
 // ---- 최종 보고 + 불변식 ----------------------------------------------------
+// DRV-2(정규화 패스): 머지 거부된 task 는 워커가 done 이어도 done 이 아니다. 파이프라인은 이미
+// 인라인 재라벨했고, 레거시(collectBatch)는 워커 완료 시점엔 머지 결과를 몰라 여기서 정규화한다.
+{
+  const rejectedIds = new Set(ledger.mergeRejected.map((r) => r.task_id));
+  for (const o of allOutcomes) {
+    if (o.status === 'done' && rejectedIds.has(o.task_id)) {
+      o.status = 'rejected';
+      const rr = ledger.mergeRejected.find((r) => r.task_id === o.task_id);
+      if (rr && !o.reason) o.reason = rr.reason;
+    }
+  }
+}
+
+// DRV-1 2차 방어: 최종보고 직전 task source 를 스캔해 잔여 미완 task 를 잡는다. done/failed 아닌
+// pending 이 남았으면 경고 1줄. 다른 정지/위임/거부/미투입 신호가 전혀 없는데 잔여가 있으면 그 자체가
+// 성공 오보(예: --graph 누락으로 하위 DAG 미투입) → stoppedReason 설정(→ exit 3). 토큰 0.
+if (USE_PACT) {
+  const leftover = scanRemainingPending();
+  if (leftover.length) {
+    const shown = leftover.slice(0, 8).join(', ') + (leftover.length > 8 ? ' …' : '');
+    console.log(`\n⚠️ 잔여 미완 task ${leftover.length}건: ${shown} (이 실행에서 완료되지 않음)`);
+    if (!ledger.stoppedReason && ledger.escalations.length === 0
+        && ledger.mergeRejected.length === 0 && ledger.skipped.length === 0) {
+      ledger.stoppedReason = `잔여 미완 task ${leftover.length}건 — 완료로 오보 방지(재개: pact drive / /pact:parallel)`;
+    }
+  }
+}
+
 const wall = (Date.now() - tStart) / 1000;
 const tally = allOutcomes.reduce((m, o) => ((m[o.status] = (m[o.status] || 0) + 1), m), {});
 const workerTok = allOutcomes.reduce((a, o) => a + tokOf(o.usage), 0);
 
 console.log('\n=== 결과 ===');
-console.log(`완료 ✓${tally.done || 0}  거부 ⛔${tally.denied || 0}  위임 🚨${tally.escalated || 0}  (${allOutcomes.length}건)`);
+console.log(`완료 ✓${tally.done || 0}  미머지 ⛔${tally.rejected || 0}  거부 ⛔${tally.denied || 0}  위임 🚨${tally.escalated || 0}  (${allOutcomes.length}건)`);
 console.log(`워커 토큰 합: ${(workerTok / 1e6).toFixed(2)}M   비용: $${ledger.spentUsd.toFixed(2)} / 예산 $${BUDGET}   wall=${wall.toFixed(1)}s`);
 console.log(`오케스트레이터 토큰: ${ledger.orchestratorTokens}   ← 에러 처리해도 여전히 0`);
 if (ledger.stoppedReason) console.log(`⏸  정지: ${ledger.stoppedReason}`);
 
 if (ledger.escalations.length) {
   console.log('\n🚨 사람 위임 필요 (헤드리스→인터랙티브 핸드오프):');
-  for (const e of ledger.escalations) console.log(`   - ${e.task_id}: ${e.reason || '2회 실패'}${e.salvageable ? ' (부분작업 worktree 보존)' : ''} → worktree 보존됨, /pact:resume 로 점검`);
+  for (const e of ledger.escalations) {
+    // DX-3: salvageable(worktree 에 부분작업 보존)이면 목적특화 /pact:takeover 인계를 1차로 병기한다.
+    // 예산/정체/회로차단으로 이미 실패한 task 를 fresh 재spawn(/pact:resume)만 하면 같은 실패 반복 위험 —
+    // takeover 는 보존된 worktree 를 사람이 이어받는 on-ramp. 강제 이분이 아니라 선택을 남긴다(철학⑤).
+    const hint = e.salvageable
+      ? `/pact:takeover ${e.task_id} 로 보존된 worktree 직접 인계(재시도로 안 풀리는 판단·커플링), 또는 /pact:resume ${e.task_id} 로 fresh 재spawn`
+      : `/pact:resume ${e.task_id} 로 재시도`;
+    const salv = e.salvageable ? ' (부분작업 worktree 보존)' : '';
+    console.log(`   - ${e.task_id}: ${e.reason || '2회 실패'}${salv} → ${hint}`);
+  }
 }
 
-writeDriverState({ phase: 'done', active_workers: [], stopped_reason: ledger.stoppedReason, done: tally.done || 0, escalated: tally.escalated || 0 });
+// DRV-2: 머지 거부 task 는 escalation 이 아니라 '게이트 통과 실패로 base 미반영' 이다. 워커 done 이
+// merge done 과 다르다는 사실을 명시 노출한다(비-verbose 에서도). 산출 점검 후 재시도/수정 안내.
+if (ledger.mergeRejected.length) {
+  console.log('\n⛔ 머지 거부 (게이트 통과 실패 — base 미반영, 워커 done ≠ 머지 done):');
+  for (const r of ledger.mergeRejected) {
+    console.log(`   - ${r.task_id}: ${r.reason || '머지 게이트 거부'} → 산출 점검 후 /pact:resume ${r.task_id} 또는 인터랙티브 수정`);
+  }
+}
+
+writeDriverState({ phase: 'done', active_workers: [], stopped_reason: ledger.stoppedReason, done: tally.done || 0, escalated: tally.escalated || 0, rejected: tally.rejected || 0 });
 
 if (ledger.orchestratorTokens !== 0) { console.error('\n✗ INVARIANT 실패'); process.exit(1); }
 console.log('\n✓ 불변식 유지: 오케스트레이션 = 0 토큰. 기계적 에러는 드라이버가 흡수, 판단 에러는 위임.');
 if (!REAL) console.log('[MOCK] 실제 spawn: cd scripts/headless-driver && npm i @anthropic-ai/claude-agent-sdk && node driver.mjs --real');
 
-// 위임이 있으면 비정상 종료코드(자동화 파이프라인이 감지하도록)
-process.exit(ledger.escalations.length || ledger.stoppedReason ? 3 : 0);
+// 위임/미머지/미투입/정지 중 하나라도 있으면 비정상 종료코드(자동화 파이프라인이 성공 오보 안 하도록).
+// DRV-2: mergeRejected(base 미반영) + skipped(미투입) 를 exit 판정에 포함 — 워커 done ≠ 사이클 완료.
+const incomplete = ledger.escalations.length || ledger.mergeRejected.length || ledger.skipped.length || ledger.stoppedReason;
+process.exit(incomplete ? 3 : 0);
 }
 
 // 직접 실행일 때만 메인 루프 구동. import(테스트) 시엔 실행 안 됨 = 부수효과·process.exit 없음.
 if (isMain) main().catch((e) => { console.error(e); process.exit(1); });
 
 // 테스트 계약용 export — 프로덕션 실행 경로(main)는 이 export 에 의존하지 않는다.
-export { runWorkerReal, attemptTask, runResumableTask, runLoopTask, ledger };
+export { runWorkerReal, attemptTask, runResumableTask, runLoopTask, ledger, tallySettle, synthesizeRunStatus, metricStatusOf, appendDriverEvent, beginCycleEvents, driverEventLine, readCycleId };

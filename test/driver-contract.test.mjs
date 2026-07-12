@@ -9,7 +9,10 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { runWorkerReal, attemptTask, runResumableTask, ledger } from '../scripts/headless-driver/driver.mjs';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { runWorkerReal, attemptTask, runResumableTask, ledger, tallySettle, synthesizeRunStatus, appendDriverEvent, beginCycleEvents, driverEventLine } from '../scripts/headless-driver/driver.mjs';
 
 // ---- 가짜 query 팩토리 (실 SDK 서명 흉내: query(cfg) → async-iterable) ----
 
@@ -144,4 +147,163 @@ test('runWorkerReal — wall-clock 초과 시 abort + q.close 로 정리하고 i
   assert.equal(r.reason, 'timeout');
   assert.equal(state.aborted, true, 'abortController 가 발화(무한 hang 방지)');
   assert.equal(state.closeCalled, true, 'q.close() 로 SDK 를 실제 종료(좀비 방지)');
+});
+
+// ---- DRV-3: 동시 실행 워커끼리 남은 예산을 균등 분할(K×BUDGET 폭주 방지) ----
+
+// cfg.options.maxBudgetUsd 만 캡처하고 즉시 성공 종료하는 spy query.
+function budgetSpyQuery(sink) {
+  return (cfg) => {
+    sink.cap = cfg.options.maxBudgetUsd;
+    return (async function* () {
+      yield { type: 'result', subtype: 'success', num_turns: 1, total_cost_usd: 0.1, usage: { input_tokens: 1 } };
+    })();
+  };
+}
+
+test('runWorkerReal — 동시 K 워커면 per-worker cap 이 예산/동시수로 나뉜다(K=3,budget=3 → 워커 1개가 3 전액 못 받음)', async () => {
+  ledger.spentUsd = 0;
+  const sink = {};
+  const r = await runWorkerReal(baseTask(), { query: budgetSpyQuery(sink), budget: 3, activeWorkers: 3 });
+  assert.equal(r.ok, true);
+  // 이전 코드는 각 워커에 (BUDGET-spent) 전액을 배정 → 동시 3 워커면 실효 상한 3×budget 로 폭주.
+  assert.ok(sink.cap < 3, `동시 3 워커면 한 워커가 예산 전액(3)을 받으면 안 됨 — cap=${sink.cap}`);
+  assert.equal(sink.cap, 1, 'budget 3 / 동시 3 = per-worker cap 1');
+});
+
+test('runWorkerReal — 마지막 1 워커만 남으면 잔여 예산 전액 사용(적응적 분할, 회귀)', async () => {
+  ledger.spentUsd = 0;
+  const sink = {};
+  await runWorkerReal(baseTask(), { query: budgetSpyQuery(sink), budget: 3, activeWorkers: 1 });
+  assert.equal(sink.cap, 3, '동시 1 → 잔여 예산 전액(적응적)');
+});
+
+test('runWorkerReal — 이미 쓴 비용을 제하고 남은 예산만 분할(spentUsd 반영)', async () => {
+  ledger.spentUsd = 1.5;
+  const sink = {};
+  await runWorkerReal(baseTask(), { query: budgetSpyQuery(sink), budget: 4.5, activeWorkers: 3 });
+  assert.equal(sink.cap, 1, '(4.5 - 1.5) / 3 = 1');
+  ledger.spentUsd = 0;
+});
+
+// ---- DX-2: 파이프라인 라이브 진행 카운터 — settle 마다 즉시 증가(종료 전 0 고착 아님) ----
+
+test('DX-2 — settle 이벤트가 done/escalated 카운터를 즉시 증가(종료까지 0 고착이던 버그)', () => {
+  const c = { done: 0, escalated: 0, rejected: 0 };
+  // 워커 1개가 머지 성공으로 settle → done 은 이 시점에 이미 1 (구코드는 driver-state 에 종료까지 0).
+  tallySettle(c, { type: 'settle', outcome: { task_id: 'A', status: 'done' }, merge: { result: 'merged' } });
+  assert.equal(c.done, 1, '완료 즉시 done++');
+  tallySettle(c, { type: 'settle', outcome: { task_id: 'B', status: 'escalated' } });
+  assert.equal(c.escalated, 1, '위임 즉시 escalated++');
+  // 워커가 done 이어도 단건 머지가 rejected 면 base 미반영 → done 아님(rejected 로 센다).
+  tallySettle(c, { type: 'settle', outcome: { task_id: 'C', status: 'done' }, merge: { result: 'rejected' } });
+  assert.equal(c.done, 1, '머지 rejected 는 done 계상 X');
+  assert.equal(c.rejected, 1);
+  // 비-settle(dispatch/requeue) 이벤트는 카운터 불변.
+  tallySettle(c, { type: 'dispatch', id: 'D', in_flight: ['D'] });
+  assert.deepEqual(c, { done: 1, escalated: 1, rejected: 1 }, 'dispatch 는 무시');
+});
+
+test('DX-2 — 라이브 누계가 종료 tally 와 정확히 일치(종료 순간 숫자 튐 없음)', () => {
+  // 파이프라인 settle 시퀀스 재현: 드라이버가 done+merge-rejected 를 rejected 로 재라벨한 종료 tally 와
+  // settle 시점 라이브 누계가 같아야 --watch 가 종료 순간 값 점프를 안 겪는다.
+  const settles = [
+    { type: 'settle', outcome: { task_id: 'A', status: 'done' }, merge: { result: 'merged' } },
+    { type: 'settle', outcome: { task_id: 'B', status: 'done' }, merge: { result: 'rejected' } }, // 재라벨→rejected
+    { type: 'settle', outcome: { task_id: 'C', status: 'escalated' } },
+    { type: 'settle', outcome: { task_id: 'D', status: 'done' }, merge: { result: 'already_merged' } },
+  ];
+  const live = { done: 0, escalated: 0, rejected: 0 };
+  for (const e of settles) tallySettle(live, e);
+  assert.deepEqual(live, { done: 2, escalated: 1, rejected: 1 }, '라이브 누계 = 종료 tally');
+});
+
+// ---- IMP-2: 워커 미보고 status.json 합성 — metrics 가 비용0·failed 로 오집계하지 않도록 ----
+
+test('IMP-2 — escalate 워커가 status.json 없이 죽으면 드라이버가 권위 데이터로 합성(synthesized_by 마커)', () => {
+  const runsRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'pact-imp2-'));
+  try {
+    const o = { task_id: 'T-9', status: 'escalated', salvageable: true, reason: 'timeout — 예산 소진',
+      cost: 0.42, resumes: 2, attempts: 3, usage: { input_tokens: 1000, output_tokens: 2000 } };
+    const res = synthesizeRunStatus(o, { runsRoot });
+    assert.equal(res.written, true, '워커 미보고 → 합성');
+    const sp = path.join(runsRoot, 'T-9', 'status.json');
+    assert.ok(fs.existsSync(sp), 'status.json 이 생성돼야 함');
+    const j = JSON.parse(fs.readFileSync(sp, 'utf8'));
+    assert.equal(j.synthesized_by, 'driver', '드라이버 합성 마커');
+    assert.equal(j.status, 'blocked', 'salvageable escalate → blocked (metrics 미완 집계; failed·비용0 아님)');
+    assert.ok(j.cost_usd > 0, 'SDK 실측 비용 보존(비용0 오집계 방지)');
+    assert.ok(j.tokens_used > 0, 'tokens 보존');
+    assert.equal(j.resumes, 2, 'resume 횟수 보존');
+    assert.equal(j.salvageable, true);
+  } finally { fs.rmSync(runsRoot, { recursive: true, force: true }); }
+});
+
+test('IMP-2 — 워커 자기보고 status.json 이 있으면 절대 덮지 않는다', () => {
+  const runsRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'pact-imp2b-'));
+  try {
+    const dir = path.join(runsRoot, 'T-1');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'status.json'), JSON.stringify({ task_id: 'T-1', status: 'done', tokens_used: 5, self: true }));
+    const res = synthesizeRunStatus({ task_id: 'T-1', status: 'escalated', cost: 9 }, { runsRoot });
+    assert.equal(res.written, false, '자기보고 존재 → 합성 스킵');
+    const j = JSON.parse(fs.readFileSync(path.join(dir, 'status.json'), 'utf8'));
+    assert.equal(j.self, true, '워커 자기보고 원본 보존');
+    assert.equal(j.synthesized_by, undefined, '드라이버 마커가 붙지 않음(안 덮음)');
+  } finally { fs.rmSync(runsRoot, { recursive: true, force: true }); }
+});
+
+test('IMP-2 — non-salvageable escalate 는 failed 로 매핑(metrics unfinished)', () => {
+  const runsRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'pact-imp2c-'));
+  try {
+    synthesizeRunStatus({ task_id: 'F-1', status: 'escalated', salvageable: false, cost: 0.1 }, { runsRoot });
+    const j = JSON.parse(fs.readFileSync(path.join(runsRoot, 'F-1', 'status.json'), 'utf8'));
+    assert.equal(j.status, 'failed', '보존할 부분작업 없는 하드실패 → failed');
+    assert.equal(j.synthesized_by, 'driver');
+  } finally { fs.rmSync(runsRoot, { recursive: true, force: true }); }
+});
+
+// ---- IMP-1: 파이프라인 타이밍 이벤트를 driver-events.jsonl 로 영속 ----
+
+test('IMP-1 — driverEventLine: pool 이벤트(id) → JSONL 레코드(task_id·ts ISO·결말)', () => {
+  const disp = driverEventLine({ type: 'dispatch', id: 'A', ts: 0 });
+  assert.equal(disp.type, 'dispatch');
+  assert.equal(disp.task_id, 'A');
+  assert.match(disp.ts, /^\d{4}-\d{2}-\d{2}T/, 'epoch → ISO');
+  const settle = driverEventLine({ type: 'settle', id: 'B', ts: 100, outcome: { status: 'done' }, merge: { result: 'merged' } });
+  assert.equal(settle.status, 'done');
+  assert.equal(settle.merge, 'merged');
+});
+
+test('IMP-1 — appendDriverEvent: JSONL 한 줄씩 append(eventsPath 주입)', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pact-imp1-'));
+  try {
+    const eventsPath = path.join(dir, 'driver-events.jsonl');
+    appendDriverEvent({ ts: '2026-01-01T00:00:00Z', type: 'dispatch', task_id: 'A' }, { eventsPath });
+    appendDriverEvent({ ts: '2026-01-01T00:00:01Z', type: 'settle', task_id: 'A', status: 'done' }, { eventsPath });
+    const lines = fs.readFileSync(eventsPath, 'utf8').split('\n').filter(Boolean);
+    assert.equal(lines.length, 2);
+    assert.equal(JSON.parse(lines[0]).type, 'dispatch');
+    assert.equal(JSON.parse(lines[1]).status, 'done');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('IMP-1 — beginCycleEvents: 새 cycle_id 는 회전(truncate), 같은 cycle_id 는 이월', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pact-imp1b-'));
+  try {
+    const eventsPath = path.join(dir, 'driver-events.jsonl');
+    beginCycleEvents('cid-1', 1, { eventsPath });
+    appendDriverEvent({ ts: 't', type: 'dispatch', task_id: 'A' }, { eventsPath });
+    // 같은 cycle_id(resume/admit) → 이월: 기존 A 이벤트 보존
+    beginCycleEvents('cid-1', 1, { eventsPath });
+    let lines = fs.readFileSync(eventsPath, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
+    assert.ok(lines.some((l) => l.task_id === 'A'), '같은 사이클 → 이벤트 이월(무회전)');
+    // 새 cycle_id → 회전: 이전 A 이벤트 폐기(무한 성장 방지)
+    beginCycleEvents('cid-2', 2, { eventsPath });
+    lines = fs.readFileSync(eventsPath, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
+    assert.ok(!lines.some((l) => l.task_id === 'A'), '새 사이클 → 이전 이벤트 회전');
+    const last = lines[lines.length - 1];
+    assert.equal(last.type, 'cycle');
+    assert.equal(last.cycle_id, 'cid-2');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
