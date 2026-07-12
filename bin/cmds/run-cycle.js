@@ -663,6 +663,35 @@ function readCycleMarker(cwd) {
   return cb && typeof cb.prepared_at === 'string' ? cb.prepared_at : null;
 }
 
+/** task_id 별로 최신 1건만 남긴다(뒤에 온 항목이 이김 — 사유 최신화). task_id 없는 항목은 보존. */
+function dedupeByTaskIdKeepLast(arr) {
+  const idx = new Map();
+  const out = [];
+  for (const item of (arr || [])) {
+    const id = item && item.task_id;
+    if (id == null) { out.push(item); continue; }
+    if (idx.has(id)) out[idx.get(id)] = item; // 최신으로 갱신
+    else { idx.set(id, out.length); out.push(item); }
+  }
+  return out;
+}
+
+/**
+ * DOG-1: 사이클 내 누적 화해(reconcile). collect-one 은 사이클 내 여러 patch 를 rejected/failures
+ * 배열에 append 만 하므로, 앞선 patch 에서 rejected 됐다가 뒤에 resume 되어 머지된 task 가 rejected
+ * 에 stale 하게 잔존한다 → 축소 coordinator 가 SOT 만 읽고 머지 성공 task 를 Blocked 로 오기록.
+ * (a) 이번 결과에서 merged/already_merged 된 task_id 는 누적 rejected/failures 에서 제거하고,
+ * (b) 같은 task 의 반복 rejected/failures 는 최신 1건만 남긴다(중복 제거·사유 갱신).
+ */
+function reconcileCycleResult(out) {
+  const settled = new Set([...(out.merged || []), ...(out.already_merged || [])]);
+  const clean = (arr) =>
+    dedupeByTaskIdKeepLast((arr || []).filter((r) => !(r && settled.has(r.task_id))));
+  out.rejected = clean(out.rejected);
+  out.failures = clean(out.failures);
+  return out;
+}
+
 /**
  * merge-result.json 을 단건 append 로 갱신(배열 누적 + verification fold). 기존 소비 포맷 유지.
  *
@@ -698,6 +727,7 @@ function appendMergeResult(cwd, patch, cycleId = null) {
     verification_summary: foldVerification(base.verification_summary, patch.verification_summary),
     decisions_to_record: [...arr('decisions_to_record'), ...(patch.decisions_to_record || [])],
   };
+  reconcileCycleResult(out); // DOG-1: 머지된 task 는 rejected/failures 에서 제거 + 중복 정리
   fs.mkdirSync(path.join(cwd, '.pact'), { recursive: true });
   writeJsonAtomic(p, out);
   return out;
