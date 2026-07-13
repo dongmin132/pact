@@ -333,45 +333,62 @@ function prepare(args, opts = {}) {
   // 멱등 (v0.6.1): 이미 prepared면 skip. --force로 무시 가능.
   // 단 task_prompts 는 항상 반환(makeTaskPrompt 단일 소스) → 드라이버 reconstruct 불필요·drift 제거.
   if (!force && isAlreadyPrepared(cwd)) {
-    // STAB-1: adopt 전 owner 게이트 — 살아있는 타 세션이 소유 중이면 spawn 전 거부(이중 spawn 차단).
-    const gate = ownerAdoptGate(cwd, args);
-    if (!gate.ok) {
-      const h = gate.holder;
-      const who = `pid=${h.pid}${h.session ? `, session=${h.session}` : ''}`;
-      emit({
-        ok: false,
-        stage: 'cycle-busy',
-        error: `cycle-busy: 다른 세션(${who})이 이 사이클을 소유 중`,
-        errors: [{ message: `cycle-busy: 다른 세션(${who})이 이 사이클을 소유 중`, fix: '다른 세션 종료 대기 또는 pact status' }],
-      });
-      process.exit(1);
+    // P1-#2: adopt(already_prepared) 경로를 acquireCycleLock 배타 구간으로 감싼다. owner 검사·
+    // restamp(ownerAdoptGate)·task_prompts 재구성이 락 밖이면 두 세션이 동시에 무-owner/죽은-owner
+    // 를 읽고 둘 다 gate 통과 → 같은 task_prompts 반환 → 워커 이중 spawn. 락을 못 잡으면(다른 세션이
+    // prepare/collect/admit 진행 중) cycle-busy 로 거부한다. adopt 는 early-return 이라 아래 fresh
+    // prepare 경로의 락 획득과 겹치지 않는다(데드락/이중획득 없음).
+    const lock = acquireCycleLock({ cwd, stage: 'adopt' });
+    if (!lock.ok) {
+      emit({ ok: false, stage: 'cycle-busy', errors: [{ message: lock.error, fix: '다른 세션 종료 대기 또는 pact status' }] });
+      process.exit(1); // 락 미획득 → 누수 없음
     }
-    const rebuilt = rebuildTaskPrompts(cwd);
-    const out = {
-      ok: true,
-      already_prepared: true,
-      task_prompts: rebuilt.task_prompts,
-      ready_to_collect: rebuilt.ready_to_collect, // 모든 워커 done이면 spawn 스킵 → collect 로
-      coordinator_review_needed: rebuilt.coordinator_review_needed,
-      message: rebuilt.ready_to_collect
-        ? '이미 prepare 완료 + 모든 워커 done — collect 로 진행 권장.'
-        : '이미 prepare 완료 — 미완료 task 재개 가능 (--force 로 재생성).',
-    };
-    // DRV-1: 재개(already_prepared)에서도 --graph 면 전체 DAG 를 다시 emit 해야 한다. 안 그러면
-    // 크래시-재개/부분 사이클에서 파이프라인이 current_batch 에 남은 task 만 drain 하고, 아직
-    // admit 안 된 하위 DAG(예: dep 완료 후 투입될 task)를 pull 대상으로 못 봐 조용히 누락된다
-    // (→ 기본 --cycles=1 이면 잔여 task 가 있어도 exit 0 성공 오보). fresh prepare(doPrepare)와
-    // 동일 소스: task source 를 재파싱해 buildTaskGraph. 파싱 실패해도 재개 자체는 진행(방어).
-    if (args.includes('--graph')) {
-      try {
-        const cb = readCurrentBatch(cwd) || {};
-        const batch0 = (cb.task_ids || []).map((id) => ({ id }));
-        const parsed = parseTaskFiles(discoverTaskFiles({ cwd }), { cwd });
-        out.task_graph = buildTaskGraph(parsed.tasks, batch0);
-      } catch { /* task source 재파싱 실패 시 graph 생략 — 재개는 계속 진행 */ }
+    try {
+      // STAB-1: adopt 전 owner 게이트 — 살아있는 타 세션이 소유 중이면 spawn 전 거부(이중 spawn 차단).
+      const gate = ownerAdoptGate(cwd, args);
+      if (!gate.ok) {
+        const h = gate.holder;
+        const who = `pid=${h.pid}${h.session ? `, session=${h.session}` : ''}`;
+        const msg = `cycle-busy: 다른 세션(${who})이 이 사이클을 소유 중`;
+        emit({
+          ok: false,
+          stage: 'cycle-busy',
+          error: msg,
+          errors: [{ message: msg, fix: '다른 세션 종료 대기 또는 pact status' }],
+        });
+        // process.exit 는 finally(releaseCycleLock)를 건너뛴다 → exitCode 만 세팅하고 return.
+        process.exitCode = 1;
+        return;
+      }
+      const rebuilt = rebuildTaskPrompts(cwd);
+      const out = {
+        ok: true,
+        already_prepared: true,
+        task_prompts: rebuilt.task_prompts,
+        ready_to_collect: rebuilt.ready_to_collect, // 모든 워커 done이면 spawn 스킵 → collect 로
+        coordinator_review_needed: rebuilt.coordinator_review_needed,
+        message: rebuilt.ready_to_collect
+          ? '이미 prepare 완료 + 모든 워커 done — collect 로 진행 권장.'
+          : '이미 prepare 완료 — 미완료 task 재개 가능 (--force 로 재생성).',
+      };
+      // DRV-1: 재개(already_prepared)에서도 --graph 면 전체 DAG 를 다시 emit 해야 한다. 안 그러면
+      // 크래시-재개/부분 사이클에서 파이프라인이 current_batch 에 남은 task 만 drain 하고, 아직
+      // admit 안 된 하위 DAG(예: dep 완료 후 투입될 task)를 pull 대상으로 못 봐 조용히 누락된다
+      // (→ 기본 --cycles=1 이면 잔여 task 가 있어도 exit 0 성공 오보). fresh prepare(doPrepare)와
+      // 동일 소스: task source 를 재파싱해 buildTaskGraph. 파싱 실패해도 재개 자체는 진행(방어).
+      if (args.includes('--graph')) {
+        try {
+          const cb = readCurrentBatch(cwd) || {};
+          const batch0 = (cb.task_ids || []).map((id) => ({ id }));
+          const parsed = parseTaskFiles(discoverTaskFiles({ cwd }), { cwd });
+          out.task_graph = buildTaskGraph(parsed.tasks, batch0);
+        } catch { /* task source 재파싱 실패 시 graph 생략 — 재개는 계속 진행 */ }
+      }
+      emit(out);
+      return;
+    } finally {
+      releaseCycleLock({ cwd });
     }
-    emit(out);
-    return;
   }
 
   // preflight를 lock 전에. lock 획득이 .pact/ 만들면 isClean이 false 잡으므로.

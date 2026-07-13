@@ -381,6 +381,61 @@ test('owner gate — --owner-pid 미제공이면 게이트 skip(하위호환)', 
   } finally { cleanupProject(dir); }
 });
 
+// ─── P1-#2: adopt(already_prepared) 를 acquireCycleLock 배타 구간으로 (이중 spawn 차단) ──
+// owner 검사·restamp·task_prompts 재구성이 락 밖이면 두 세션이 동시에 무-owner/죽은-owner 를
+// 읽고 둘 다 gate 통과 → 같은 task_prompts 반환 → 워커 이중 spawn. 진행 중 사이클 락이 살아있으면
+// adopt 는 cycle-busy 로 거부해야 한다(동시 adopt 직렬화).
+
+test('P1-#2 adopt — 진행 중 cycle 락(살아있는 세션) 있으면 cycle-busy 거부', () => {
+  const dir = makeProject();
+  try {
+    writeTasks(dir, [{ id: 'ADOPT-001', allowed_paths: ['src/a.ts'] }]);
+    // already_prepared 상태 구성
+    const r1 = runPact(['run-cycle', 'prepare', '--max=1'], dir);
+    assert.equal(r1.status, 0, r1.stderr);
+    // 다른 세션이 cycle.lock 을 살아있는 pid 로 점유 중이라고 심는다(동시 adopt 진행 모델).
+    fs.writeFileSync(
+      path.join(dir, '.pact/cycle.lock'),
+      JSON.stringify({ pid: ALIVE_PID, stage: 'collect', acquired_at: new Date().toISOString() }),
+    );
+    // adopt 시도 → 배타 구간 진입 실패 → cycle-busy exit 1
+    const r2 = runPact(['run-cycle', 'prepare', '--max=1'], dir);
+    assert.equal(r2.status, 1, `cycle-busy 는 exit 1: ${r2.stdout}`);
+    const out = JSON.parse(r2.stdout);
+    assert.equal(out.ok, false);
+    assert.equal(out.stage, 'cycle-busy');
+    // 심어둔 살아있는 락은 그대로 보존(adopt 가 훔치지 않음)
+    assert.equal(JSON.parse(fs.readFileSync(path.join(dir, '.pact/cycle.lock'), 'utf8')).pid, ALIVE_PID);
+  } finally { cleanupProject(dir); }
+});
+
+test('P1-#2 adopt — 성공 후 cycle.lock 누수 없음 (배타 구간 finally 해제)', () => {
+  const dir = makeProject();
+  try {
+    writeTasks(dir, [{ id: 'ADLK-001', allowed_paths: ['src/a.ts'] }]);
+    runPact(['run-cycle', 'prepare', '--max=1'], dir);
+    const r2 = runPact(['run-cycle', 'prepare', '--max=1'], dir);
+    assert.equal(r2.status, 0, r2.stderr);
+    assert.equal(JSON.parse(r2.stdout).already_prepared, true);
+    assert.equal(fs.existsSync(path.join(dir, '.pact/cycle.lock')), false, 'adopt 후 cycle.lock 해제');
+  } finally { cleanupProject(dir); }
+});
+
+test('P1-#2 adopt — owner-gate 거부도 cycle.lock 해제 (process.exit 대신 exitCode+finally)', () => {
+  const dir = makeProject();
+  try {
+    writeTasks(dir, [{ id: 'GATE-001', allowed_paths: ['src/a.ts'] }]);
+    // 살아있는 타 owner 가 소유권 stamp
+    runPact(['run-cycle', 'prepare', `--owner-pid=${ALIVE_PID}`, '--session=A'], dir);
+    // 다른 pid 로 재개 → owner-gate 거부(cycle-busy)
+    const b = runPact(['run-cycle', 'prepare', `--owner-pid=${DEAD_PID}`, '--session=B'], dir);
+    assert.equal(b.status, 1);
+    assert.equal(JSON.parse(b.stdout).stage, 'cycle-busy');
+    // 핵심: 게이트 거부가 배타 구간 안이지만 finally 로 cycle.lock 해제(process.exit 였다면 누수).
+    assert.equal(fs.existsSync(path.join(dir, '.pact/cycle.lock')), false, 'gate 거부 후 cycle.lock 누수 없음');
+  } finally { cleanupProject(dir); }
+});
+
 test('owner gate — collect 후 owner clear(current_batch 소비)', () => {
   const dir = makeProject();
   try {
