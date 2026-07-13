@@ -229,6 +229,162 @@ function scanLineWriteTargets(line) {
   return targets;
 }
 
+// 한 세그먼트를 쉘 토큰으로 분해 (따옴표 존중, 리다이렉션 오퍼레이터/타겟은 제외).
+// 리다이렉션 타겟은 scanLineWriteTargets 가 따로 잡으므로 여기선 명령 인자만 남긴다.
+function tokenizeSegment(seg) {
+  const toks = [];
+  const n = seg.length;
+  let i = 0;
+  while (i < n) {
+    const c = seg[i];
+    if (/\s/.test(c)) { i++; continue; }
+    if (c === '>' || c === '<') {                 // 리다이렉션: 오퍼레이터 + 타겟 스킵
+      i++;
+      if (seg[i] === c) i++;                       // >> or <<
+      while (i < n && /\s/.test(seg[i])) i++;
+      let tq = null;
+      while (i < n) {                              // 타겟 토큰 소비 (따옴표 존중)
+        const d = seg[i];
+        if (tq) { if (d === tq) tq = null; i++; continue; }
+        if (d === '"' || d === "'") { tq = d; i++; continue; }
+        if (/\s/.test(d)) break;
+        i++;
+      }
+      continue;
+    }
+    let t = '';
+    let tq = null;
+    let sawRedir = false;
+    while (i < n) {                                // 일반 토큰 (따옴표 존중)
+      const d = seg[i];
+      if (tq) { if (d === tq) { tq = null; i++; continue; } t += d; i++; continue; }
+      if (d === '"' || d === "'") { tq = d; i++; continue; }
+      if (/\s/.test(d)) break;
+      if (d === '>' || d === '<') { sawRedir = true; break; }  // fd 접두(2>) 등 → 다음 반복서 처리
+      t += d; i++;
+    }
+    if (t) toks.push(t);
+    if (sawRedir) continue;
+  }
+  return toks;
+}
+
+// 한 줄을 쉘 명령 세그먼트(| & ; && ||)로 분해 (따옴표 존중). > 리다이렉션은 세그먼트 내부에 남긴다.
+function splitSegments(line) {
+  const segs = [];
+  const n = line.length;
+  let i = 0;
+  let start = 0;
+  let q = null;
+  while (i < n) {
+    const c = line[i];
+    if (q) { if (c === q) q = null; i++; continue; }
+    if (c === '"' || c === "'") { q = c; i++; continue; }
+    if (c === '|' || c === '&' || c === ';') {
+      segs.push(line.slice(start, i));
+      i++;
+      while (i < n && line[i] === c) i++;          // || && ;; 축약
+      start = i;
+      continue;
+    }
+    i++;
+  }
+  segs.push(line.slice(start));
+  return segs;
+}
+
+// cp/mv/install/ln 목적지 추출: -t DIR / --target-directory=DIR / 번들 -ft 우선, 없으면 마지막 non-flag 인자 = dest.
+// 값을 취하는 플래그(-m/-o/-g/-S 등)의 인자만 dest 후보에서 제외.
+// 주의: coreutils 의 --backup·-Z·--context 는 별도 인자를 받지 않는다(값은 =attached 형).
+//       값-플래그로 취급하면 다음 소스 토큰을 삼켜 positionals<2 → dest 미검사 우회를 낳으므로 제외.
+//       =attached 형(--backup=numbered 등)은 아래 flag-skip(continue)로 충분히 건너뛴다.
+const CPMV_VALUE_FLAGS = new Set(['-m', '--mode', '-o', '--owner', '-g', '--group', '-S', '--suffix', '-t', '--target-directory']);
+function collectDestArg(args, targets) {
+  for (let j = 0; j < args.length; j++) {
+    const a = args[j];
+    if (a === '-t' || a === '--target-directory') { if (args[j + 1]) targets.push(args[j + 1]); return; }
+    const mt = /^--target-directory=(.+)$/.exec(a);
+    if (mt) { targets.push(mt[1]); return; }
+    // 번들 short 플래그 끝이 t(예: -ft = -f -t)면 다음 토큰이 target-directory → dest 로 검사.
+    if (!a.startsWith('--') && /^-[A-Za-z]*t$/.test(a)) { if (args[j + 1]) targets.push(args[j + 1]); return; }
+    // 부착형 short target-dir(-t<DIR>, -ft<DIR>, -avt<DIR>): getopt 는 arg-요구 옵션 t 뒤
+    // 클러스터 나머지를 값으로 붙여 취급 → target-directory. lazy 로 첫 t 뒤 전체를 dest 로 캡처.
+    // 분리형(위 두 갈래)과 배타적: `-t`/`...t` 로 끝나면 여기 (.+) 매칭 실패해 아래로 안 샌다.
+    if (!a.startsWith('--')) {
+      const at = /^-[A-Za-z]*?t(.+)$/.exec(a);
+      if (at) { targets.push(at[1]); return; }
+    }
+  }
+  const positionals = [];
+  for (let j = 0; j < args.length; j++) {
+    const a = args[j];
+    if (a === '--') { positionals.push(...args.slice(j + 1)); break; }
+    if (a.startsWith('-') && a.length > 1) {
+      if (CPMV_VALUE_FLAGS.has(a)) j++;            // 다음 토큰은 플래그 값 → 스킵
+      continue;
+    }
+    positionals.push(a);
+  }
+  if (positionals.length >= 2) targets.push(positionals[positionals.length - 1]);  // 마지막 = dest
+}
+
+// sed -i / --in-place 편집 대상 파일들 추출. -i 없으면 stdout 출력이라 파일 쓰기 아님.
+function collectSedInPlace(args, targets) {
+  let inPlace = false;
+  let haveScript = false;                          // -e/-f 로 스크립트가 이미 주어졌나
+  const positionals = [];
+  for (let j = 0; j < args.length; j++) {
+    const a = args[j];
+    if (a === '--') { positionals.push(...args.slice(j + 1)); break; }
+    if (a.startsWith('--')) {
+      if (a === '--in-place' || a.startsWith('--in-place=')) inPlace = true;
+      else if (a === '--expression' || a === '--file') { haveScript = true; j++; }
+      else if (a.startsWith('--expression=') || a.startsWith('--file=')) haveScript = true;
+      continue;
+    }
+    if (a.startsWith('-') && a.length > 1) {        // short 클러스터 (-i, -i.bak, -ni, -e ...)
+      if (/i/.test(a)) inPlace = true;
+      // BSD/macOS sed: 클러스터가 i 로 끝나(attached suffix 없음) 다음 토큰이 분리형 백업 suffix면 소비.
+      // 확실한 suffix 신호(.으로 시작·/ 없음, 예 .bak/.orig)만 삼켜 sed script(s///·주소)로는 오소비 X.
+      // 미봉 시 GNU 가정으로 script 토큰까지 파일 오인 → darwin 정상 in-scope 편집 과차단.
+      if (/i$/.test(a) && args[j + 1] && args[j + 1].startsWith('.') && !args[j + 1].includes('/')) j++;
+      if (/[ef]/.test(a)) { haveScript = true; if (/[ef]$/.test(a)) j++; }  // -e/-f 값 소비
+      continue;
+    }
+    positionals.push(a);
+  }
+  if (!inPlace) return;
+  const files = haveScript ? positionals : positionals.slice(1);  // -e/-f 없으면 첫 위치인자=스크립트
+  for (const f of files) targets.push(f);
+}
+
+// dd of=PATH 출력 대상 추출.
+function collectDd(args, targets) {
+  for (const a of args) {
+    const m = /^of=(.+)$/.exec(a);
+    if (m) targets.push(m[1]);
+  }
+}
+
+// 리다이렉션이 아닌 "인자로 파일을 쓰는" 명령(cp/mv/install/sed -i/dd/ln)의 목적지를 추출.
+// 세그먼트 단위로 나눠 각 명령의 실제 이름을 보고 분기 → `npm install`·`git mv` 같은 서브커맨드 오탐 회피.
+function scanLineCommandWriteTargets(line) {
+  const targets = [];
+  const PREFIX = new Set(['sudo', 'env', 'command', 'nohup']);
+  for (const seg of splitSegments(line)) {
+    const toks = tokenizeSegment(seg);
+    if (!toks.length) continue;
+    let k = 0;
+    while (k < toks.length && (/^[A-Za-z_][A-Za-z0-9_]*=/.test(toks[k]) || PREFIX.has(toks[k]))) k++;
+    const cmd = toks[k];
+    const args = toks.slice(k + 1);
+    if (cmd === 'cp' || cmd === 'mv' || cmd === 'install' || cmd === 'ln') collectDestArg(args, targets);
+    else if (cmd === 'sed') collectSedInPlace(args, targets);
+    else if (cmd === 'dd') collectDd(args, targets);
+  }
+  return targets;
+}
+
 // heredoc 오프너( <<EOF, <<-EOF, << EOF, <<'EOF', <<"END" )를 인식해 델리미터명 캡처.
 // (?<!<)…(?!<): here-string(<<<)의 일부인 `<<` 를 heredoc 오프너로 오탐하지 않는다(LG-2).
 //   `grep x <<< "EOF"` 의 `<<` 를 오프너로 잡으면 다음 줄이 본문으로 스킵돼 경계 밖 쓰기가
@@ -237,8 +393,9 @@ const HEREDOC_OPENER = /(?<!<)<<(?!<)-?\s*(?:(['"])([A-Za-z_][A-Za-z0-9_]*)\1|\\
 
 // 쉘 명령에서 쓰기 타겟 경로를 heredoc-aware 로 추출.
 // 명령줄은 스캔하고 heredoc 본문(델리미터 사이)은 스킵 → 본문 안 > 오탐 금지.
-// 한계(best-effort, 정적 파서 밖): cp/mv·sed -i·변수 전개($VAR)·산술 <<·process substitution
-// 은 못 잡는다. 최종 백스톱은 merge 게이트 git-diff.
+// 커버: 리다이렉션(> >> tee touch) + 인자로 파일을 쓰는 명령(cp/mv/install/sed -i/dd of=/ln).
+// 한계(best-effort, 정적 파서 밖): 변수 전개($VAR)·eval·산술 <<·process substitution·미지 도구
+// 는 못 잡는다. 최종 백스톱은 merge 게이트 git-diff.
 function extractWriteTargets(cmd) {
   const lines = String(cmd || '').split('\n');
   const targets = [];
@@ -251,6 +408,7 @@ function extractWriteTargets(cmd) {
       continue; // heredoc 본문/종료줄 — 쓰기 타겟 아님 (본문 안 > 무시)
     }
     for (const t of scanLineWriteTargets(raw)) targets.push(t);
+    for (const t of scanLineCommandWriteTargets(raw)) targets.push(t);
     let m;
     HEREDOC_OPENER.lastIndex = 0;
     while ((m = HEREDOC_OPENER.exec(raw))) {
