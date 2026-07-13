@@ -26,7 +26,10 @@
 //   --real            실제 Agent SDK spawn (없으면 MOCK)
 //   --pact            태스크를 pact CLI에서 + collect (없으면 DEMO)
 //   --no-pipeline     레거시 배치-배리어(Promise.allSettled → 직렬 collect)로 복귀
-//   --max=N           동시 슬롯 수 K (기본 5, prepare 상한과 동일)
+//   --max=N           동시 슬롯 수 K = 하드 캡 (기본 5, prepare 상한과 동일)
+//   --recover-after=N (IMP-5) rate-cap 다운시프트 후 연속 클린 settle N회면 동시폭 1 복원 (기본 3)
+//                     rate-limit(429/overloaded) 실패 신호에 반응해 유효 동시폭을 일시 다운시프트 →
+//                     재시도 재실행 낭비를 줄인다(파이프라인 전용, 하한 1, 상한 --max). 평시 무동작.
 //   --cycles=N        graph 소진 후 재-prepare 라운드 수 (기본 1)
 //   --model=NAME      실제 워커 모델 (기본 sonnet)
 //   --timeout=SEC     워커 hang 백스톱 (기본 1200 — 작업 안 자름, cap 은 budget)
@@ -109,6 +112,10 @@ const ledger = { orchestratorTokens: 0, spentUsd: 0, attempts: [], escalations: 
 // DRV-3: 현재 in-flight 워커 수(pool onEvent 로 갱신). runWorkerReal 이 per-worker 예산 cap 을
 // '남은예산/동시수' 로 나누는 분모 — 동시 K 워커가 각자 예산 전액을 받아 K×BUDGET 로 폭주하는 것 방지.
 let liveInFlight = 0;
+// IMP-5: rate-limit 반응형 다운시프트의 현재 유효 동시폭. 평시엔 MAX(하드 캡)와 동일 — 조정 시에만 감소/복원.
+// driver-state.json 에 항상 실어(additive) pact status 가 "지금 몇 슬롯으로 도는지"를 관측하게 한다.
+let effectiveSlots = MAX;
+const RECOVER_AFTER = Math.floor(getNum('--recover-after', 3)); // 연속 클린 settle 몇 회에 1 복원(진동 방지)
 const tokOf = (u) => u ? (u.input_tokens || 0) + (u.output_tokens || 0) + (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0) : 0;
 
 // ---- (verbose) 내부 동작 로그 — 토큰 0 (콘솔만). 워커 도구 호출·사이클 단계 가시화 -------
@@ -156,6 +163,7 @@ function writeDriverState(patch) {
       done: ledger.live.done,
       escalated: ledger.live.escalated,
       rejected: ledger.live.rejected,
+      effective_slots: effectiveSlots, // IMP-5: 현재 유효 동시폭(=MAX 가 평시값, rate-cap 시 감소)
       ...patch,
     });
   } catch { /* 관측은 best-effort — 실패해도 작업엔 영향 없음 */ }
@@ -228,6 +236,11 @@ function driverEventLine(evt) {
   if (evt.type === 'settle') {
     if (evt.outcome && evt.outcome.status) rec.status = evt.outcome.status;
     if (evt.merge && evt.merge.result) rec.merge = evt.merge.result;
+  }
+  // IMP-5: rate-limit 반응형 다운시프트 조정 — 유효 동시폭 전이(from→to)를 makespan 재구성 소스에 남긴다.
+  if (evt.type === 'downshift') {
+    rec.from = evt.from; rec.to = evt.to; rec.direction = evt.direction;
+    if (evt.signal) rec.signal = evt.signal;
   }
   return rec;
 }
@@ -597,12 +610,23 @@ async function runCyclePipeline(c, tasks, graph) {
     // demo: 머지 없음 → 워커 done 이 곧 done. 단 --merge-reject 시연 시엔 mock 머지 게이트를 꽂는다.
     mergeOne: USE_PACT ? mergeOnePact : (MERGE_REJECT.size ? mergeOneMock : null),
     overlaps: USE_PACT ? pathsOverlap : () => false,   // demo: 개별 tmpdir → 무충돌
+    // IMP-5: rate-limit 반응형 다운시프트(파이프라인 전용 — 레거시 --no-pipeline 엔 미적용). 평시 무동작.
+    downshift: { recoverAfter: RECOVER_AFTER, floor: 1 },
     onEvent: (evt) => {
       // DX-2: settle 마다 라이브 진행 카운터 증가(→ 아래 write 에 항상 실려 status --watch 가 실시간 관측).
       // IMP-2: 워커가 status.json 을 못 남기고 죽었으면 드라이버 권위 데이터로 합성(자기보고는 안 덮음).
       if (evt.type === 'settle') { tallySettle(ledger.live, evt); if (USE_PACT) synthesizeRunStatus(evt.outcome); }
-      // IMP-1: dispatch/settle 을 driver-events.jsonl 로 영속(makespan 재구성 소스, 0토큰).
-      if (evt.type === 'dispatch' || evt.type === 'settle') appendDriverEvent(driverEventLine(evt));
+      // IMP-5: 유효 동시폭 조정 — 콘솔 1줄 + 유효폭 상태 갱신 + jsonl. (신호 감지·목표계산은 pool 이 순수하게 수행.)
+      if (evt.type === 'downshift') {
+        effectiveSlots = evt.to;
+        const label = evt.direction === 'down'
+          ? `⚠️ rate-cap 신호 — 동시폭 ${evt.from}→${evt.to} (다운시프트: 429/overloaded 재시도 낭비 방지)`
+          : `↑ 안정화 — 동시폭 ${evt.from}→${evt.to} (복원, 상한 ${MAX})`;
+        console.log(`  ${label}`);
+        writeDriverState({ phase: 'spawning', cycle: c });
+      }
+      // IMP-1: dispatch/settle/downshift 을 driver-events.jsonl 로 영속(makespan 재구성 소스, 0토큰).
+      if (evt.type === 'dispatch' || evt.type === 'settle' || evt.type === 'downshift') appendDriverEvent(driverEventLine(evt));
       if (evt.in_flight) { liveInFlight = evt.in_flight.length; writeDriverState({ phase: 'spawning', cycle: c, active_workers: evt.in_flight }); } // liveInFlight: DRV-3 예산 분할 분모
     },
     shouldStop: () => (ledger.spentUsd >= BUDGET ? `예산 초과 ($${ledger.spentUsd.toFixed(2)} ≥ $${BUDGET})` : null),
@@ -703,6 +727,8 @@ for (let c = 1; c <= CYCLES; c++) {
   if (PIPELINE) {
     // ★ P2-2 · SPD-1/3: K-슬롯 워커 풀 — 슬롯이 비면 다음 ready+무겹침 task 를 즉시 pull.
     // 완료 즉시 단건 머지(게이트 경유)가 다른 워커 실행과 겹친다 → 배치 배리어 붕괴.
+    // IMP-5: 다운시프트 컨트롤러는 사이클마다 fresh(=MAX 에서 시작) → 관측 변수도 사이클 경계에서 MAX 로 리셋.
+    effectiveSlots = MAX;
     const graphN = Object.keys((graph && graph.tasks) || {}).length;
     console.log(`\ncycle ${c}: K-슬롯 풀 (슬롯=${MAX}, ready=${tasks.length}${graphN ? ` +graph=${graphN}` : ''}) — freed slot 이 다음 ready+무겹침 task pull (오케스트레이터 = 0 토큰)`);
     if (VERBOSE) for (const t of tasks) vlog(`  [spawn] ${t.task_id} → worktree ${t.working_dir}`);

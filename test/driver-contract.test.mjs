@@ -275,6 +275,19 @@ test('IMP-1 — driverEventLine: pool 이벤트(id) → JSONL 레코드(task_id�
   assert.equal(settle.merge, 'merged');
 });
 
+// ---- IMP-5: 다운시프트 이벤트를 JSONL 로 영속(from/to/direction 관측) ----
+
+test('IMP-5 — driverEventLine: downshift 이벤트 → from/to/direction/signal 레코드', () => {
+  const rec = driverEventLine({ type: 'downshift', id: 'A', ts: 200, from: 5, to: 4, direction: 'down', signal: 'rate_limit' });
+  assert.equal(rec.type, 'downshift');
+  assert.equal(rec.task_id, 'A');
+  assert.equal(rec.from, 5);
+  assert.equal(rec.to, 4);
+  assert.equal(rec.direction, 'down');
+  assert.equal(rec.signal, 'rate_limit');
+  assert.match(rec.ts, /^\d{4}-\d{2}-\d{2}T/, 'epoch → ISO');
+});
+
 test('IMP-1 — appendDriverEvent: JSONL 한 줄씩 append(eventsPath 주입)', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pact-imp1-'));
   try {

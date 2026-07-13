@@ -31,6 +31,60 @@
 //   shouldStop   () => reason|null  예산 등 정지 신호(있으면 신규 dispatch 중단, in-flight 는 drain)
 // ============================================================================
 
+// ============================================================================
+// IMP-5 최소형 — rate-limit 신호 기반 반응형 동시폭 다운시프트 (파이프라인 전용).
+// ----------------------------------------------------------------------------
+// 선제적/데이터 기반 K 자동 튜닝(측정 축적 전 추측)이 아니라, 워커의 rate-limit '실패 신호'에
+// 반응해 유효 동시폭을 일시적으로 낮추는 반응형 가드다. 평시(신호 없음)엔 무동작(target=slots).
+// 총비용은 K 와 무관(같은 task 수) — 이 가드의 가치는 오직 구독 soft ceiling 에서 다수 워커가
+// 429/overloaded 로 실패→재시도 재실행하는 낭비를 줄이는 것.
+// ============================================================================
+
+// rate-limit 계열 신호 판별 (순수). 워커 결과의 subtype/reason/error/message 문자열에서
+//   429(too many requests)·529·rate_limit·overloaded 를 잡는다. 명시 boolean(rate_limited)도 존중.
+// classifyRealResult 는 reason=subtype 을 실어 보내고, 예외 경로는 reason='error:<message>' 라
+//   두 형태 모두 여기서 커버된다. 일반 오류(error_max_turns·timeout·TypeError 등)엔 false(오탐 방지).
+const RATE_LIMIT_RE = /\b429\b|\b529\b|rate[\s_-]?limit|overloaded|too many requests/i;
+export function isRateLimited(result) {
+  if (!result || typeof result !== 'object') return false;
+  if (result.rate_limited === true) return true; // 드라이버가 이미 분류해 실어준 명시 신호 우선
+  for (const f of [result.subtype, result.reason, result.error, result.message]) {
+    if (typeof f === 'string' && RATE_LIMIT_RE.test(f)) return true;
+  }
+  return false;
+}
+
+// rate-limit 반응형 다운시프트 컨트롤러 (순수 상태기계 — 시계·부수효과 없음, 회복은 카운트 기반).
+//   observe(outcome) 를 settle 마다 호출:
+//     · rate-limit 신호 → target 1 감소(하한 floor), clean streak 리셋(급복원 진동 방지).
+//     · 그 외(클린) settle → clean streak +1, 연속 recoverAfter 회면 target 1 복원(상한 max).
+//   상향 자동 조정 없음 — 오직 다운시프트분의 복원만. --max 는 여전히 하드 캡(max).
+export function createDownshiftController({ max, floor = 1, recoverAfter = 3 } = {}) {
+  const hardMax = Math.max(1, Math.floor(max) || 1);
+  const lo = Math.max(1, Math.min(Math.floor(floor) || 1, hardMax));
+  const need = Math.max(1, Math.floor(recoverAfter) || 1);
+  let target = hardMax;
+  let cleanStreak = 0;
+  return {
+    get target() { return target; },
+    observe(outcome) {
+      const prev = target;
+      if (isRateLimited(outcome)) {
+        cleanStreak = 0;                              // 신호 발생 → 회복 카운터 리셋(진동 방지)
+        if (target > lo) target -= 1;
+        return { changed: target !== prev, from: prev, to: target, direction: 'down', signal: 'rate_limit' };
+      }
+      cleanStreak += 1;
+      if (target < hardMax && cleanStreak >= need) {
+        target += 1;
+        cleanStreak = 0;
+        return { changed: true, from: prev, to: target, direction: 'up', signal: 'recover' };
+      }
+      return { changed: false, from: prev, to: target, direction: null };
+    },
+  };
+}
+
 export async function runPipeline(cfg) {
   const {
     slots,
@@ -42,7 +96,20 @@ export async function runPipeline(cfg) {
     fileCountOf = null,
     onEvent = () => {},
     shouldStop = () => null,
+    downshift = null, // IMP-5: { floor?, recoverAfter? } 면 rate-limit 반응형 다운시프트 활성(null=비활성, 기존 동작 불변)
   } = cfg;
+
+  // 다운시프트 컨트롤러(옵션). 없으면 유효 슬롯 목표는 항상 고정 slots(= --max) — 완전 하위호환.
+  const controller = downshift ? createDownshiftController({ max: slots, ...downshift }) : null;
+  const currentSlots = () => (controller ? controller.target : slots);
+  // settle 결과를 컨트롤러에 먹여 목표를 조정하고, 변화가 있으면 downshift 이벤트 발화(관측·jsonl).
+  const observeSettle = (id, outcome) => {
+    if (!controller) return;
+    const info = controller.observe(outcome);
+    if (info.changed) {
+      onEvent({ type: 'downshift', id, ts: Date.now(), from: info.from, to: info.to, direction: info.direction, signal: info.signal });
+    }
+  };
 
   const allRunIds = new Set(tasks.keys());
   const notStarted = new Set(tasks.keys());
@@ -111,8 +178,9 @@ export async function runPipeline(cfg) {
   while (true) {
     if (!stoppedReason) { const s = shouldStop(); if (s) stoppedReason = s; }
 
-    // 슬롯 채우기 — 정지/충돌 아니면.
-    while (!stoppedReason && !conflicted && inFlight.size < slots) {
+    // 슬롯 채우기 — 정지/충돌 아니면. 유효 슬롯 목표(currentSlots)는 다운시프트 시 slots 밑으로 줄 수 있다.
+    // 목표가 in-flight 아래로 떨어지면 신규 dispatch 만 멈추고(진행 중 워커는 안 자름) drain 후 목표 존중.
+    while (!stoppedReason && !conflicted && inFlight.size < currentSlots()) {
       const id = pickDispatchable();
       if (id === null) break;
       notStarted.delete(id);
@@ -136,6 +204,7 @@ export async function runPipeline(cfg) {
       const o = { task_id: res.id, status: 'escalated', reason: `admit 실패: ${res.reason}` };
       outcomes.push(o);
       onEvent({ type: 'settle', id: res.id, ts: Date.now(), outcome: o, in_flight: inFlightIds() });
+      observeSettle(res.id, o); // IMP-5: admit 실패도 settle 로 카운트(비 rate-limit → 클린)
       continue;
     }
 
@@ -153,9 +222,10 @@ export async function runPipeline(cfg) {
       done.add(res.id); // 데모(머지 없음): 워커 done 이 곧 done
     }
     onEvent({ type: 'settle', id: res.id, ts: Date.now(), outcome: res.outcome, merge: res.merge, in_flight: inFlightIds() });
+    observeSettle(res.id, res.outcome); // IMP-5: rate-limit 신호면 다음 dispatch 목표를 낮춘다(회복은 연속 클린 후)
   }
 
   return { outcomes, merges, stoppedReason, conflicted, skipped: [...notStarted] };
 }
 
-export default { runPipeline };
+export default { runPipeline, isRateLimited, createDownshiftController };
