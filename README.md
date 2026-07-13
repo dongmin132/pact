@@ -3,7 +3,7 @@
 > Claude Code 위에 얹는 **계약 기반 AI 개발 운영 시스템**.
 > 문서·계약·검증·worktree 격리 병렬 에이전트로 통제하는 플러그인.
 
-[![tests](https://img.shields.io/badge/tests-532%2F532-brightgreen)](./test) [![version](https://img.shields.io/badge/version-0.9.0-blue)](./.claude-plugin/plugin.json) [![deps](https://img.shields.io/badge/deps-zero-success)](./package.json) [![license](https://img.shields.io/badge/license-MIT-blue)](#라이선스)
+[![tests](https://img.shields.io/badge/tests-582%2F582-brightgreen)](./test) [![version](https://img.shields.io/badge/version-0.10.0-blue)](./.claude-plugin/plugin.json) [![deps](https://img.shields.io/badge/deps-zero-success)](./package.json) [![license](https://img.shields.io/badge/license-MIT-blue)](#라이선스)
 
 ---
 
@@ -323,7 +323,7 @@ opt-out은 마크다운/설정/마이그레이션 task에서만: `tdd: false` fr
 
 ---
 
-## 릴리스 흐름 (v0.1 → 0.9.0)
+## 릴리스 흐름 (v0.1 → 0.10.0)
 
 | 버전 | 날짜 | 한 줄 |
 |---|---|---|
@@ -344,6 +344,7 @@ opt-out은 마크다운/설정/마이그레이션 task에서만: `tdd: false` fr
 | v0.8.0 | 2026-06-01 | 워커/cycle 안정성 (brewdy issue #1, 5건) — 머지 후 status sync, report.md 게이트, yolo+forbidden 검증, status.json required 완화, fallback 4종 |
 | v0.8.1 | 2026-06-01 | `decisions` 배열 schema 안내 (issue #3) — worker prompt 예시 + `pact validate-status` self-validate |
 | 0.9.0 | 2026-06-18 | `/pact:wrap` + merge-result.json 사이클 SOT 강화 + `pact drive` 안정성(context bundle bloat fix·Bash 우회 차단·`maxTurns` cap 제거) |
+| 0.10.0 | 2026-07-13 | **K-슬롯 파이프라인** (drive + 인터랙티브 /pact:parallel 이벤트 루프) — 사이클-배리어 폐기, prepare --graph/admit/collect-one, 레버 배선, report-gen, owner/drive 락, 감사 2라운드+dogfood 수리 46건. 테스트 370→582 |
 
 전체 변경 사항은 [CHANGELOG.md](./CHANGELOG.md).
 

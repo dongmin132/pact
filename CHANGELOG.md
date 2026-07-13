@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased (0.10.0-dev)
+## 0.10.0 — 2026-07-13
 
 > 슬로우니스 종합 로드맵 (stability + architecture) — `pact drive` 파이프라인화, 레버 배선, 멀티세션 안전성, 레이어 정리. `--real` 실토큰 e2e 검증 완료(단일 워커 스모크 + `--real --pact` 풀사이클 3워커 — K-슬롯 풀·admit·collect-one 머지·오케스트레이터 0토큰 실증).
 
