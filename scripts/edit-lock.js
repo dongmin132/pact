@@ -13,7 +13,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { isAlive } = require('./lock.js');
+const { isAlive, reclaimStale } = require('./lock.js');
 const { writeFileExclusive } = require('./lib/atomic-write.js');
 const yaml = require('./lib/yaml-mini.js');
 
@@ -131,10 +131,22 @@ function acquireEditLock(target, opts = {}) {
       };
     }
     action = holder && holder.session_label === sessionLabel ? 're-acquire' : 'takeover';
-    // 내 락(재획득)이거나 stale(takeover) — 기존 파일을 치우고 배타적 재공개.
-    // rename 원자성으로 동시 획득자여도 단일 승자 수렴(STAB-2).
-    stalePath = `${file}.stale.${pid}.${Date.now()}`;
-    try { fs.renameSync(file, stalePath); } catch { stalePath = null; }
+    // 내 락(재획득)이거나 stale(takeover) — 치우되 rename 후 재검증(P1-#1). 자기 session 재획득은
+    // heldFn 이 held 로 보지 않아 재공개하되, 판정~rename 사이 타 세션이 fresh live 락을 공개했으면
+    // 복원 + 점유 실패(둘 다 획득 방지). readFn 은 이 모듈의 파서(readLockFile)를 주입.
+    const rec = reclaimStale(file, pid, {
+      heldFn: (h) => !!h && isAlive(h.pid) && h.session_label !== sessionLabel,
+      readFn: readLockFile,
+    });
+    if (!rec.ok) {
+      const h = rec.holder;
+      return {
+        ok: false,
+        error: `이미 점유 중 (pid=${h.pid}, session=${h.session_label || 'unknown'})`,
+        holder: h,
+      };
+    }
+    stalePath = rec.stalePath;
   }
 
   // kind에 따라 파일 경로 결정

@@ -103,6 +103,57 @@ function isHeld(holder, opts = {}) {
 }
 
 /**
+ * stale 락 회수 헬퍼 — rename 후 재검증(P1-#1 TOCTOU 수리 · 단일 소스).
+ *
+ * 문제: 기존 acquire 는 stale 판정 후 `renameSync(file, stalePath)` 를 **무조건** 실행했다.
+ * 판정~rename 사이 다른 세션이 fresh live 락을 writeFileExclusive 로 공개하면, 그 rename 이 남의
+ * fresh 락을 .stale 로 밀어내고 나도 내 락을 만들어 **둘 다 획득 성공**으로 오인한다("rename 은
+ * 원자적"이라는 전제는 A 가 무엇을 옮기는지 재확인 안 하는 문제를 못 막는다).
+ *
+ * 고침: rename **후** 옮겨진 파일(stalePath)의 holder 를 다시 읽어, 그게 실제로 살아있으면
+ * (=방금 남의 fresh 락을 훔친 것) **비-clobber 복원** 후 실패를 알린다. 무조건 renameSync(stalePath,
+ * file) 로 되돌리면 move-away~복원 사이 O_EXCL(writeFileExclusive)로 부재 file 을 새로 잡은 제3자 C 를
+ * 덮어써 B+C 이중 점유를 만든다(3자 clobber). 그래서 복원은 link(EEXIST=실패)로 file 이 **부재일 때만**
+ * 게시한다: file 이 이미 점유돼 있으면 신규 승자 C 를 보존하고 복원을 포기(stalePath 는 그대로 둠).
+ * 죽은/stale 이 확인될 때만 stalePath 를 돌려줘 caller 가 writeFileExclusive 로 재공개하게 한다.
+ *
+ * @param {string} file 락 경로(caller 가 존재 + stale 로 이미 판정)
+ * @param {number} pid 획득 시도 pid(stalePath 유니크화)
+ * @param {object} [opts]
+ * @param {(holder:object|null)=>boolean} [opts.heldFn] 살아있음(=회수 금지) 판정. 기본 isHeld.
+ *   drive/edit 처럼 자기 pid·session 재획득을 stale 로 취급하려면 커스텀 주입.
+ * @param {(file:string)=>object|null} [opts.readFn] 락 파서. 기본 readLock.
+ * @returns {{ok:true, stalePath:string|null} | {ok:false, holder:object}}
+ *   ok:true  — stalePath(치운 경로, rename 실패면 null). writeFileExclusive 재공개 진행 가능.
+ *   ok:false — rename 후 재검증에서 live holder 발견(복원 완료). caller 는 점유 실패 반환.
+ */
+function reclaimStale(file, pid, opts = {}) {
+  const heldFn = opts.heldFn || isHeld;
+  const readFn = opts.readFn || readLock;
+  const stalePath = `${file}.stale.${pid}.${Date.now()}`;
+  try {
+    fs.renameSync(file, stalePath);
+  } catch {
+    // file 이 사라짐(다른 세션이 이미 회수/해제) — 재공개(writeFileExclusive)가 승패를 가린다.
+    return { ok: true, stalePath: null };
+  }
+  // rename 후 재검증: 방금 치운 게 실은 fresh live 락이면(판정~rename 사이 공개) 복원 + 실패.
+  const moved = readFn(stalePath);
+  if (moved && heldFn(moved)) {
+    // 비-clobber 복원: move-away~복원 사이 제3자 C 가 O_EXCL 로 부재 file 을 새로 잡았을 수 있다.
+    // renameSync 는 그 C 를 덮어써(3자 clobber) B+C 이중 점유를 만든다. 대신 link(EEXIST=실패)로
+    // file 이 **부재일 때만** 되돌린다: 이미 C 가 점유했으면 복원을 포기하고 신규 승자 C 를 보존한다.
+    // 어느 경로든 file 점유자는 정확히 하나(B 복원 성공 또는 C 유지). unlink 로 .stale 사본은 정리.
+    try {
+      fs.linkSync(stalePath, file);
+      fs.unlinkSync(stalePath);
+    } catch { /* file 을 C 가 이미 점유(EEXIST) — 복원 포기, stalePath 는 그대로 둔 채 C 보존 */ }
+    return { ok: false, holder: moved };
+  }
+  return { ok: true, stalePath };
+}
+
+/**
  * 락 획득. 이미 살아있는 lock 있으면 거부. stale lock(죽은 PID)은 takeover.
  *
  * @param {string} taskId
@@ -129,11 +180,15 @@ function acquireLock(taskId, opts = {}) {
     if (holder && isHeld(holder)) {
       return { ok: false, error: `이미 점유 중 (pid=${holder.pid}${holder.session_label ? `, session=${holder.session_label}` : ''})`, holder };
     }
-    // stale(죽은 PID·재부팅·TTL) — 기존 파일을 옆으로 치우고 배타적으로 재공개.
-    // rename 은 원자적이라 동시 takeover 자여도 단일 승자로 수렴한다(STAB-2).
+    // stale(죽은 PID·재부팅·TTL) — 옆으로 치우되 rename 후 재검증(P1-#1). 판정~rename 사이 fresh
+    // live 락이 공개됐으면 복원 + 점유 실패(둘 다 획득 방지). 죽은/stale 확인 시에만 재공개 진행.
     action = 'takeover';
-    stalePath = `${file}.stale.${pid}.${Date.now()}`;
-    try { fs.renameSync(file, stalePath); } catch { stalePath = null; }
+    const rec = reclaimStale(file, pid);
+    if (!rec.ok) {
+      const h = rec.holder;
+      return { ok: false, error: `이미 점유 중 (pid=${h.pid}${h.session_label ? `, session=${h.session_label}` : ''})`, holder: h };
+    }
+    stalePath = rec.stalePath;
   }
 
   const payload = {
@@ -286,10 +341,19 @@ function acquireCycleLock(opts = {}) {
         holder,
       };
     }
-    // stale(죽은 PID·재부팅·TTL) — 기존 파일을 치우고 배타적 재공개(단일 승자 수렴, STAB-2).
+    // stale(죽은 PID·재부팅·TTL) — 치우되 rename 후 재검증(P1-#1). 판정~rename 사이 fresh live 락이
+    // 공개됐으면 복원 + 실패(진행 중 사이클 보존, 이중 획득 방지).
     action = 'takeover';
-    stalePath = `${file}.stale.${pid}.${Date.now()}`;
-    try { fs.renameSync(file, stalePath); } catch { stalePath = null; }
+    const rec = reclaimStale(file, pid);
+    if (!rec.ok) {
+      const h = rec.holder;
+      return {
+        ok: false,
+        error: `사이클이 다른 세션에서 진행 중 (pid=${h.pid}${h.stage ? `, stage=${h.stage}` : ''})`,
+        holder: h,
+      };
+    }
+    stalePath = rec.stalePath;
   }
 
   const payload = {
@@ -364,10 +428,20 @@ function acquireDriveLock(opts = {}) {
         holder,
       };
     }
-    // 자기 pid 재획득(멱등) 또는 stale(죽은 pid·재부팅·TTL) — 치우고 배타적 재공개(단일 승자 수렴).
+    // 자기 pid 재획득(멱등) 또는 stale(죽은 pid·재부팅·TTL) — 치우되 rename 후 재검증(P1-#1).
+    // 자기 재획득은 heldFn 이 held 로 보지 않아 재공개하되, 판정~rename 사이 타 pid 의 fresh live
+    // 락이 공개됐으면 복원 + 실패(살아있는 타 드라이버 보존, 이중 드라이버 방지).
     action = 'takeover';
-    stalePath = `${file}.stale.${pid}.${Date.now()}`;
-    try { fs.renameSync(file, stalePath); } catch { stalePath = null; }
+    const rec = reclaimStale(file, pid, { heldFn: (h) => !!h && h.pid !== pid && isHeld(h) });
+    if (!rec.ok) {
+      const h = rec.holder;
+      return {
+        ok: false,
+        error: `드라이버 이미 실행 중 (pid=${h.pid}${h.session ? `, session=${h.session}` : ''})`,
+        holder: h,
+      };
+    }
+    stalePath = rec.stalePath;
   }
 
   const payload = {
@@ -442,6 +516,7 @@ module.exports = {
   currentBootEpoch,
   staleReason,
   isHeld,
+  reclaimStale,
   lockPath,
   acquireCycleLock,
   releaseCycleLock,

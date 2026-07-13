@@ -15,6 +15,7 @@ const {
   expandModuleFiles,
   detectTargetKind,
   editLocksDir,
+  lockFile,
 } = require('../scripts/edit-lock.js');
 
 const ALIVE_PID = process.pid;
@@ -116,6 +117,81 @@ test('acquireEditLock — stale(죽은 PID) lock은 takeover + .stale 잔재 없
     // takeover 시 rename 한 .stale.* 잔재 없음 (.lock 만 남아야)
     const litter = fs.readdirSync(editLocksDir(dir)).filter(n => n.includes('.stale.'));
     assert.deepEqual(litter, [], `stale 잔재: ${litter}`);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('acquireEditLock — 판정~rename 사이 타 세션 fresh live 락 공개되면 복원 + 거부 (P1-#1 인터리빙)', () => {
+  const dir = tmpProject();
+  const realRename = fs.renameSync;
+  try {
+    // 죽은 세션 락 → 사전판정 takeover.
+    acquireEditLock('PROGRESS.md', { cwd: dir, sessionLabel: 'dead', pid: DEAD_PID });
+    const file = lockFile(dir, 'PROGRESS.md');
+    // move-aside 직후 옮겨진 파일을 타 세션(B)의 살아있는 락으로 교체(판정~rename 사이 공개 모델).
+    const liveOther = { target: 'PROGRESS.md', kind: 'file', paths: ['PROGRESS.md'], pid: ALIVE_PID, session_label: 'B', acquired_at: new Date().toISOString() };
+    let injected = false;
+    fs.renameSync = function (from, to) {
+      if (!injected && from === file) {
+        injected = true;
+        realRename.call(fs, from, to);
+        fs.writeFileSync(to, JSON.stringify(liveOther));
+        return;
+      }
+      return realRename.call(fs, from, to);
+    };
+    const r = acquireEditLock('PROGRESS.md', { cwd: dir, sessionLabel: 's-new', pid: 55555 });
+    assert.equal(r.ok, false, '타 세션 fresh 락을 훔치지 않고 거부');
+    assert.match(r.error, /이미 점유/);
+    assert.equal(r.holder.session_label, 'B');
+    // file 이 B 의 live 락으로 복원 + .stale 잔재 없음
+    assert.equal(JSON.parse(fs.readFileSync(file, 'utf8')).session_label, 'B');
+    assert.deepEqual(fs.readdirSync(editLocksDir(dir)).filter(n => n.includes('.stale.')), []);
+  } finally {
+    fs.renameSync = realRename;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('acquireEditLock — move-away~복원 사이 제3자 세션 C 가 락 획득 시 C 미-clobber (3자 레이스)', () => {
+  const dir = tmpProject();
+  const realRename = fs.renameSync;
+  try {
+    // 죽은 세션 락 → 사전판정 takeover 경로.
+    acquireEditLock('PROGRESS.md', { cwd: dir, sessionLabel: 'dead', pid: DEAD_PID });
+    const file = lockFile(dir, 'PROGRESS.md');
+    // move-aside 직후: 옮겨진 게 실은 B 의 live 락 + 부재 file 을 제3자 C 가 새로 획득.
+    const liveB = { target: 'PROGRESS.md', kind: 'file', paths: ['PROGRESS.md'], pid: ALIVE_PID, session_label: 'B', acquired_at: new Date().toISOString() };
+    const cHolder = { target: 'PROGRESS.md', kind: 'file', paths: ['PROGRESS.md'], pid: ALIVE_PID, session_label: 'C', acquired_at: new Date().toISOString() };
+    let injected = false;
+    fs.renameSync = function (from, to) {
+      if (!injected && from === file) {
+        injected = true;
+        realRename.call(fs, from, to);                   // dead → stalePath
+        fs.writeFileSync(to, JSON.stringify(liveB));      // 옮겨진 게 실은 B 의 live 락
+        fs.writeFileSync(file, JSON.stringify(cHolder));  // C 가 부재 file 을 새로 획득
+        return;
+      }
+      return realRename.call(fs, from, to);
+    };
+    const r = acquireEditLock('PROGRESS.md', { cwd: dir, sessionLabel: 's-new', pid: 55555 });
+    assert.equal(r.ok, false, 'B live 발견 → 훔치지 않고 실패');
+    // 핵심: 복원이 C 를 덮지 않아야 — file 은 여전히 C (B+C 이중 점유 방지)
+    assert.equal(JSON.parse(fs.readFileSync(file, 'utf8')).session_label, 'C', 'C 가 clobber 되지 않아야');
+  } finally {
+    fs.renameSync = realRename;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('acquireEditLock — 같은 session 재획득 중 rename 재검증은 자기 락이라 통과(takeover 아님)', () => {
+  const dir = tmpProject();
+  try {
+    // 같은 session_label 재획득 — heldFn 은 held 로 보지 않아야(자기 락) 재공개 성공.
+    acquireEditLock('PROGRESS.md', { cwd: dir, sessionLabel: 's1', pid: ALIVE_PID });
+    const r = acquireEditLock('PROGRESS.md', { cwd: dir, sessionLabel: 's1', pid: ALIVE_PID });
+    assert.equal(r.ok, true);
+    assert.equal(r.action, 're-acquire');
+    assert.deepEqual(fs.readdirSync(editLocksDir(dir)).filter(n => n.includes('.stale.')), []);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 

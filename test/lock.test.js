@@ -24,6 +24,7 @@ const {
   currentBootEpoch,
   staleReason,
   isHeld,
+  reclaimStale,
 } = require('../scripts/lock.js');
 
 function tmpProject() {
@@ -114,6 +115,139 @@ test('acquireLock — stale takeover는 단일 승자로 수렴 + .stale 잔재 
     const litter = fs.readdirSync(runDir).filter(n => n.includes('.stale.'));
     assert.deepEqual(litter, [], `stale 잔재: ${litter}`);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+// ─── P1-#1: stale takeover TOCTOU — rename 후 재검증 + 복원 (reclaimStale 단일 소스) ───
+
+test('reclaimStale — rename 후 live holder 발견 시 복원 + ok:false (레이스: 남의 fresh 락 보호)', () => {
+  const dir = tmpProject();
+  try {
+    const file = lockPath(dir, 'TASK-001');
+    // caller 가 stale 로 판정하고 호출했지만, 옮겨보니 실은 살아있는 락(판정~rename 사이 공개).
+    fs.writeFileSync(file, JSON.stringify({ pid: ALIVE_PID, boot_epoch: currentBootEpoch(), acquired_at: new Date().toISOString() }));
+    const r = reclaimStale(file, DEAD_PID);
+    assert.equal(r.ok, false, 'live 락은 훔치지 않고 실패');
+    assert.equal(r.holder.pid, ALIVE_PID);
+    // 원위치 복원 + .stale 잔재 없음
+    assert.ok(fs.existsSync(file), '복원됨');
+    assert.equal(JSON.parse(fs.readFileSync(file, 'utf8')).pid, ALIVE_PID);
+    assert.deepEqual(fs.readdirSync(path.dirname(file)).filter(n => n.includes('.stale.')), []);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('reclaimStale — move-away~복원 사이 제3자 C 가 file 획득 시 C 미-clobber (3자 레이스)', () => {
+  const dir = tmpProject();
+  const realRename = fs.renameSync;
+  try {
+    const file = lockPath(dir, 'TASK-001');
+    // A 의 caller 가 stale 로 오판. 옮겨보니 실은 살아있는 B 락 + 그 사이 C 가 부재 file 을 새로 잡음.
+    fs.writeFileSync(file, JSON.stringify({ pid: ALIVE_PID, task_id: 'TASK-001', session_label: 'B', boot_epoch: currentBootEpoch(), acquired_at: new Date().toISOString() }));
+    const cHolder = { pid: ALIVE_PID, task_id: 'TASK-001', session_label: 'C', boot_epoch: currentBootEpoch(), acquired_at: new Date().toISOString() };
+    let injected = false;
+    fs.renameSync = function (from, to) {
+      if (!injected && from === file) {
+        injected = true;
+        realRename.call(fs, from, to);                 // B(살아있음) → stalePath
+        fs.writeFileSync(file, JSON.stringify(cHolder)); // move-away 직후 C 가 O_EXCL 로 부재 file 획득
+        return;
+      }
+      return realRename.call(fs, from, to);
+    };
+    const r = reclaimStale(file, DEAD_PID);
+    assert.equal(r.ok, false, '살아있는 B 를 봤으니 실패');
+    // 핵심: 복원이 C 를 덮지 않아야 — file 은 여전히 C (B+C 이중 점유 방지)
+    assert.equal(JSON.parse(fs.readFileSync(file, 'utf8')).session_label, 'C', 'C 가 clobber 되지 않아야');
+  } finally {
+    fs.renameSync = realRename;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('reclaimStale — dead holder 는 옆으로 치우고 ok:true + stalePath 반환 (정상 stale 회수)', () => {
+  const dir = tmpProject();
+  try {
+    const file = lockPath(dir, 'TASK-001');
+    fs.writeFileSync(file, JSON.stringify({ pid: DEAD_PID, acquired_at: '2020' }));
+    const r = reclaimStale(file, ALIVE_PID);
+    assert.equal(r.ok, true);
+    assert.ok(r.stalePath && fs.existsSync(r.stalePath), 'stalePath 로 이동');
+    assert.ok(!fs.existsSync(file), '원본은 치워짐(caller 가 재공개)');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('reclaimStale — 커스텀 heldFn: 자기 pid 재획득은 held 아님 → 치움 (drive/edit 의미)', () => {
+  const dir = tmpProject();
+  try {
+    const file = lockPath(dir, 'TASK-001');
+    // 살아있지만 "우리 pid" — drive/edit 는 자기 재획득을 stale 처럼 치우고 재공개해야 한다.
+    fs.writeFileSync(file, JSON.stringify({ pid: ALIVE_PID, acquired_at: new Date().toISOString() }));
+    const selfPid = ALIVE_PID;
+    const r = reclaimStale(file, selfPid, { heldFn: (h) => !!h && h.pid !== selfPid && isHeld(h) });
+    assert.equal(r.ok, true, '자기 pid 재획득은 held 아님 → 치움');
+    assert.ok(!fs.existsSync(file));
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('acquireLock — 판정~rename 사이 fresh live 락 공개되면 복원 + 거부 (P1-#1 인터리빙)', () => {
+  const dir = tmpProject();
+  const realRename = fs.renameSync;
+  try {
+    const file = lockPath(dir, 'TASK-001');
+    // 사전판정이 takeover 로 가도록 죽은 holder 배치.
+    fs.writeFileSync(file, JSON.stringify({ pid: DEAD_PID, task_id: 'TASK-001', acquired_at: '2020', boot_epoch: currentBootEpoch() }));
+    // 판정~rename 사이 B 가 fresh live 락 공개: move-aside 직후 옮겨진 파일을 live holder 로 교체.
+    const liveHolder = { pid: ALIVE_PID, task_id: 'TASK-001', session_label: 'B', acquired_at: new Date().toISOString(), boot_epoch: currentBootEpoch() };
+    let injected = false;
+    fs.renameSync = function (from, to) {
+      if (!injected && from === file) {
+        injected = true;
+        realRename.call(fs, from, to);                    // dead lock → stalePath (실제 이동)
+        fs.writeFileSync(to, JSON.stringify(liveHolder));  // 옮겨진 게 실은 B 의 fresh live 락
+        return;
+      }
+      return realRename.call(fs, from, to);
+    };
+    const r = acquireLock('TASK-001', { cwd: dir, pid: 55555 });
+    assert.equal(r.ok, false, '남의 fresh 락을 훔치지 않고 거부해야');
+    assert.match(r.error, /이미 점유/);
+    assert.equal(r.holder.pid, ALIVE_PID);
+    // file 이 B 의 live 락으로 복원 + .stale 잔재 없음
+    assert.equal(JSON.parse(fs.readFileSync(file, 'utf8')).pid, ALIVE_PID);
+    assert.deepEqual(fs.readdirSync(path.dirname(file)).filter(n => n.includes('.stale.')), []);
+  } finally {
+    fs.renameSync = realRename;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('acquireDriveLock — 판정~rename 사이 타 pid fresh live 락 공개되면 복원 + 거부 (P1-#1 인터리빙)', () => {
+  const dir = tmpProject();
+  const realRename = fs.renameSync;
+  try {
+    const file = driveOwnerPath(dir);
+    // 죽은 소유자 → 사전판정 takeover.
+    fs.writeFileSync(file, JSON.stringify({ pid: DEAD_PID, session: 'old', acquired_at: '2020', boot_epoch: currentBootEpoch() }));
+    const liveOther = { pid: ALIVE_PID, session: 'B', acquired_at: new Date().toISOString(), boot_epoch: currentBootEpoch() };
+    let injected = false;
+    fs.renameSync = function (from, to) {
+      if (!injected && from === file) {
+        injected = true;
+        realRename.call(fs, from, to);
+        fs.writeFileSync(to, JSON.stringify(liveOther));
+        return;
+      }
+      return realRename.call(fs, from, to);
+    };
+    const r = acquireDriveLock({ cwd: dir, pid: 55555 });
+    assert.equal(r.ok, false, '살아있는 타 드라이버를 훔치지 않고 거부');
+    assert.match(r.error, /이미 실행 중/);
+    assert.equal(r.holder.pid, ALIVE_PID);
+    assert.equal(JSON.parse(fs.readFileSync(file, 'utf8')).pid, ALIVE_PID);
+    assert.deepEqual(fs.readdirSync(path.join(dir, '.pact')).filter(n => n.includes('.stale.')), []);
+  } finally {
+    fs.renameSync = realRename;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test('acquireLock — run dir 없으면 거부', () => {
