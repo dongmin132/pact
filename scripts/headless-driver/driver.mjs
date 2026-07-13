@@ -105,7 +105,13 @@ const loopState = new Map(LOOP);            // 가변 남은 카운트
 // DX-2: live = 라이브 진행 카운터. 파이프라인 settle 마다 즉시 증가해 writeDriverState 가 매 write 에
 // 실어 보낸다 → pact status --watch(drive 의 유일 관측창)가 '완료 N·escalation N' 을 실시간으로 본다.
 // 기존엔 done 이 terminal 1회에만, escalations 는 runCyclePipeline 반환 후에야 채워져 실행 내내 0 고착.
-const ledger = { orchestratorTokens: 0, spentUsd: 0, attempts: [], escalations: [], mergeRejected: [], skipped: [], stoppedReason: null, live: { done: 0, escalated: 0, rejected: 0 } };
+// P1-#3: reservedUsd = in-flight 워커들에 배정됐으나 아직 안 쓴 예산 상한의 합(예약액). runWorkerReal
+// 이 spawn 시 자기 cap 을 더하고 종료(finally) 시 뺀다. 남은 예산 계산이 (spent + 미사용 예약)을 반영해
+// 동시 K 워커의 배정 cap 합이 절대 capBudget 을 넘지 못하게 한다(슬롯 재충전 시 잠재 지출 초과 차단).
+// 트랙2 잔여: finally 는 예약 해제(reservedUsd)와 실지출 가산(spentUsd)을 한 동기 블록으로 원자 처리해
+// '예약 제거'가 '지출 가산' 없이 관측되는 순간을 없앤다 — 그 간극의 재투입 워커가 잔여 예산을 과대평가해
+// 예산을 초과 지출하던 경로 차단. 상위 호출자는 spentAccounted 마커를 보고 중복 가산을 스킵한다.
+const ledger = { orchestratorTokens: 0, spentUsd: 0, reservedUsd: 0, attempts: [], escalations: [], mergeRejected: [], skipped: [], stoppedReason: null, live: { done: 0, escalated: 0, rejected: 0 } };
 // DRV-3: 현재 in-flight 워커 수(pool onEvent 로 갱신). runWorkerReal 이 per-worker 예산 cap 을
 // '남은예산/동시수' 로 나누는 분모 — 동시 K 워커가 각자 예산 전액을 받아 K×BUDGET 로 폭주하는 것 방지.
 let liveInFlight = 0;
@@ -379,7 +385,16 @@ async function runWorkerReal(task, opts = {}) {
   // activeWorkers = 현재 in-flight 수(liveInFlight) → 동시 K 는 각 BUDGET/K, 마지막 1개는 잔여 전액(적응적).
   const capBudget = (typeof opts.budget === 'number') ? opts.budget : BUDGET;
   const activeWorkers = (typeof opts.activeWorkers === 'number') ? opts.activeWorkers : liveInFlight;
-  const workerBudgetUsd = Math.max(0.5, (capBudget - ledger.spentUsd) / Math.max(1, activeWorkers));
+  // P1-#3: 남은 예산 = capBudget - 이미 쓴 비용 - in-flight 예약(아직 안 쓴 배정 상한). 예약을 빼야
+  // 이미 실행 중인 워커에 배정된 미사용 상한이 이중 배정되지 않아, 동시 워커의 배정 cap 합 ≤ capBudget.
+  const remainingBudget = Math.max(0, capBudget - ledger.spentUsd - ledger.reservedUsd);
+  // per-worker cap = 남은 예산을 동시수로 균등 분할. floor(0.5)로 최소치는 주되, 남은 예산은 절대 못 넘게
+  // clamp — remaining 이 floor 보다 작으면(예: --budget=0.1) remaining 이 상한이라 declared 예산 초과 X.
+  const BUDGET_FLOOR = 0.5;
+  const workerBudgetUsd = Math.min(remainingBudget, Math.max(BUDGET_FLOOR, remainingBudget / Math.max(1, activeWorkers)));
+  // 예약 회계: 배정한 cap 을 예약액에 즉시 더한다(finally 에서 해제). 다음 워커의 남은 예산 계산에 반영돼
+  // 슬롯 재충전 시 in-flight 워커의 미사용 상한까지 차감된다 → 전체 잠재 지출 ≤ capBudget 불변식 보장.
+  ledger.reservedUsd += workerBudgetUsd;
   let q, timedOut = false;
   const timer = setTimeout(() => {
     timedOut = true;
@@ -388,7 +403,9 @@ async function runWorkerReal(task, opts = {}) {
   }, timeoutMs);
 
   // usage/cost 는 모든 메시지에서 갱신 — 중간에 끊겨도 마지막 본 값 보존(비용 0 방지).
-  let usage = null, turns = 0, subtype = 'error_during_execution', cost = 0;
+  // result 는 반환 객체를 finally 가 참조하기 위한 홀더 — finally 에서 예약 해제와 spent 가산을
+  // 원자적으로 처리하고 이 객체에 spentAccounted 마커를 찍는다(상위 호출자 중복 가산 방지).
+  let usage = null, turns = 0, subtype = 'error_during_execution', cost = 0, result = null;
   try {
     q = query({
       prompt: task.task_prompt,
@@ -419,14 +436,27 @@ async function runWorkerReal(task, opts = {}) {
     // 반환할 수 있다(라이브 --real 로 발견) → timedOut/aborted 를 subtype 보다 우선해 incomplete
     // 로 분류(안 그러면 resume 대신 retry + 부분작업 미보존). 단일소스 resume.js.
     const cls = classifyRealResult({ subtype, timedOut, aborted: ac.signal.aborted });
-    if (cls.ok) return { ok: true, usage, cost, turns, via: 'real' };
-    return { ok: false, reason: cls.reason, usage, cost, turns, via: 'real', incomplete: cls.incomplete };
+    result = cls.ok
+      ? { ok: true, usage, cost, turns, via: 'real' }
+      : { ok: false, reason: cls.reason, usage, cost, turns, via: 'real', incomplete: cls.incomplete };
+    return result;
   } catch (e) {
     // timeout/예외 — 본 만큼의 cost 보존, worktree 부분작업 보존 대상(incomplete).
     const reason = (timedOut || ac.signal.aborted) ? 'timeout' : ('error:' + ((e && e.message) || e));
-    return { ok: false, reason, usage, cost, turns, via: 'real', incomplete: true };
+    result = { ok: false, reason, usage, cost, turns, via: 'real', incomplete: true };
+    return result;
   } finally {
     clearTimeout(timer);
+    // 트랙2 잔여 수리: '예약 해제'와 '지출 가산'을 한 동기 블록에서 원자적으로 처리한다. 이전엔 여기서
+    // 예약만 반납하고 실지출(cost)은 상위 attemptTask/runLoopTask 가 한 마이크로태스크 뒤에 더했다 →
+    // 그 간극에 재투입된 워커가 (예약 빠짐 + 지출 미가산) 상태를 관측해 remaining=capBudget-spent-reserved
+    // 를 과대평가, 잠재 지출이 capBudget 을 cost 만큼 초과할 수 있었다. 이제 spent 가산과 reserved 해제가
+    // 원자적이라 '예약 제거'가 '지출 가산' 없이 관측되는 순간이 없다. 이중계상은 spentAccounted 마커로
+    // 상위 호출자가 스킵해 방지. (부차: 워커별 opts.budget 이 서로 다르면 예약합≤capBudget 증명이 깨지나,
+    // production 은 전부 BUDGET 이라 무해.)
+    ledger.spentUsd += cost;
+    ledger.reservedUsd = Math.max(0, ledger.reservedUsd - workerBudgetUsd);
+    if (result) result.spentAccounted = true; // 상위(attemptTask/runLoopTask) 중복 가산 방지 마커
   }
 }
 
@@ -441,7 +471,9 @@ async function attemptTask(task, opts = {}) {
     try {
       const r = await worker(task, attempt);
       r.task_id = task.task_id; r.attempts = attempt;
-      ledger.spentUsd += r.cost || 0;
+      // 트랙2 잔여: runWorkerReal 은 예약 해제와 원자적으로 spent 를 이미 가산(spentAccounted 마커)
+      // → 여기서 다시 더하면 이중계상. mock/주입 러너는 마커가 없어 종전대로 여기서 가산.
+      if (!r.spentAccounted) ledger.spentUsd += r.cost || 0;
       if (r.ok) return { ...r, status: 'done' };
       if (r.denied) return { ...r, status: 'denied' };          // 가드 deny — 재시도 무의미
       // budget/시간 소진(incomplete) → 재시도해도 또 소진 + 부분작업 손실 위험 → 즉시 위임(보존).
@@ -488,7 +520,8 @@ async function runLoopTask(task) {
     if (ledger.spentUsd >= BUDGET) return { task_id: task.task_id, status: 'escalated', reason: `budget 소진 ($${ledger.spentUsd.toFixed(2)} ≥ $${BUDGET})`, salvageable: true, attempts: iter, usage: lastUsage };
     let r;
     try { r = await runWorker(task, ++iter); } catch (e) { r = { ok: false, reason: (e && e.message) || String(e), cost: 0, usage: null }; }
-    ledger.spentUsd += (r.cost || 0);
+    // 트랙2 잔여: real 워커는 runWorkerReal.finally 가 예약 해제와 원자적으로 spent 가산(마커) → 스킵.
+    if (!r.spentAccounted) ledger.spentUsd += (r.cost || 0);
     if (r.usage) lastUsage = r.usage;
     const cur = measureCount(task);                    // ★ 결정적 재측정 (워커 자기보고 불신)
     if (cur === null)  return { task_id: task.task_id, status: 'escalated', reason: 'loop 측정 불가', salvageable: true, attempts: iter, usage: lastUsage };

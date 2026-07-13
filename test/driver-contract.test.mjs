@@ -186,6 +186,114 @@ test('runWorkerReal — 이미 쓴 비용을 제하고 남은 예산만 분할(s
   ledger.spentUsd = 0;
 });
 
+// ---- P1-#3: 예산 상한 누수 — floor(0.5) 가 declared 예산을 넘고, in-flight 예약 미차감으로 K×cap 폭주 ----
+
+// gate 가 열릴 때까지 in-flight 를 유지하는 query 팩토리 — 여러 워커의 예약이 동시에 겹치게 한다.
+function gatedQueryFactory() {
+  const releases = [];
+  const make = (sink) => {
+    let open; const gate = new Promise((res) => { open = res; }); releases.push(open);
+    return (cfg) => {
+      sink.cap = cfg.options.maxBudgetUsd;
+      return (async function* () {
+        await gate;
+        yield { type: 'result', subtype: 'success', num_turns: 1, total_cost_usd: 0, usage: { input_tokens: 1 } };
+      })();
+    };
+  };
+  return { make, releaseAll: () => releases.forEach((r) => r()) };
+}
+
+test('P1-#3(a) — --budget 이 floor(0.5)보다 작으면 per-worker cap 이 declared 예산을 넘지 않는다', async () => {
+  ledger.spentUsd = 0; ledger.reservedUsd = 0;
+  const sink = {};
+  // 재현: budget=0.1, active=1 인데 구코드는 Math.max(0.5, …) 바닥값 때문에 cap=0.5(>declared 0.1).
+  const r = await runWorkerReal(baseTask(), { query: budgetSpyQuery(sink), budget: 0.1, activeWorkers: 1 });
+  assert.equal(r.ok, true);
+  assert.ok(sink.cap <= 0.1 + 1e-9, `per-worker cap 이 declared 예산(0.1)을 초과하면 안 됨 — cap=${sink.cap}`);
+  assert.notEqual(sink.cap, 0.5, 'floor(0.5) 가 남은 예산을 덮어써선 안 됨(누수)');
+});
+
+test('P1-#3(b) — 동시 K 워커의 배정 cap 합이 budget 을 넘지 않는다(in-flight 예약 회계)', async () => {
+  ledger.spentUsd = 0; ledger.reservedUsd = 0;
+  const K = 4, budget = 4;
+  const { make, releaseAll } = gatedQueryFactory();
+  const sinks = Array.from({ length: K }, () => ({}));
+  const promises = [];
+  // 레이스 인터리빙 모델: 워커가 슬롯을 채우며 순차 spawn → 각자 그 순간의 in-flight 수(1,2,…,K)를
+  // activeWorkers 로 본다. 구코드는 이미 실행 중인 워커의 미사용 상한을 예약으로 안 빼서 W1 이 잔여
+  // 전액을 쥔 채로 W2,W3… 가 또 '잔여/현재수'를 받아 배정 cap 합이 budget 을 크게 초과(잠재 지출 폭주).
+  for (let i = 0; i < K; i++) promises.push(runWorkerReal(baseTask(), { query: make(sinks[i]), budget, activeWorkers: i + 1 }));
+  const caps = sinks.map((s) => s.cap);
+  const sum = caps.reduce((a, b) => a + b, 0);
+  assert.equal(caps.filter((c) => typeof c === 'number').length, K, 'K 워커 모두 cap 배정됨');
+  assert.ok(sum <= budget + 1e-9, `동시 ${K} 워커의 배정 cap 합(${sum.toFixed(4)}) 이 budget(${budget}) 을 넘으면 안 됨`);
+  releaseAll();
+  await Promise.all(promises);
+  assert.ok(Math.abs(ledger.reservedUsd) < 1e-9, `모든 워커 종료 후 예약액이 0 으로 해제돼야 함 — reservedUsd=${ledger.reservedUsd}`);
+});
+
+test('P1-#3(b) — 예약 소진 후 마지막 워커는 잔여를 초과 배정하지 않는다(floor 도 잔여로 clamp)', async () => {
+  ledger.spentUsd = 0; ledger.reservedUsd = 0;
+  const { make, releaseAll } = gatedQueryFactory();
+  const budget = 1;
+  const s1 = {}, s2 = {};
+  // W1 이 active=1 로 잔여 전액(1)을 예약 → 남은 예산 0. 구코드는 W1 의 예약을 안 차감해 W2 도 전액(1)을
+  // 다시 배정(잠재 지출 2 > budget 1). 수리 후 W2 는 잔여 0(floor 0.5 도 잔여로 clamp).
+  const p1 = runWorkerReal(baseTask(), { query: make(s1), budget, activeWorkers: 1 });
+  const p2 = runWorkerReal(baseTask(), { query: make(s2), budget, activeWorkers: 1 });
+  assert.equal(s1.cap, 1, 'W1 = 잔여 전액');
+  assert.ok(s2.cap <= 1e-9, `W2 는 남은 예산(0)을 초과 배정 못 함(예약 차감) — cap=${s2.cap}`);
+  assert.ok(s1.cap + s2.cap <= budget + 1e-9, '배정 cap 합 ≤ budget');
+  releaseAll();
+  await Promise.all([p1, p2]);
+  ledger.reservedUsd = 0;
+});
+
+// ---- 트랙2 잔여: 예약 해제 ↔ 지출 기입 원자성 (해제-기입 간극 재현) ----
+// 1차 P1-#3 수리(reservedUsd 예약 회계)는 floor·K×cap 을 닫았으나, 예약 해제(runWorkerReal.finally)가
+// 실제 cost 기입(상위 attemptTask/runLoopTask, 한 마이크로태스크 뒤)보다 먼저였다. 떠나는 워커 B 가
+// 예약을 반납했으나 cost 를 아직 spent 에 안 넣은 창에 재투입된 C 가 remaining=budget-spent-reserved 를
+// 과대평가 → 잔여 초과 예약(잠재 지출 > budget). 이 테스트는 runWorkerReal 을 직접 호출로 우회하지
+// 않고 attemptTask(상위 호출자) 경로로 그 간극을 실제 재현한다. 수리 후 spent 가산과 reserved 해제가
+// 원자적이라 어떤 인터리빙에서도 spent+reserved ≤ budget.
+test('트랙2 잔여 — 예약 해제↔지출 기입 원자성: 재투입 인터리빙에서 spent+reserved ≤ budget', async () => {
+  ledger.spentUsd = 0; ledger.reservedUsd = 0;
+  const budget = 10;
+
+  // C(재투입 워커): gate 가 열릴 때까지 in-flight 유지 → 간극 관측 창을 넓힌다. cost 0.
+  let openC; const cGate = new Promise((res) => { openC = res; });
+  const cSink = {};
+  const cQuery = (cfg) => {
+    cSink.cap = cfg.options.maxBudgetUsd;
+    return (async function* () { await cGate; yield { type: 'result', subtype: 'success', num_turns: 1, total_cost_usd: 0, usage: { input_tokens: 1 } }; })();
+  };
+  let cPromise = null;
+
+  // B(떠나는 워커): 즉시 cost 4 로 완료 → 예약(10) 반납. wrapper 가 B 의 runWorkerReal resolve 직후
+  // (=attemptTask 가 아직 spent 를 안 더한 간극)에 C 를 재투입해 그 창을 실제로 만든다.
+  const bQuery = () => (async function* () { yield { type: 'result', subtype: 'success', num_turns: 1, total_cost_usd: 4, usage: { input_tokens: 1 } }; })();
+  const bWrapped = async (task) => {
+    const r = await runWorkerReal(task, { query: bQuery, budget, activeWorkers: 1 }); // B 예약 10 반납(finally)
+    // ★ 간극: B 의 예약은 해제됐고, attemptTask(B) 의 spent 가산은 아직(이 return 뒤). 여기서 C 재투입.
+    cPromise = attemptTask({ ...baseTask(), task_id: 'C' }, { runWorker: (t) => runWorkerReal(t, { query: cQuery, budget, activeWorkers: 1 }) });
+    return r;
+  };
+
+  await attemptTask({ ...baseTask(), task_id: 'B' }, { runWorker: bWrapped });
+  // 이 시점: B 의 지출(4)은 완전히 반영, C 는 아직 in-flight(gate 대기).
+  const inv = ledger.spentUsd + ledger.reservedUsd;
+  // 구코드: B 예약 반납 후 C 가 remaining=10(spent0·reserved0)을 봐서 10 예약 → spent4+reserved10=14>10.
+  assert.ok(inv <= budget + 1e-9, `해제-기입 간극 인터리빙에서 spent(${ledger.spentUsd})+reserved(${ledger.reservedUsd}) ≤ budget(${budget})`);
+  // 재투입 C 도 남은 예산(6)만 배정받아야 한다(구코드는 10 을 봄).
+  assert.ok(cSink.cap <= budget - 4 + 1e-9, `재투입 C 의 cap(${cSink.cap}) 은 잔여 예산(${budget - 4}) 이하`);
+
+  openC();
+  await cPromise;
+  assert.ok(Math.abs(ledger.reservedUsd) < 1e-9, `모든 워커 종료 후 예약 0 (reservedUsd=${ledger.reservedUsd})`);
+  ledger.spentUsd = 0; ledger.reservedUsd = 0;
+});
+
 // ---- DX-2: 파이프라인 라이브 진행 카운터 — settle 마다 즉시 증가(종료 전 0 고착 아님) ----
 
 test('DX-2 — settle 이벤트가 done/escalated 카운터를 즉시 증가(종료까지 0 고착이던 버그)', () => {
