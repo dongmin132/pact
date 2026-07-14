@@ -23,7 +23,7 @@
 
 ```yaml
 # yolo 모드 — Claude Code가 --dangerously-skip-permissions로 실행되는가
-# 자동 감지 불가 (DECISIONS ADR-002), 사용자가 직접 명시
+# /pact:init 이 detect-yolo.js 로 자동 감지(ADR-011). 감지 실패 시에만 직접 명시
 yolo_mode: false
 
 # Cross-review 어댑터 (다른 모델의 의견 받기)
