@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.11.0 — 2026-07-14
+
+> 안전선 하드닝 릴리스 — 외부 코드리뷰 P1 4건 + 가드 실효성 실측 검증에서 나온 2건 수리, red_observed soft 경고(ADR-058), rate-limit 적응 다운시프트.
+
+### Fixed
+- **락 stale takeover TOCTOU 봉쇄** (리뷰 P1-#1) — stale 판정 후 rename 전 간극에 타 프로세스가 갱신한 락을 무조건 밀어내던 구멍. `reclaimStale` 헬퍼(rename 후 재검증 + `linkSync` 비-clobber 복원)로 4개 락(cycle/drive/edit/claim) 단일소스화. POSIX 무-CAS 환경의 4자 극단 레이스는 TTL 바운드 구조적 잔여(net-neutral)로 명시.
+- **already_prepared adopt 이중 spawn 차단** (리뷰 P1-#2) — owner 생존 검사가 cycle-lock 밖에서 일어나 두 세션이 동시에 같은 배치를 입양 가능하던 레이스 → 배타 구간으로 이동.
+- **per-worker 예산 cap 누수 2겹 봉쇄** (리뷰 P1-#3) — ① `Math.max(0.5,…)` 바닥값이 declared 예산(<0.5)을 초과 + in-flight 예약 미차감으로 동시 K 워커 배정 cap 합이 budget 초과 → remaining clamp + `reservedUsd` 예약 회계. ② 1차 수리를 적대검증이 재-뚫음: 예약 해제(finally)와 지출 가산(상위 호출자) 사이 마이크로태스크 간극에 재투입 워커가 잔여 예산 과대평가 → 해제·가산을 한 동기 블록에서 원자화(`spentAccounted` 마커로 이중계상 방지).
+- **Bash 쓰기 경계에 목적지 추출 확장** (리뷰 P1-#4) — `checkBashWrite`가 리다이렉션(`>`·`tee`·`touch`)만 봐서 `cp`/`mv`/`install`/`sed -i`/`dd`/`ln`으로 홈·형제 worktree에 탈출 가능(머지 diff 백스톱도 worktree 밖이라 무효) → 명령별 목적지 인자 추출로 차단.
+- **canUseTool shadow 봉쇄** — `allowedTools`에 든 도구는 SDK가 `canUseTool`을 스킵(자동 승인)한다는 사실을 공식 permissions 문서 + SDK 0.3.178 라이브 프로브로 확정(deny 콜백 0회 호출, Write 실행됨). `pact drive --real`에서 worker-guard가 죽은 코드였던 구멍 → `allowedTools` 제거, canUseTool(worker-guard) 단일 관문화. worker-guard는 미지 도구 기본 allow라 도구 표면 변화 없음. 계약 테스트로 재도입 방지 고정.
+- **abort/timeout 워커 비용 $0.00 미포착** — SDK는 abort 시 result(total_cost_usd) 없이 throw(0.3.178 실측) → budget cap이 중단 워커 실비용을 과소계상. assistant `message.usage`를 message.id dedup 누적 후 `scripts/lib/cost-estimate.js`(모델별 단가, cache_read 0.1×/creation 1.25×, 미지 모델은 opus 단가 보수 추정)로 추정, `costEstimated` 마커. 실측이 있으면 항상 실측 우선.
+
+### Added
+- **red_observed soft 경고 게이트 (ADR-058, 옵션 B)** — `tdd: true`인데 `red_observed !== true`면 `planMerge`가 `tdd_warnings`로 가시화(reject 아님, 머지 진행). `pact merge` 출력·`merge-result.json`·collect/collect-one emit 노출. red_observed는 순수 자기보고라 hard 게이트는 theater — 철학 #5(propose-only) 정합.
+- **rate-limit 반응형 동시폭 다운시프트 (IMP-5 최소형)** — `pact drive`가 `rate_limit_event`를 관측하면 유효 동시폭을 일시 축소 후 점진 복원. soft 천장(~9K tok/min)에서 효율 급락하던 K=5 병렬의 낭비 완화.
+
+### Docs
+- stale 문서 3건 정리 — loop-until-dry 제안/플랜 상태값(구현완료·ADR-057), reviewer-task의 존재하지 않는 TODOS.md 참조(→ tasks/*.md blocked/failed 이월분), token-optimization C-2(maxTurns cap) 폐기 표기(f5b2350 방향과 상충).
+
 ## 0.10.0 — 2026-07-13
 
 > 슬로우니스 종합 로드맵 (stability + architecture) — `pact drive` 파이프라인화, 레버 배선, 멀티세션 안전성, 레이어 정리. `--real` 실토큰 e2e 검증 완료(단일 워커 스모크 + `--real --pact` 풀사이클 3워커 — K-슬롯 풀·admit·collect-one 머지·오케스트레이터 0토큰 실증).
