@@ -1469,3 +1469,29 @@ test('prepare — task의 worker_model을 task_prompts로 전달 (fresh path)', 
     assert.equal(payload.worker_model, 'haiku');
   } finally { cleanupProject(dir); }
 });
+
+// ─── dogfood #13: collect-one append 가 tdd_warnings 를 떨어뜨림 ────────────
+// appendMergeResult 가 고정 키 목록으로 재조립하며 ADR-058 soft 경고를 유실 —
+// wrap/사람이 merge-result.json 에서 경고를 볼 수 없었다. append 보존 + task_id dedup.
+test('collect-one — tdd:true+red_observed:false 의 tdd_warnings 가 merge-result 에 보존(append)', () => {
+  const dir = makeProject();
+  try {
+    fs.writeFileSync(path.join(dir, '.gitignore'), '.pact/\n');
+    sh('git add .gitignore && git commit -m gitignore', { cwd: dir });
+    writeTasks(dir, [{ id: 'TDW-001', allowed_paths: ['src/a.ts'], tdd: true }]);
+    const prep = JSON.parse(runPact(['run-cycle', 'prepare', '--max=1'], dir).stdout);
+    const tp = prep.task_prompts[0];
+    simWorker(dir, tp, 'src/a.ts'); // mkStatus 는 red_observed:false → 경고 대상
+
+    const col = runPact(['run-cycle', 'collect-one', 'TDW-001', '--commit-status'], dir);
+    assert.equal(col.status, 0, `${col.stdout}\n${col.stderr}`);
+    const out = JSON.parse(col.stdout);
+    assert.deepEqual(out.merged, ['TDW-001'], 'soft 경고 — 머지는 진행');
+    assert.equal((out.tdd_warnings || []).length, 1, 'emit 에 경고');
+
+    const mr = JSON.parse(fs.readFileSync(path.join(dir, '.pact/merge-result.json'), 'utf8'));
+    assert.equal((mr.tdd_warnings || []).length, 1,
+      'append 재조립에서 tdd_warnings 유실 금지 — wrap 이 여기서 읽는다');
+    assert.equal(mr.tdd_warnings[0].task_id, 'TDW-001');
+  } finally { cleanupProject(dir); }
+});

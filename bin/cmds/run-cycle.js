@@ -724,6 +724,16 @@ function reconcileCycleResult(out) {
  * cycleId 부재(current_batch 없음: 재진입·수동 호출)면 판정 불가 → 안전하게 fresh 로 취급.
  * @param {string|null} cycleId — 이번 사이클 식별자(readCycleMarker). null 이면 fresh.
  */
+function dedupByTaskId(items) {
+  const seen = new Set();
+  return items.filter((w) => {
+    const k = w && w.task_id;
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
+}
+
 function appendMergeResult(cwd, patch, cycleId = null) {
   const p = path.join(cwd, '.pact/merge-result.json');
   let cur = {};
@@ -746,6 +756,9 @@ function appendMergeResult(cwd, patch, cycleId = null) {
     failures: [...arr('failures'), ...(patch.failures || [])],
     verification_summary: foldVerification(base.verification_summary, patch.verification_summary),
     decisions_to_record: [...arr('decisions_to_record'), ...(patch.decisions_to_record || [])],
+    // dogfood #13: ADR-058 soft 경고 보존 (append 재조립에서 유실되던 필드). 같은 task 의
+    // 재-collect(already_merged 멱등 경로)로 중복이 쌓이지 않게 task_id dedup.
+    tdd_warnings: dedupByTaskId([...arr('tdd_warnings'), ...(patch.tdd_warnings || [])]),
   };
   reconcileCycleResult(out); // DOG-1: 머지된 task 는 rejected/failures 에서 제거 + 중복 정리
   fs.mkdirSync(path.join(cwd, '.pact'), { recursive: true });
