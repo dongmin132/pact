@@ -118,6 +118,7 @@ const ledger = { orchestratorTokens: 0, spentUsd: 0, reservedUsd: 0, attempts: [
 // DRV-3: 현재 in-flight 워커 수(pool onEvent 로 갱신). runWorkerReal 이 per-worker 예산 cap 을
 // '남은예산/동시수' 로 나누는 분모 — 동시 K 워커가 각자 예산 전액을 받아 K×BUDGET 로 폭주하는 것 방지.
 let liveInFlight = 0;
+let dispatchHintShown = false; // dogfood #10: --watch 힌트는 첫 dispatch 에 1회만
 // IMP-5: rate-limit 반응형 다운시프트의 현재 유효 동시폭. 평시엔 MAX(하드 캡)와 동일 — 조정 시에만 감소/복원.
 // driver-state.json 에 항상 실어(additive) pact status 가 "지금 몇 슬롯으로 도는지"를 관측하게 한다.
 let effectiveSlots = MAX;
@@ -681,6 +682,12 @@ async function runCyclePipeline(c, tasks, graph) {
     // IMP-5: rate-limit 반응형 다운시프트(파이프라인 전용 — 레거시 --no-pipeline 엔 미적용). 평시 무동작.
     downshift: { recoverAfter: RECOVER_AFTER, floor: 1 },
     onEvent: (evt) => {
+      // dogfood #10: dispatch 무음이라 사용자가 수 분간 빈 화면을 봄 — 투입 1줄 + 관찰 힌트.
+      if (evt.type === 'dispatch') {
+        const n = (evt.in_flight || []).length;
+        console.log(`  ▶ ${evt.id} 투입 (in-flight ${n}/${MAX})${dispatchHintShown ? '' : ' — 진행 관찰: pact status --watch (별도 터미널)'}`);
+        dispatchHintShown = true;
+      }
       // DX-2: settle 마다 라이브 진행 카운터 증가(→ 아래 write 에 항상 실려 status --watch 가 실시간 관측).
       // IMP-2: 워커가 status.json 을 못 남기고 죽었으면 드라이버 권위 데이터로 합성(자기보고는 안 덮음).
       if (evt.type === 'settle') { tallySettle(ledger.live, evt); if (USE_PACT) synthesizeRunStatus(evt.outcome); }
