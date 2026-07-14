@@ -121,7 +121,7 @@ function actualDiff(baseBranch, branchName, opts = {}) {
  * @param {string[]} [opts.taskIds] — 검증 대상 task_id 목록 (없으면 .pact/runs/* 전체)
  * @param {string} [opts.runsRoot]
  * @param {string} [opts.cwd]
- * @returns {{eligible: string[], rejected: {task_id, reason}[]}}
+ * @returns {{eligible: string[], rejected: {task_id, reason}[], tdd_warnings: {task_id, warning}[]}}
  */
 function planMerge(opts = {}) {
   const cwd = opts.cwd || process.cwd();
@@ -129,9 +129,10 @@ function planMerge(opts = {}) {
 
   const eligible = [];
   const rejected = [];
+  const tddWarnings = [];
 
   if (!fs.existsSync(runsRoot)) {
-    return { eligible, rejected, missing: 'runs_dir' };
+    return { eligible, rejected, tdd_warnings: tddWarnings, missing: 'runs_dir' };
   }
 
   const taskDirs = opts.taskIds || fs.readdirSync(runsRoot).filter(d => {
@@ -236,10 +237,21 @@ function planMerge(opts = {}) {
       continue;
     }
 
+    // ADR-058 — red_observed soft 경고 (옵션 B). red_observed 는 순수 자기보고라 git 으로
+    // 교차검증할 corroboration 이 없다(allowed_paths/files_changed 와 대조적) → hard reject 는
+    // theater(정직한 워커만 막음). 철학 #5(자동 반영 X, 제안까지) 정합: 경고로 가시화만 하고
+    // 머지는 진행. testguard/scopecheck/prelude 와 같은 propose-only 패밀리.
+    if (payload.tdd === true && !(status.tdd_evidence && status.tdd_evidence.red_observed === true)) {
+      tddWarnings.push({
+        task_id: taskId,
+        warning: 'tdd:true 인데 red_observed 미관측 — RED→GREEN 증거 없이 머지됨 (soft 경고, ADR-058)',
+      });
+    }
+
     eligible.push(taskId);
   }
 
-  return { eligible, rejected };
+  return { eligible, rejected, tdd_warnings: tddWarnings };
 }
 
 module.exports = {

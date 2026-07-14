@@ -6,6 +6,27 @@
 
 ---
 
+## ADR-058 — red_observed soft 경고 게이트 (옵션 B, hard reject 아님)
+
+- **상태**: 채택
+- **날짜**: 2026-07-14
+- **출처**: docs/proposals/red-observed-merge-gate.md (사용자 옵션 B 채택)
+- **관련**: ADR-012(워커 자기보고 불신), 철학 #3(검증 없이 병합 X), 철학 #5(자동 반영 X, 제안까지)
+
+### 발견 / 배경
+
+merge 게이트는 자기 보고를 git 현실로 교차검증한다(allowed_paths·files_changed). 그러나 `tdd_evidence.red_observed`는 스키마 검증만 받고 게이팅되지 않아 TDD가 머지 시점엔 명예 규칙이었다. 크럭스: red_observed는 **순수 자기보고**라 git으로 반증할 corroboration이 없다 → hard reject는 theater(정직한 워커만 막고, 대충 쓰는 워커는 `true`로 우회. 회귀 테스트가 이미 GREEN인 정당한 케이스도 오차단).
+
+### 결정
+
+**Soft 경고 게이트(propose-only)**: `tdd: true`인데 `red_observed !== true`면 `planMerge`가 `tdd_warnings`로 가시화하고 **머지는 진행**한다. `pact merge` 출력·`merge-result.json`·collect/collect-one emit에 노출. testguard/scopecheck/prelude와 같은 propose-only 패밀리 톤.
+
+### 트레이드오프
+
+- 강제력 없음(경고 무시 가능) ↔ theater 회피 + 철학 #5 정합. D(검증 가능 게이트 — RED 실행 로그/커밋 SHA 확인)는 이상적 종착지지만 v1.0 scope 초과라 별도 검토.
+
+---
+
 ## ADR-057 — loop-until-dry: 측정된 진행 중에만 자동 재투입
 
 - **상태**: 채택

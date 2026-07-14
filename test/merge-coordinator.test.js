@@ -181,7 +181,7 @@ test('mergeWorktree — branch 없으면 ok:false + branch_missing 플래그 (�
 // 순수 검증 코어를 새 home(scripts) 에서 직접 커버. 동작 불변 회귀 안전망.
 
 /** .pact/runs/<id> 에 valid status.json + payload.json + report.md 작성(스키마 준수). */
-function writeRun(repo, taskId, { file, allowedPaths, filesChanged, statusOverride = {} }) {
+function writeRun(repo, taskId, { file, allowedPaths, filesChanged, statusOverride = {}, payloadOverride = {} }) {
   const runDir = path.join(repo, '.pact', 'runs', taskId);
   fs.mkdirSync(runDir, { recursive: true });
   const status = {
@@ -205,6 +205,7 @@ function writeRun(repo, taskId, { file, allowedPaths, filesChanged, statusOverri
     task_id: taskId,
     allowed_paths: allowedPaths !== undefined ? allowedPaths : [file],
     base_branch: 'main',
+    ...payloadOverride,
   }, null, 2));
   fs.writeFileSync(path.join(runDir, 'report.md'), `# ${taskId} report\n\nsim\n`);
   return runDir;
@@ -273,5 +274,58 @@ test('planMerge — status!=done 이면 reject', () => {
     const plan = planMerge({ cwd: repo, taskIds: ['PM-005'] });
     assert.deepEqual(plan.eligible, []);
     assert.match(plan.rejected[0].reason, /status=blocked/);
+  } finally { cleanupRepo(repo); }
+});
+
+// ─── ADR-058: red_observed soft 경고 게이트 (옵션 B — 경고만, reject 아님) ──────
+// red_observed 는 순수 자기보고라 git 교차검증 corroboration 이 없다 → hard 게이트는
+// theater. 철학 #5(자동 반영 X, 제안까지) 정합의 soft 경고: tdd:true 인데 RED 관측
+// 증거가 없으면 tdd_warnings 로 가시화하되 머지는 진행한다.
+
+test('planMerge — tdd:true + red_observed:false → eligible 유지 + tdd_warnings 경고', () => {
+  const repo = makeRepo();
+  try {
+    workInWorktree(repo, 'TW-001', 'a.txt', 'A\n');
+    writeRun(repo, 'TW-001', {
+      file: 'a.txt', allowedPaths: ['a.txt'],
+      statusOverride: { tdd_evidence: { red_observed: false, green_observed: true } },
+      payloadOverride: { tdd: true },
+    });
+    const plan = planMerge({ cwd: repo, taskIds: ['TW-001'] });
+    assert.deepEqual(plan.eligible, ['TW-001'], 'soft 경고 — 머지는 진행: ' + JSON.stringify(plan));
+    assert.deepEqual(plan.rejected, []);
+    assert.equal((plan.tdd_warnings || []).length, 1, 'RED 미관측 경고 1건');
+    assert.equal(plan.tdd_warnings[0].task_id, 'TW-001');
+    assert.match(plan.tdd_warnings[0].warning, /red_observed/);
+  } finally { cleanupRepo(repo); }
+});
+
+test('planMerge — tdd:true + red_observed:true → 경고 없음', () => {
+  const repo = makeRepo();
+  try {
+    workInWorktree(repo, 'TW-002', 'b.txt', 'B\n');
+    writeRun(repo, 'TW-002', {
+      file: 'b.txt', allowedPaths: ['b.txt'],
+      statusOverride: { tdd_evidence: { red_observed: true, green_observed: true } },
+      payloadOverride: { tdd: true },
+    });
+    const plan = planMerge({ cwd: repo, taskIds: ['TW-002'] });
+    assert.deepEqual(plan.eligible, ['TW-002']);
+    assert.deepEqual(plan.tdd_warnings || [], []);
+  } finally { cleanupRepo(repo); }
+});
+
+test('planMerge — tdd:false (opt-out task) → red_observed 무관 경고 없음', () => {
+  const repo = makeRepo();
+  try {
+    workInWorktree(repo, 'TW-003', 'c.txt', 'C\n');
+    writeRun(repo, 'TW-003', {
+      file: 'c.txt', allowedPaths: ['c.txt'],
+      statusOverride: { tdd_evidence: { red_observed: false, green_observed: false } },
+      payloadOverride: { tdd: false },
+    });
+    const plan = planMerge({ cwd: repo, taskIds: ['TW-003'] });
+    assert.deepEqual(plan.eligible, ['TW-003']);
+    assert.deepEqual(plan.tdd_warnings || [], []);
   } finally { cleanupRepo(repo); }
 });

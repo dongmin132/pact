@@ -40,6 +40,11 @@ function executeMerge(args) {
   } else if (rejected.length > 0) {
     console.error(`(거부 상세 ${rejected.length}건은 .pact/merge-result.json.rejected 참고)`);
   }
+  // ADR-058 — red_observed soft 경고: reject 아님, 가시화만 (철학 #5 propose-only)
+  const tddWarnings = plan.tdd_warnings || [];
+  if (tddWarnings.length > 0) {
+    tddWarnings.forEach(w => console.log(`  ⚠️ ${w.task_id}: ${w.warning}`));
+  }
 
   const result = mergeAll(eligible);
 
@@ -58,6 +63,7 @@ function executeMerge(args) {
     conflicted: result.conflicted,
     skipped: result.skipped,
     rejected,
+    tdd_warnings: tddWarnings,
     status_updates: statusUpdates,
   };
   fs.writeFileSync(path.join(cwd, '.pact/merge-result.json'), JSON.stringify(out, null, 2) + '\n');

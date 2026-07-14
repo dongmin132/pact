@@ -1,7 +1,8 @@
 # 제안: red_observed 머지 게이트 (TDD 증거 강제)
 
-> **상태: 제안 (미결정) — 사용자 판단 대기. 현행 동작 변경 없음.**
-> 채택 시 ADR-058로 기록. 아래 "옵션"·"권고" 참고.
+> **상태: 옵션 B 채택 (2026-07-14, 사용자 결정) — ADR-058로 기록·구현 완료.**
+> `planMerge`가 `tdd:true`+`red_observed!==true`를 `tdd_warnings`로 가시화(머지는 진행).
+> `pact merge` 출력·merge-result.json·collect/collect-one emit에 노출. 아래는 결정 당시 원문.
 
 ## 배경 (현재 동작)
 

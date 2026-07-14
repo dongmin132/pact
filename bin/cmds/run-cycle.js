@@ -871,6 +871,7 @@ function doCollectOne(args, opts, cwd, taskId) {
     already_merged: alreadyMerged,
     conflicted,
     rejected,
+    tdd_warnings: plan.tdd_warnings || [], // ADR-058 soft 경고 — 머지 진행, 가시화만
     status_updates: statusUpdates,
     cleanup,
     failures,
@@ -888,6 +889,7 @@ function doCollectOne(args, opts, cwd, taskId) {
     merged,
     already_merged: alreadyMerged,
     rejected,
+    tdd_warnings: plan.tdd_warnings || [],
     conflicted,
     skipped: [],
     failures,
@@ -1018,6 +1020,7 @@ function doCollect(args, opts, cwd, cbPath) {
     conflicted: result.conflicted,
     skipped: result.skipped,
     rejected: plan.rejected,
+    tdd_warnings: plan.tdd_warnings || [], // ADR-058 soft 경고
     status_updates: statusUpdates,
     cleanup,
     failures,
@@ -1038,6 +1041,7 @@ function doCollect(args, opts, cwd, cbPath) {
     merged: result.merged,
     already_merged: alreadyMerged,
     rejected: plan.rejected,
+    tdd_warnings: plan.tdd_warnings || [],
     conflicted: result.conflicted,
     skipped: result.skipped,
     failures,
