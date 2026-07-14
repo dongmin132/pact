@@ -184,3 +184,20 @@ test('pipelineTiming: 이벤트 없거나 마커만 → null (하위호환)', ()
   assert.equal(pipelineTiming([]), null);
   assert.equal(pipelineTiming([{ ts: 0, type: 'cycle', cycle: 1, cycle_id: 'x' }]), null, 'cycle 마커만은 구간 0');
 });
+
+// ── dogfood 발견 #5: 사이클 도중 실행 시 미보고를 failed 로 오분류 ──────────
+// 워커가 아직 status.json 을 안 쓴 run(진행중)을 failed 로 세면 mid-cycle
+// `pact metrics` 가 "failed N · 대신 안 해준 일 100%" 라는 공포 출력을 낸다.
+test('computeOutcomes: status 미보고(진행중)는 failed 아니라 in_flight 로 분류', () => {
+  const runs = [
+    { task_id: 'A', status: 'done', clean_for_merge: true },
+    { task_id: 'B' },                          // status.json 없음/미기록 — 진행중
+    { task_id: 'C', status: 'in_progress' },   // 명시적 진행중
+    { task_id: 'D', status: 'failed' },        // 진짜 실패
+  ];
+  const o = computeOutcomes(runs, {});
+  assert.equal(o.failed, 1, '명시적 failed 만 failed');
+  assert.equal(o.in_flight, 2, '미보고 + in_progress 는 in_flight');
+  assert.equal(o.total, 4);
+  assert.equal(o.rates.unfinished, 3 / 4, 'unfinished 에는 여전히 포함(하위호환)');
+});

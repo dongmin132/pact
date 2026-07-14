@@ -40,7 +40,7 @@ function buildScorecard(c, opt = {}) {
     totals: { tasks: o.total, merges: merge.total },
     worker_outcomes: {
       done_clean: o.done_clean, done_salvaged: o.done_salvaged,
-      blocked: o.blocked, failed: o.failed,
+      blocked: o.blocked, failed: o.failed, in_flight: o.in_flight,
     },
     rates: {
       completion_by_worker: r3(o.rates.completion_by_worker),
@@ -89,8 +89,10 @@ function formatHuman(card) {
   L.push('');
 
   L.push('🔧  워커 결말');
-  L.push(`   done(clean) ${o.done_clean} · done(salvaged) ${o.done_salvaged} ⚠ · blocked ${o.blocked} · failed ${o.failed}`);
-  L.push(`   ▶ pact가 대신 안 해준 일 = (salvaged+blocked+failed)/${card.totals.tasks} = ${pct(card.rates.not_done_for_you)}   🟡 salvage=heuristic`);
+  L.push(`   done(clean) ${o.done_clean} · done(salvaged) ${o.done_salvaged} ⚠ · blocked ${o.blocked} · failed ${o.failed}` +
+    (o.in_flight ? ` · 진행중/미보고 ${o.in_flight}` : ''));
+  L.push(`   ▶ pact가 대신 안 해준 일 = (salvaged+blocked+failed${o.in_flight ? '+미보고' : ''})/${card.totals.tasks} = ${pct(card.rates.not_done_for_you)}   🟡 salvage=heuristic`);
+  if (o.in_flight) L.push('   ⚠ 진행중/미보고 run 이 있음 — 사이클 완료 후 다시 실행하면 정확한 스코어카드가 나온다.');
   L.push('');
 
   const p = card.parallelism;

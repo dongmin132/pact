@@ -13,7 +13,7 @@ function readJsonSafe(p) {
   try { return JSON.parse(fs.readFileSync(p, 'utf8')); } catch { return null; }
 }
 
-// .pact/runs/<ID>/status.json → run 객체. status.json 부재 = failed(워커 미완).
+// .pact/runs/<ID>/status.json → run 객체. status.json 부재 = 미보고(진행중일 수 있음 — compute 가 in_flight 로 분류, dogfood 발견 #5).
 function readRuns(pactDir) {
   const runsDir = path.join(pactDir, 'runs');
   if (!fs.existsSync(runsDir)) return [];
@@ -24,7 +24,7 @@ function readRuns(pactDir) {
     try { st = fs.statSync(dir); } catch { continue; }
     if (!st.isDirectory()) continue;
     const j = readJsonSafe(path.join(dir, 'status.json'));
-    out.push({ ...(j || {}), task_id: id, status: (j && j.status) || 'failed' });
+    out.push({ ...(j || {}), task_id: id, status: (j && j.status) || null });
   }
   return out;
 }

@@ -9,9 +9,13 @@ const { buildBatches, pathsOverlap, depTaskId } = require('../../batch-builder.j
 // ── 워커 결말 분류 ──────────────────────────────────────────────
 // done(clean)   = status=done · clean_for_merge≠false · main salvage 흔적 없음
 // done(salvaged)= status=done 이지만 사람이 손봄(salvageTouches) 또는 clean_for_merge=false
-// blocked/failed= 그대로 (status 없거나 그 외는 failed 취급)
+// blocked/failed= 명시적 status 그대로
+// in_flight     = status 미보고(파일 없음) 또는 done/blocked/failed 외 — 진행중/미완.
+//                 (dogfood 발견 #5: 이걸 failed 로 세면 사이클 도중 metrics 가
+//                  "failed N · 안 해준 일 100%" 오보를 낸다. unfinished 율에는
+//                  계속 포함해 사후 스코어카드 하위호환 유지.)
 function computeOutcomes(runs = [], salvageTouches = {}) {
-  let done_clean = 0, done_salvaged = 0, blocked = 0, failed = 0;
+  let done_clean = 0, done_salvaged = 0, blocked = 0, failed = 0, in_flight = 0;
   for (const r of runs) {
     if (r.status === 'done') {
       const salvaged =
@@ -21,18 +25,20 @@ function computeOutcomes(runs = [], salvageTouches = {}) {
       else done_clean++;
     } else if (r.status === 'blocked') {
       blocked++;
-    } else {
+    } else if (r.status === 'failed') {
       failed++;
+    } else {
+      in_flight++;
     }
   }
   const total = runs.length;
   const rate = (n) => (total ? n / total : 0);
   return {
-    done_clean, done_salvaged, blocked, failed, total,
+    done_clean, done_salvaged, blocked, failed, in_flight, total,
     rates: {
       completion_by_worker: rate(done_clean),
       salvage: rate(done_salvaged),
-      unfinished: rate(blocked + failed),
+      unfinished: rate(blocked + failed + in_flight),
     },
   };
 }

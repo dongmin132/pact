@@ -16,15 +16,15 @@ function tmp() { return fs.mkdtempSync(path.join(os.tmpdir(), 'pact-metrics-'));
 function write(p, s) { fs.mkdirSync(path.dirname(p), { recursive: true }); fs.writeFileSync(p, s); }
 
 // ── readRuns ────────────────────────────────────────────────────
-test('readRuns: status.json 읽고, 부재 디렉토리는 failed', () => {
+test('readRuns: status.json 읽고, 부재 디렉토리는 미보고(null → in_flight)', () => {
   const d = tmp();
   write(path.join(d, '.pact/runs/A/status.json'), JSON.stringify({ task_id: 'A', status: 'done', tokens_used: 10 }));
-  fs.mkdirSync(path.join(d, '.pact/runs/B'), { recursive: true }); // status.json 없음
+  fs.mkdirSync(path.join(d, '.pact/runs/B'), { recursive: true }); // status.json 없음 — 진행중일 수 있음
   const runs = readRuns(path.join(d, '.pact'));
   const byId = Object.fromEntries(runs.map((r) => [r.task_id, r]));
   assert.equal(byId.A.status, 'done');
   assert.equal(byId.A.tokens_used, 10);
-  assert.equal(byId.B.status, 'failed', 'status.json 없으면 failed');
+  assert.equal(byId.B.status, null, 'status.json 없으면 미보고 — failed 단정 금지(dogfood #5)');
 });
 
 // ── readMergeResults ────────────────────────────────────────────
