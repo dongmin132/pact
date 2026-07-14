@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.12.0 — 2026-07-14
+
+> 토큰 절감 백로그 릴리스 (2026-05 backlog 소진) — per-task 모델 분기 + reflect 0토큰화.
+
+### Added
+- **`worker_model` per-task 모델 분기 (C-1)** — tasks/*.md frontmatter `worker_model: haiku|sonnet|opus`가 payload→task_prompts로 전달돼 드라이버(SDK `options.model`)와 인터랙티브(`Task` model 파라미터) 양쪽에서 워커 모델을 task 단위로 분기. 단순·기계적 task를 haiku로 돌리면 배치 토큰(워커 ~70%) 절감. `validate-mini`가 plan-time enum 검증(오타를 spawn 전 차단). abort 비용 추정도 per-task 단가 적용.
+- **`pact drift` (A-3)** — reflect의 드리프트 사전수집·사이클 요약을 결정적 read-only CLI로. `clean: true`(머지 후 코드변경 0 + failures 0 + rejected 0 + verify fail 0)면 `/pact:reflect`가 planner(LLM) 호출을 통째 생략 — 깨끗한 사이클 회고 비용 ~3M 토큰 → 0. metrics/scopecheck와 같은 read-only 패밀리.
+
+### Changed
+- **reviewer-arch 모델 opus→sonnet 베타 (C-3)** — plan-arch-review 비용 ~5배 절감. 품질 저하 체감 시 frontmatter 주석대로 롤백.
+- **verify docs-only 스킵 (C-4)** — 변경이 전부 마크다운/docs면 Code 축(lint/typecheck/test/build) 자동 skip.
+- **agents/*.md 중복 parallel-tool-use 블록 제거 (C-5)** — 8개 agent에 박혀 있던 동일 5줄(모던 모델 기본 동작) 삭제 — spawn당 ~150 토큰.
+
 ## 0.11.0 — 2026-07-14
 
 > 안전선 하드닝 릴리스 — 외부 코드리뷰 P1 4건 + 가드 실효성 실측 검증에서 나온 2건 수리, red_observed soft 경고(ADR-058), rate-limit 적응 다운시프트.
