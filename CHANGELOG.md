@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.12.1 — 2026-07-14
+
+> 라이브 dogfood 릴리스 — 신규 프로젝트(linkcheck)에서 init→plan→drive(실워커)→merge→wrap 전 여정을 실제로 밟아 발견한 14건 중 11건 수리. 최종 검증: 3/3 task 머지·산출 CLI 실동작·salvage 0%·오케스트레이터 0토큰.
+
+### Fixed (치명 — 워커 전멸 클래스)
+- **canUseTool allow 응답에 `updatedInput` 누락 → 전 도구 거부** — CLI(2.1.20x) 런타임 Zod가 allow arm에 record `updatedInput`을 요구(.d.ts는 optional로 오표기). `{behavior:'allow'}`만 반환하면 모든 도구 호출이 "Tool permission request failed: ZodError"로 거부돼 워커가 파일 하나 못 쓰고 예산만 소진(실측: 3세대 $0.92·산출 0). 0.11.0의 allowedTools shadow 제거로 콜백이 처음 발화하며 드러난 잠복 결함. 응답 shape 계약 테스트로 고정.
+- **워커 자기 보고영역(`.pact/runs/<id>/`) Write 거부 → 보고 직전 전멸** — status.json은 종료 프로토콜인데 worktree 밖이라 Write/Edit 분기가 거부(Bash 경계분류만 자기 runs를 allow하던 비대칭). 실측: 구현·커밋을 끝낸 워커가 보고 단계에서 3세대 전멸. 자기 runs만 허용, 타 task runs는 계속 deny(위조 방지).
+- **가드 deny의 `interrupt:true` → deny 1회에 워커 세션 즉사** — 인터랙티브 훅은 deny 후 적응 기회를 주는 것과 비대칭. 행동 차단은 유지하되 세션은 유지(폭주는 budget/maxTurns가 bound).
+
+### Fixed (게이트·배선)
+- **PreToolUse matcher에 Bash 누락** — `checkBashWrite`(Bash 쓰기 우회 차단, CLEANUP-029/P1-#4 하드닝 대상)가 인터랙티브 경로에서 한 번도 발화할 수 없었다. matcher에 Bash 추가(비-워커 컨텍스트는 즉시 통과, 오탐 없음) + plugin.json 회귀 테스트 신설.
+- **tdd_evidence 키 누락이 완성된 머지를 통째 거부** — tdd:false task의 haiku 워커가 `tdd_evidence:{}`로 보고 → schema required가 게이트 reject(작업 유실 실측). 순수 자기보고의 required 강제는 ADR-058이 기각한 hard 게이트와 같은 theater — 타입 위반만 거부하고 누락 가시화는 `tdd_warnings`(soft)가 담당. worker.md에 "tdd:false여도 false로 채움" 명시.
+- **collect-one append에서 `tdd_warnings` 유실** — appendMergeResult 고정 키 목록에 없어 ADR-058 경고가 merge-result.json에서 사라졌다. 보존 + task_id dedup.
+- **워커의 Agent/Task(서브에이전트 spawn) deny** — 실측에서 막힌 워커가 Agent로 우회 시도. 워커는 일회용 단일 task 실행자(nesting 금지) — 가드·예산 밖 비용 폭주 벡터 차단.
+- **metrics가 사이클 도중 미보고 run을 failed로 오분류** — mid-cycle `pact metrics`가 "failed N·대신 안 해준 일 100%" 오보. 진행중/미보고(`in_flight`) 범주 분리 + 경고 라인(unfinished 율은 하위호환 유지).
+
+### Fixed (온보딩)
+- **init의 tasks/example.md placeholder가 첫 사이클 차단** — EXAMPLE-001이 진짜 task로 파싱돼 TBD 게이트가 `pact batch`/prepare를 막았다(원인 불명 에러로 신규 사용자 좌초). heading을 task 패턴 밖으로(형식 문서화) + 회귀 테스트.
+- **init 마지막 git 환경검증이 항상 실패** — 방금 생성한 7개 파일이 uncommitted라 에러. 검증을 단계 1로 이동 + uncommitted는 경고로 강등 + 결과 보고에 "생성 파일 커밋" 안내 추가. detect-yolo 분기를 `is_yolo` 불리언 기준으로(신규 퍼미션 모드에 견고).
+- **plugin.json 버전 드리프트(0.10.0 방치)** — package.json과 동기화(회귀 테스트로 고정).
+
+### Added
+- **drive dispatch 콘솔 1줄 + `pact status --watch` 힌트** — 워커 실행 중 수 분 침묵이던 stdout에 `▶ <id> 투입 (in-flight n/K)` 표시.
+
 ## 0.12.0 — 2026-07-14
 
 > 토큰 절감 백로그 릴리스 (2026-05 backlog 소진) — per-task 모델 분기 + reflect 0토큰화.
