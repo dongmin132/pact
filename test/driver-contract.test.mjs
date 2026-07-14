@@ -559,4 +559,7 @@ test('canUseTool — deny 응답은 message(string) 포함 (기존 계약 유지
   const r = await sink.options.canUseTool('Write', { file_path: '/tmp/pact-wt/docs/evil.md' });
   assert.equal(r.behavior, 'deny');
   assert.equal(typeof r.message, 'string');
+  // dogfood #12: interrupt:true 면 deny 1회에 워커 세션이 즉사(ede) — 인터랙티브 훅은
+  // deny 후 적응 기회를 주는 것과 비대칭이었다. 행동은 막되 워커는 살린다.
+  assert.notEqual(r.interrupt, true, 'deny 는 행동만 차단 — 워커 즉사(interrupt) 금지');
 });

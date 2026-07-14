@@ -303,9 +303,12 @@ function makeCanUseTool(task) {
     // "Tool permission request failed: ZodError" 로 거부돼 워커가 산출 0 으로 예산만 태운다
     // (dogfood 실측: 3세대 $0.92 · 커밋 0). allowedTools shadow 시절엔 이 콜백이 아예 안
     // 불려 잠복해 있던 결함. 계약 테스트가 응답 shape 를 고정한다.
+    // deny 는 interrupt 없이 — interrupt:true 면 deny 1회에 워커 세션이 즉사(ede, dogfood #12
+    // 실측: LC-001 3세대가 같은 deny 에서 전멸). 인터랙티브 pre-tool-guard 처럼 행동만 막고
+    // 워커는 살려 우회·적응하게 한다(폭주는 budget/maxTurns 가 bound).
     return r.allow
       ? { behavior: 'allow', updatedInput: input || {} }
-      : { behavior: 'deny', message: r.reason, interrupt: true };
+      : { behavior: 'deny', message: r.reason };
   };
 }
 
