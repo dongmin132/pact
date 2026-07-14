@@ -56,6 +56,15 @@ function guardToolUse(toolName, input, ctx = {}) {
     if (!target) return { allow: true };
     const { abs, rel } = relInWorktree(target, workingDir || process.cwd());
     if (workingDir && !ptg.isInsideWorktree(abs, path.resolve(workingDir))) {
+      // 예외 (dogfood #11): 자기 보고영역 `<repo>/.pact/runs/<task_id>/` 는 허용 —
+      // status.json/report.md 는 종료 프로토콜인데 worktree 밖이라 여기서 죽으면 워커가
+      // 작업을 다 해놓고 보고 직전에 전멸한다(라이브 실측). checkBashWrite 의 경계 분류
+      // (자기 runs allow)와 대칭. 다른 task 의 runs 는 계속 deny(보고 위조 방지).
+      const m = /^(.*)[\/\\]\.pact[\/\\]worktrees[\/\\]([^\/\\]+)[\/\\]?$/.exec(path.resolve(workingDir));
+      if (m) {
+        const ownRuns = path.join(m[1], '.pact', 'runs', m[2]) + path.sep;
+        if (abs.startsWith(ownRuns)) return { allow: true };
+      }
       return { allow: false, reason: `pact: worktree(${workingDir}) 외부 쓰기 금지 — ${abs}` };
     }
     if (allowedPaths && allowedPaths.length) {
