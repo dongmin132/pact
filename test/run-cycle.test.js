@@ -58,6 +58,7 @@ function writeTasks(dir, tasks) {
     md.push(`done_criteria: [${t.done_criteria || 'exists'}]`);
     md.push(`tdd: ${t.tdd ?? false}`);
     if (t.status) md.push(`status: ${t.status}`);
+    if (t.worker_model) md.push(`worker_model: ${t.worker_model}`);
     if (t.loop_until) {
       md.push('loop_until:');
       for (const [k, v] of Object.entries(t.loop_until)) {
@@ -1447,5 +1448,24 @@ test('collect-one — reject→resume→merge 후 rejected 에 미잔존 + 중�
       !(mr.failures || []).some(f => f && f.task_id === 'DOG-001'),
       `머지 성공 task 가 failures 에 잔존하면 안 됨: ${JSON.stringify(mr.failures)}`,
     );
+  } finally { cleanupProject(dir); }
+});
+
+// ─── C-1: worker_model passthrough (fresh emit path) ────────────
+// 단순 task→Haiku 분기용. tasks/*.md frontmatter 의 worker_model 이 payload 와
+// task_prompts 로 전달돼 spawn 측(드라이버 SDK options.model / 인터랙티브 Task model)이 분기한다.
+test('prepare — task의 worker_model을 task_prompts로 전달 (fresh path)', () => {
+  const dir = makeProject();
+  try {
+    writeTasks(dir, [{ id: 'WM-001', allowed_paths: ['src/**'], worker_model: 'haiku' }]);
+    const r = runPact(['run-cycle', 'prepare', '--max=1'], dir);
+    assert.equal(r.status, 0, `stderr: ${r.stderr}\nstdout: ${r.stdout}`);
+    const out = JSON.parse(r.stdout);
+    const tp = (out.task_prompts || []).find(t => t.task_id === 'WM-001');
+    assert.ok(tp, `WM-001 task_prompt 존재: ${r.stdout}`);
+    assert.equal(tp.worker_model, 'haiku');
+    // payload.json 에도 영속 (rebuild/resume 경로 대비)
+    const payload = JSON.parse(fs.readFileSync(path.join(dir, '.pact/runs/WM-001/payload.json'), 'utf8'));
+    assert.equal(payload.worker_model, 'haiku');
   } finally { cleanupProject(dir); }
 });

@@ -9,6 +9,7 @@ const STATUS_ENUM = new Set(['done', 'failed', 'blocked']);
 const VERIFY_ENUM = new Set(['pass', 'fail', 'skip']);
 const PRIORITY_ENUM = new Set(['P0', 'P1', 'P2', 'P1.5', 'P2.5', 'P2.6']);
 const TASK_STATUS_ENUM = new Set(['todo', 'in_progress', 'done', 'failed', 'blocked']);
+const WORKER_MODEL_ENUM = new Set(['haiku', 'sonnet', 'opus']);
 const KIND_ENUM = new Set(['complete', 'contract_only']);
 
 function err(path, message, keyword) {
@@ -166,6 +167,10 @@ function validateTask(obj) {
   }
   if ('status' in obj && obj.status !== undefined && !TASK_STATUS_ENUM.has(obj.status)) {
     errors.push(err('/status', `must be one of: ${[...TASK_STATUS_ENUM].join('|')}`, 'enum'));
+  }
+  // C-1: worker_model 오타(hakiu 등)를 plan-time 에 잡는다 — spawn 시점 SDK 에러보다 훨씬 싸다.
+  if ('worker_model' in obj && obj.worker_model !== undefined && obj.worker_model !== null && !WORKER_MODEL_ENUM.has(obj.worker_model)) {
+    errors.push(err('/worker_model', `must be one of: ${[...WORKER_MODEL_ENUM].join('|')}`, 'enum'));
   }
 
   return { ok: errors.length === 0, errors };

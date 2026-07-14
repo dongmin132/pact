@@ -122,6 +122,7 @@ context_refs:                  # architect가 shard 포인터로 갱신
   - contracts/api/<domain>.md
   - contracts/db/<domain>.md
 tdd: true | false
+worker_model: haiku | sonnet | opus  # 선택. 단순·기계적 task(rename·상수 추출·config·보일러플레이트)는 haiku — 배치 토큰 절감. 미지정=sonnet
 context_budget_tokens: 20000   # 기본
 prd_reference: <docs/PRD.md §X>  # PRD 기반일 때만
 sourcing: <ARCHITECTURE.md §X 또는 PRD §Y>

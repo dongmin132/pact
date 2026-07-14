@@ -175,6 +175,7 @@ function rebuildOneTaskPrompt(cwd, id) {
     working_dir: payload.working_dir,
     allowed_paths: payload.allowed_paths || [], // P2-2: 슬롯 풀 pathsOverlap 게이팅용(추가 필드)
     loop_until: payload.loop_until || null,
+    worker_model: payload.worker_model || null, // C-1: 드라이버 SDK options.model / 인터랙티브 Task model 분기
   };
 }
 
@@ -225,6 +226,7 @@ function buildTaskPayload(task, wt, baseBranch, parsed) {
     base_branch: baseBranch,
     context_budget_tokens: task.context_budget_tokens || 20000,
     loop_until: task.loop_until || null,
+    worker_model: task.worker_model || null, // C-1: per-task 모델 분기 (없으면 spawn 기본값)
   };
 }
 
@@ -241,6 +243,7 @@ function buildTaskPromptEntry(r, wt, payload, cwd) {
     working_dir: wt.working_dir,
     allowed_paths: payload.allowed_paths || [], // P2-2: 슬롯 풀 pathsOverlap 게이팅용(추가 필드)
     loop_until: payload.loop_until || null,
+    worker_model: payload.worker_model || null, // C-1: 드라이버 SDK options.model / 인터랙티브 Task model 분기
   };
 }
 

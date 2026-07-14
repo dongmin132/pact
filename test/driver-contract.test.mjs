@@ -504,3 +504,31 @@ test('T2-3 — result 가 온 정상/에러 경로는 total_cost_usd 가 우선(
   assert.equal(r.cost, 0.42, 'SDK 실측 비용이 있으면 그대로');
   assert.notEqual(r.costEstimated, true, '실측이 있으면 추정 마커 없음');
 });
+
+// ---- C-1: worker_model 분기 — 단순 task 는 Haiku 로 (배치 토큰의 ~70%가 워커) ----
+
+test('C-1 — task.worker_model 이 SDK options.model 로 전달(per-task 분기)', async () => {
+  ledger.spentUsd = 0; ledger.reservedUsd = 0;
+  const sink = {};
+  const spy = (cfg) => { sink.options = cfg.options; return (async function* () { yield { type: 'result', subtype: 'success', num_turns: 1, total_cost_usd: 0, usage: { input_tokens: 1 } }; })(); };
+  await runWorkerReal({ ...baseTask(), worker_model: 'haiku' }, { query: spy });
+  assert.equal(sink.options.model, 'haiku');
+});
+
+test('C-1 — worker_model 없으면 기본 MODEL(sonnet) 유지', async () => {
+  ledger.spentUsd = 0; ledger.reservedUsd = 0;
+  const sink = {};
+  const spy = (cfg) => { sink.options = cfg.options; return (async function* () { yield { type: 'result', subtype: 'success', num_turns: 1, total_cost_usd: 0, usage: { input_tokens: 1 } }; })(); };
+  await runWorkerReal(baseTask(), { query: spy });
+  assert.equal(sink.options.model, 'sonnet');
+});
+
+test('C-1×T2-3 — abort 비용 추정도 per-task 모델 단가로 계산', async () => {
+  ledger.spentUsd = 0; ledger.reservedUsd = 0;
+  const u = { input_tokens: 1000, output_tokens: 1000 };
+  const messages = [{ type: 'assistant', message: { id: 'm1', usage: u, content: [] } }];
+  const r = await runWorkerReal({ ...baseTask(), worker_model: 'opus' }, { query: throwingQuery(messages, new Error('aborted')) });
+  const { estimateCostUsd } = await import('../scripts/lib/cost-estimate.js');
+  const expected = estimateCostUsd(u, 'opus');
+  assert.ok(Math.abs(r.cost - expected) < 1e-12, `opus 단가 추정: ${r.cost} ≠ ${expected}`);
+});

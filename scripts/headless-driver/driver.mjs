@@ -426,11 +426,14 @@ async function runWorkerReal(task, opts = {}) {
   const streamUsage = { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 };
   let streamUsageSeen = false;
   const seenMsgIds = new Set();
+  // C-1: per-task 모델 분기 — tasks/*.md frontmatter worker_model(haiku|sonnet|opus)이 payload →
+  // task_prompts 로 전달됨. 단순·기계적 task 를 haiku 로 돌리면 배치 토큰(워커가 ~70%)이 크게 준다.
+  const workerModel = task.worker_model || MODEL;
   try {
     q = query({
       prompt: task.task_prompt,
       options: {
-        model: MODEL,
+        model: workerModel,
         cwd: task.working_dir,
         // ⚠️ allowedTools 절대 금지: allow rule 에 매칭된 도구는 canUseTool 을 스킵(자동 승인)한다
         // — 공식 permissions 문서 + SDK 0.3.178 실측(deny 콜백 0회 호출, Write 실행됨).
@@ -481,7 +484,7 @@ async function runWorkerReal(task, opts = {}) {
     // 트랙2: result(total_cost_usd)를 못 본 채 끝났으면(=abort/throw 경로) 누적 assistant usage 로
     // 비용을 추정해 ledger 과소계상을 막는다. 실측이 있으면 실측이 항상 우선.
     if (!cost && streamUsageSeen) {
-      cost = estimateCostUsd(streamUsage, MODEL);
+      cost = estimateCostUsd(streamUsage, workerModel);
       if (result) { result.cost = cost; result.costEstimated = true; }
       if (result && !result.usage) result.usage = { ...streamUsage };
     }

@@ -80,6 +80,11 @@
       "type": "string",
       "enum": ["todo", "in_progress", "done", "failed", "blocked"]
     },
+    "worker_model": {
+      "type": "string",
+      "enum": ["haiku", "sonnet", "opus"],
+      "description": "C-1: 이 task 워커의 모델 분기 (선택). 미지정=spawn 기본값(sonnet). 단순·기계적 task 는 haiku 로 배치 토큰 절감."
+    },
     "retry_count": {
       "type": "integer",
       "minimum": 0

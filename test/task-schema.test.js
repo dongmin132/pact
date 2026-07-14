@@ -76,3 +76,16 @@ test('task.schema — loop_until 선택 필드 허용 (count + max_iterations)',
   assert.equal(schema.properties.loop_until.properties.max_iterations.type, 'integer');
   assert.ok(!schema.required.includes('loop_until'), 'loop_until은 선택 필드여야 함');
 });
+
+// ─── C-1: worker_model (선택 필드) ────────────
+test('worker_model — haiku/sonnet/opus 허용', () => {
+  for (const m of ['haiku', 'sonnet', 'opus']) {
+    const r = validateTasksAgainstSchema([{ ...VALID, worker_model: m }]);
+    assert.equal(r.ok, true, `${m}: ${JSON.stringify(r.errors)}`);
+  }
+});
+
+test('worker_model — 오타(hakiu 등)는 거부', () => {
+  const r = validateTasksAgainstSchema([{ ...VALID, worker_model: 'hakiu' }]);
+  assert.equal(r.ok, false, 'enum 밖 모델명은 plan-time 에 잡아야 함');
+});

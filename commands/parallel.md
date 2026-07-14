@@ -92,6 +92,7 @@ prepare 결과의 `size_warnings` / `scope_warnings` / `bundle_warnings` / `owne
 - `subagent_type`: `worker`
 - `description`: `<task_id>: <title>`
 - `prompt`: `task_prompt` 그대로 (메인은 prompt.md/context.md를 read X)
+- `model`: 항목에 `worker_model`(haiku|sonnet|opus)이 있으면 그 값 지정, 없으면 생략(기본 sonnet). — C-1 per-task 모델 분기: 단순·기계적 task 를 haiku 로 돌려 배치 토큰 절감. 재spawn(4c 재투입 fresh 워커)에도 동일 적용.
 
 Claude Code v2.1.198+ 는 서브에이전트를 **기본 백그라운드 실행**한다 — 메인이 블록되지 않고, 워커 완료 결과가 **개별적으로** 메인 대화에 도착하며 그때마다 메인이 행동할 수 있다(단계 4 이벤트 루프). 순차 호출은 직렬화하므로 **반드시 한 메시지에 K개 Task call**.
 
