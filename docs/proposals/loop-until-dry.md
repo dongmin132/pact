@@ -1,6 +1,6 @@
 # Proposal: loop-until-dry — `pact drive` 자동 진행 재투입
 
-- Status: **설계 승인됨 (구현 대기)**
+- Status: **구현 완료 (0.9.0 출시, ADR-057)** — 이 문서는 설계 원본 기록
 - Date: 2026-06-17
 - Scope: `experiments/headless-driver/driver.mjs` (헤드리스 드라이버 전용), `schemas/task.schema.json`, `bin/cmds/run-cycle.js`(prepare 필드 전달)
 - 관련: [[headless-driver-initiative]], `docs/proposals/continue-on-conflict.md`, ADR-012(워커 자기보고 불신)

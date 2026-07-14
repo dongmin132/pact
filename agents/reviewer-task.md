@@ -46,7 +46,7 @@ review 시작 전 한 번 훑고 답하기:
 
 1. **거대 task** — 8+ 파일·2+ 새 서비스 가진 task가 있나? (분해 권장)
 2. **기존 코드 활용** — 이미 부분 해결되는 게 있나? (scope 축소 권장)
-3. **deferred 묶기** — TODOS.md의 deferred 항목 중 이번에 묶을 만한 게 있나?
+3. **이월분 묶기** — `tasks/*.md`에서 `status: blocked`/`failed`로 이월된 항목 중 이번에 묶을 만한 게 있나? (`rg "status: (blocked|failed)" tasks/`)
 
 문제 발견되면 바로 사용자에게 보고, review 중단 가능.
 

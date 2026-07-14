@@ -1,5 +1,7 @@
 # loop-until-dry Implementation Plan
 
+> **상태: 구현 완료 (0.9.0 출시, ADR-057).** 체크박스 미갱신은 기록 원본 보존 목적 — 실제 구현은 `driver.mjs`(`runLoopTask`/`measureCount`)·`schemas/task.schema.json`(`loop_until`)·`run-cycle.js` 배선 완료.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** `pact drive`(헤드리스 드라이버)가 `loop_until`을 선언한 task에 대해, 측정된 진행이 있는 동안 fresh 워커를 자동 재투입해 한 워커가 질식하지 않고 done_criteria에 도달하게 한다.

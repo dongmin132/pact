@@ -204,12 +204,11 @@ pact split-docs --force      # 새 inference 로 재분할
 
 ---
 
-### C-2. worker maxTurns 60 → 30 ⏱️ 1줄
+### ~~C-2. worker maxTurns 60 → 30~~ ❌ 폐기 (2026-07-14)
 
-**현재**: `agents/worker.md` 의 `maxTurns: 60`. 워커 평균 1.45M 토큰 (긴 task 가 평균 끌어올림).
-**바뀜**: 30 으로 cap. runaway 워커 자동 중단 → blocked → 사용자가 task 쪼개기.
-
-**효과**: 평균 1.45M → 800k–1M. 월 70M 토큰 절감 추정.
+**폐기 사유**: 이후 방향과 정면 상충 — f5b2350 에서 워커 maxTurns cap 을 오히려 **제거**하고
+"중간 커밋 강제 + loop-until-dry(ADR-057) + 예산(maxBudgetUsd) cap"으로 대체했다.
+턴 cap 은 작업을 자르는 반면 예산 cap + fresh-resume 은 부분작업을 보존한다. 재제기 금지.
 
 ---
 
