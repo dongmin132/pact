@@ -132,6 +132,7 @@ const toolBrief = (name, input) => {
 // 헤드리스 워커가 인터랙티브 워커(서브에이전트)와 "같은 안전 규칙"을 받게 한다.
 const nodeRequire = createRequire(import.meta.url);
 const { guardToolUse } = nodeRequire(join(PLUGIN_ROOT, 'scripts', 'lib', 'worker-guard.js'));
+const { estimateCostUsd } = nodeRequire(join(PLUGIN_ROOT, 'scripts', 'lib', 'cost-estimate.js'));
 const { writeJsonAtomic } = nodeRequire(join(PLUGIN_ROOT, 'scripts', 'lib', 'atomic-write.js'));
 // STAB-1 belt: 같은 레포에 두 드라이버 동시 실행 차단(drive-owner.json, isAlive 게이트).
 const { acquireDriveLock, releaseDriveLock } = nodeRequire(join(PLUGIN_ROOT, 'scripts', 'lock.js'));
@@ -405,14 +406,22 @@ async function runWorkerReal(task, opts = {}) {
   // usage/cost 는 모든 메시지에서 갱신 — 중간에 끊겨도 마지막 본 값 보존(비용 0 방지).
   // result 는 반환 객체를 finally 가 참조하기 위한 홀더 — finally 에서 예약 해제와 spent 가산을
   // 원자적으로 처리하고 이 객체에 spentAccounted 마커를 찍는다(상위 호출자 중복 가산 방지).
+  // 트랙2: SDK 는 abort/timeout 시 result 없이 throw 할 수 있어(0.3.178 실측) total_cost_usd 를
+  // 영영 못 본다 → assistant 메시지의 message.usage 를 누적해 두고 그 경로에서 비용을 추정한다.
+  // 같은 API 응답의 블록들이 각각 assistant 메시지로 흘러오며 usage 를 공유하므로 message.id 로 dedup.
   let usage = null, turns = 0, subtype = 'error_during_execution', cost = 0, result = null;
+  const streamUsage = { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 };
+  let streamUsageSeen = false;
+  const seenMsgIds = new Set();
   try {
     q = query({
       prompt: task.task_prompt,
       options: {
         model: MODEL,
         cwd: task.working_dir,
-        allowedTools: ['Read', 'Write', 'Edit', 'Bash', 'Glob', 'Grep'],
+        // ⚠️ allowedTools 절대 금지: allow rule 에 매칭된 도구는 canUseTool 을 스킵(자동 승인)한다
+        // — 공식 permissions 문서 + SDK 0.3.178 실측(deny 콜백 0회 호출, Write 실행됨).
+        // 도구 제한·경계는 canUseTool(worker-guard) 단일 관문이 담당한다. 계약 테스트가 고정(T2-1).
         canUseTool: makeCanUseTool(task),
         permissionMode: 'default',
         maxTurns: 200,                                          // 넉넉한 backstop (작업 안 자름)
@@ -424,6 +433,15 @@ async function runWorkerReal(task, opts = {}) {
     for await (const m of q) {
       if (m && m.usage) usage = m.usage;
       if (m && typeof m.total_cost_usd === 'number') cost = m.total_cost_usd;
+      if (m && m.type === 'assistant' && m.message && m.message.usage && !seenMsgIds.has(m.message.id)) {
+        seenMsgIds.add(m.message.id);
+        const u = m.message.usage;
+        streamUsage.input_tokens += u.input_tokens || 0;
+        streamUsage.output_tokens += u.output_tokens || 0;
+        streamUsage.cache_read_input_tokens += u.cache_read_input_tokens || 0;
+        streamUsage.cache_creation_input_tokens += u.cache_creation_input_tokens || 0;
+        streamUsageSeen = true;
+      }
       if (m && m.type === 'result') { turns = m.num_turns || turns; subtype = m.subtype; }
       // (verbose) 워커가 부르는 도구를 실시간 스트리밍 — 내부 동작 가시화
       if (VERBOSE && m && m.type === 'assistant') {
@@ -447,6 +465,13 @@ async function runWorkerReal(task, opts = {}) {
     return result;
   } finally {
     clearTimeout(timer);
+    // 트랙2: result(total_cost_usd)를 못 본 채 끝났으면(=abort/throw 경로) 누적 assistant usage 로
+    // 비용을 추정해 ledger 과소계상을 막는다. 실측이 있으면 실측이 항상 우선.
+    if (!cost && streamUsageSeen) {
+      cost = estimateCostUsd(streamUsage, MODEL);
+      if (result) { result.cost = cost; result.costEstimated = true; }
+      if (result && !result.usage) result.usage = { ...streamUsage };
+    }
     // 트랙2 잔여 수리: '예약 해제'와 '지출 가산'을 한 동기 블록에서 원자적으로 처리한다. 이전엔 여기서
     // 예약만 반납하고 실지출(cost)은 상위 attemptTask/runLoopTask 가 한 마이크로태스크 뒤에 더했다 →
     // 그 간극에 재투입된 워커가 (예약 빠짐 + 지출 미가산) 상태를 관측해 remaining=capBudget-spent-reserved

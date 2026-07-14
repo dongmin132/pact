@@ -415,3 +415,79 @@ test('IMP-1 — beginCycleEvents: 새 cycle_id 는 회전(truncate), 같은 cycl
     assert.equal(last.cycle_id, 'cid-2');
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
+
+// ---- T2-1: canUseTool shadow — allowedTools 는 canUseTool 을 스킵시킨다(공식 문서 + SDK 0.3.178 실측) ----
+// 실측(2026-07-14): allowedTools=[Write,...] 구성에서 Write 가 실행돼 파일이 생겼는데 deny 콜백은
+// 0회 호출됨. 즉 allowedTools 에 든 도구는 가드를 우회한다 → 드라이버는 allowedTools 를 절대
+// 넘기면 안 되고, canUseTool(worker-guard)이 유일한 관문이어야 한다. 이 테스트가 그 계약을 고정.
+
+test('T2-1 — SDK 옵션에 allowedTools 를 넘기지 않는다(재도입 시 가드 무력화)', async () => {
+  ledger.spentUsd = 0; ledger.reservedUsd = 0;
+  const sink = {};
+  const spy = (cfg) => {
+    sink.options = cfg.options;
+    return (async function* () {
+      yield { type: 'result', subtype: 'success', num_turns: 1, total_cost_usd: 0, usage: { input_tokens: 1 } };
+    })();
+  };
+  await runWorkerReal(baseTask(), { query: spy });
+  assert.equal(sink.options.allowedTools, undefined,
+    'allowedTools 가 있으면 그 도구들은 canUseTool 을 스킵(자동 승인) — worker-guard 죽은 코드화');
+  assert.equal(typeof sink.options.canUseTool, 'function', 'canUseTool 가드는 반드시 배선');
+});
+
+test('T2-1 — canUseTool 이 allowed_paths 밖 Write 를 deny, 안은 allow (가드 실효)', async () => {
+  ledger.spentUsd = 0; ledger.reservedUsd = 0;
+  const sink = {};
+  const spy = (cfg) => {
+    sink.options = cfg.options;
+    return (async function* () {
+      yield { type: 'result', subtype: 'success', num_turns: 1, total_cost_usd: 0, usage: { input_tokens: 1 } };
+    })();
+  };
+  const task = { ...baseTask(), allowed_paths: ['src/**'] };
+  await runWorkerReal(task, { query: spy });
+  const deny = await sink.options.canUseTool('Write', { file_path: '/tmp/pact-wt/docs/evil.md' });
+  assert.equal(deny.behavior, 'deny', 'allowed_paths 밖 Write 는 deny');
+  const allow = await sink.options.canUseTool('Write', { file_path: '/tmp/pact-wt/src/ok.js' });
+  assert.equal(allow.behavior, 'allow', 'allowed_paths 안 Write 는 allow');
+});
+
+// ---- T2-3: abort/throw 로 result 메시지가 없으면 assistant usage 로 비용 추정 ----
+// 실측(SDK 0.3.178): abort 시 SDK 는 result 없이 throw → total_cost_usd/usage 미포착 → 워커
+// 비용이 $0.00 으로 ledger 에 기록돼 budget cap 이 실지출을 과소계상한다. assistant 메시지의
+// message.usage 를 message.id 로 dedup 누적(같은 API 응답의 블록들이 usage 를 공유)해
+// cost-estimate 로 추정하고 costEstimated 마커를 찍는다.
+
+test('T2-3 — result 없이 throw 시 assistant usage 추정 비용이 ledger 에 반영(estimated)', async () => {
+  ledger.spentUsd = 0; ledger.reservedUsd = 0;
+  const u = { input_tokens: 1000, output_tokens: 2000, cache_read_input_tokens: 100000, cache_creation_input_tokens: 10000 };
+  const messages = [
+    { type: 'assistant', message: { id: 'msg_1', usage: u, content: [] } },
+    { type: 'assistant', message: { id: 'msg_1', usage: u, content: [] } }, // 같은 API 응답의 둘째 블록 — 이중계상 금지
+    { type: 'assistant', message: { id: 'msg_2', usage: u, content: [] } },
+  ];
+  const r = await runWorkerReal(baseTask(), { query: throwingQuery(messages, new Error('Claude Code process aborted by user')) });
+  assert.equal(r.ok, false);
+  assert.equal(r.costEstimated, true, '관측 못한 비용은 추정 마커를 달아야 함');
+  // MODEL 기본값 'sonnet' — msg_1 1회 + msg_2 1회 (dedup) = usage 2배
+  const { estimateCostUsd } = await import('../scripts/lib/cost-estimate.js');
+  const expected = estimateCostUsd({
+    input_tokens: 2000, output_tokens: 4000, cache_read_input_tokens: 200000, cache_creation_input_tokens: 20000,
+  }, 'sonnet');
+  assert.ok(expected > 0, '추정 단가 테이블 유효');
+  assert.ok(Math.abs(r.cost - expected) < 1e-9, `dedup 추정: cost=${r.cost} expected=${expected}`);
+  assert.ok(Math.abs(ledger.spentUsd - expected) < 1e-9, `ledger 반영: spent=${ledger.spentUsd}`);
+});
+
+test('T2-3 — result 가 온 정상/에러 경로는 total_cost_usd 가 우선(추정 안 함)', async () => {
+  ledger.spentUsd = 0; ledger.reservedUsd = 0;
+  const u = { input_tokens: 1000, output_tokens: 2000 };
+  const messages = [
+    { type: 'assistant', message: { id: 'msg_1', usage: u, content: [] } },
+    { type: 'result', subtype: 'error_max_turns', num_turns: 9, total_cost_usd: 0.42, usage: u },
+  ];
+  const r = await runWorkerReal(baseTask(), { query: scriptedQuery(messages) });
+  assert.equal(r.cost, 0.42, 'SDK 실측 비용이 있으면 그대로');
+  assert.notEqual(r.costEstimated, true, '실측이 있으면 추정 마커 없음');
+});
