@@ -74,10 +74,11 @@ function validateStatus(obj) {
     if (!isObject(obj.tdd_evidence)) {
       errors.push(err('/tdd_evidence', 'must be object', 'type'));
     } else {
+      // dogfood #14: 키 누락은 통과(빈 객체 포함) — 순수 자기보고를 required 로 강제하면
+      // tdd:false task 의 보고 실수가 완성된 머지를 통째 거부한다(게이트 theater, ADR-058 참조).
+      // 누락 가시화는 merge 의 tdd_warnings 가 담당. 타입 위반만 거부.
       for (const f of ['red_observed', 'green_observed']) {
-        if (!(f in obj.tdd_evidence)) {
-          errors.push(err(`/tdd_evidence/${f}`, `must have required property '${f}'`, 'required'));
-        } else if (typeof obj.tdd_evidence[f] !== 'boolean') {
+        if (f in obj.tdd_evidence && typeof obj.tdd_evidence[f] !== 'boolean') {
           errors.push(err(`/tdd_evidence/${f}`, 'must be boolean', 'type'));
         }
       }

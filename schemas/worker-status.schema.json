@@ -47,7 +47,6 @@
     },
     "tdd_evidence": {
       "type": "object",
-      "required": ["red_observed", "green_observed"],
       "properties": {
         "red_observed": { "type": "boolean" },
         "green_observed": { "type": "boolean" }

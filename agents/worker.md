@@ -67,7 +67,7 @@ tools:
 2. `git status --porcelain` clean 확인 → status.json `clean_for_merge: true`
 3. `<runs_dir>/status.json` 작성. **JSON Schema 강제** — `schemas/worker-status.schema.json`, validate-status.js가 자동 검증, 형식 위반 시 자동 blocked.
 
-   필수 필드: `task_id`, `status` (`done`|`failed`|`blocked`), `branch_name`, `commits_made`, `clean_for_merge`, `files_changed`, `files_attempted_outside_scope`, `verify_results` (lint/typecheck/test/build = `pass`|`fail`|`skip`), `tdd_evidence` (red_observed·green_observed), `decisions`, `blockers`, `tokens_used`, `completed_at` (ISO 8601).
+   필수 필드: `task_id`, `status` (`done`|`failed`|`blocked`), `branch_name`, `commits_made`, `clean_for_merge`, `files_changed`, `files_attempted_outside_scope`, `verify_results` (lint/typecheck/test/build = `pass`|`fail`|`skip`), `tdd_evidence` (red_observed·green_observed — **tdd: false 여도 `{"red_observed": false, "green_observed": false}` 로 채움**, 빈 객체 X), `decisions`, `blockers`, `tokens_used`, `completed_at` (ISO 8601).
 
    **`summary` 필드(2~4문장 자유 서술)를 충실히 채워라** — 무엇을 했나 / 마주친 문제와 해결 / 메인·coordinator가 알아야 할 것. 이 서사는 아래 report.md 로 렌더되니 성의껏 쓴다. (report.md 를 손으로 쓰지 마라 — CLI 가 status.json 에서 렌더한다.)
 4. **report.md 는 손으로 쓰지 않는다** — `pact report-gen`(collect 가 머지 직전 자동 호출)이 status.json 의 구조화 필드 + `summary` 를 결정적으로 `<runs_dir>/report.md` 로 렌더한다(0토큰). 네가 채운 `summary`·`decisions`·`blockers`·`verify_results` 가 그 품질을 결정하므로 status.json 을 충실히 작성하라. (예외: 렌더로 담기 어려운 특수 서사가 있으면 직접 report.md 를 쓸 수 있고, 그 경우 report-gen 이 존중해 덮어쓰지 않는다.)
