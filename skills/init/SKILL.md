@@ -93,14 +93,14 @@ ls CLAUDE.md PROGRESS.md TASKS.md DECISIONS.md 2>/dev/null
 node ${CLAUDE_PLUGIN_ROOT}/scripts/detect-yolo.js
 ```
 
-stdout JSON의 `is_yolo`·`mode`·`source` 확인. 결과 분기:
+stdout JSON의 `is_yolo`·`mode`·`source` 확인. **분기는 `is_yolo` 불리언으로** (`mode` 는 표시용 — CC 가 `auto`·`acceptEdits` 등 새 모드를 추가해도 분기가 안 깨진다):
 
-- `mode: 'bypassPermissions'` (= yolo) → CLAUDE.md `yolo_mode: true`, 사용자에게 알림:
+- `is_yolo: true` → CLAUDE.md `yolo_mode: true`, 사용자에게 알림:
   ```
   ⚠️ yolo 모드(bypassPermissions) 감지됨 — 권한 자동 승인 환경.
   cross-review·destructive 동작 자동 진행됨.
   ```
-- `mode: 'default'` 등 일반 → `yolo_mode: false`
+- `is_yolo: false` (mode: default/auto/acceptEdits 등 일반) → `yolo_mode: false`
 - `mode: 'unknown'` (감지 실패) → 사용자에게 묻기:
   ```
   yolo 모드 자동 감지 실패. 직접 알려주세요:
@@ -257,6 +257,7 @@ echo '{"version": 1, "current_cycle": 0, "active_workers": []}' > .pact/state.js
 - 병렬 폭(동시 워커 수): pact run-cycle prepare --max=N / pact drive --max=N (기본·상한 5)
 
 다음 단계:
+  git add -A && git commit -m "pact: init"   # ← 필수: prepare preflight 가 clean tree 를 요구
   /pact:plan "첫 작업 한 줄 설명"
 또는
   /pact:plan --from docs/PRD.md
@@ -273,14 +274,17 @@ P0에서 안 했던 것들 추가됨:
 - ✅ `.pact/` SOT 폴더 생성 (PACT-040, P2.6)
 - ✅ git 환경 검증 (PACT-026, worktree 사용 위해 필수)
 
-git 환경 검증은 다음 호출:
+git 환경 검증은 **단계 1(사전 검사) 시점에** 다음 호출로 실행한다 — 파일 생성 **후에** 돌리면
+init 이 방금 만든 7개 파일이 uncommitted 라 항상 실패하는 자충수가 된다(dogfood 발견):
 ```bash
 node -e "
 const { checkEnvironment } = require('\${CLAUDE_PLUGIN_ROOT}/scripts/worktree-manager.js');
 const r = checkEnvironment();
-if (!r.ok) { console.error(JSON.stringify(r.errors)); process.exit(1); }
+console.log(JSON.stringify(r));
 "
 ```
+- `git 저장소 아님` 계열 에러 → **중단** + "git init -b main 후 재실행" 안내 (worktree 필수 전제).
+- `uncommitted changes` 에러 → **중단 아님**, ⚠️ 한 줄 안내만: "커밋 안 된 변경이 있습니다 — init 후 생성 파일과 함께 커밋하세요." (init 자체는 새 파일만 만들므로 안전.)
 
 `.pact/` 폴더는 단계 3.5에서 생성 (자체 .gitignore 박음, ARCHITECTURE.md §21.3).
 
