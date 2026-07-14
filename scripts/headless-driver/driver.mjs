@@ -297,7 +297,14 @@ function readCycleId(opts = {}) {
 function makeCanUseTool(task) {
   return async (toolName, input) => {
     const r = guardToolUse(toolName, input || {}, { workingDir: task.working_dir, allowedPaths: task.allowed_paths });
-    return r.allow ? { behavior: 'allow' } : { behavior: 'deny', message: r.reason, interrupt: true };
+    // ⚠️ allow 는 updatedInput(원본 input) 필수 — .d.ts 는 optional 로 표기하지만 CLI(2.1.20x)
+    // 런타임 Zod 스키마가 allow arm 에 record 를 요구한다. 누락 시 모든 도구 호출이
+    // "Tool permission request failed: ZodError" 로 거부돼 워커가 산출 0 으로 예산만 태운다
+    // (dogfood 실측: 3세대 $0.92 · 커밋 0). allowedTools shadow 시절엔 이 콜백이 아예 안
+    // 불려 잠복해 있던 결함. 계약 테스트가 응답 shape 를 고정한다.
+    return r.allow
+      ? { behavior: 'allow', updatedInput: input || {} }
+      : { behavior: 'deny', message: r.reason, interrupt: true };
   };
 }
 

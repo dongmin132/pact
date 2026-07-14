@@ -532,3 +532,31 @@ test('C-1×T2-3 — abort 비용 추정도 per-task 모델 단가로 계산', as
   const expected = estimateCostUsd(u, 'opus');
   assert.ok(Math.abs(r.cost - expected) < 1e-12, `opus 단가 추정: ${r.cost} ≠ ${expected}`);
 });
+
+// ---- dogfood #8(치명): canUseTool allow 응답에 updatedInput 누락 → CLI Zod 거부 ----
+// .d.ts 는 updatedInput 을 optional 로 표기하지만, CLI(2.1.20x) 런타임 Zod 스키마는 allow
+// union arm 에 record 를 요구한다 — {behavior:'allow'} 만 반환하면 모든 도구 호출이
+// "Tool permission request failed: ZodError" 로 거부돼 워커가 파일 하나 못 쓰고 예산만
+// 태운다(라이브 dogfood 실측: 3세대 $0.92, 산출 0). allowedTools shadow 를 벗겨내며
+// 드러난 잠복 결함 — 가드 콜백의 응답 형태를 계약으로 고정한다.
+
+test('canUseTool — allow 응답은 updatedInput(원본 input) 을 반드시 포함', async () => {
+  ledger.spentUsd = 0; ledger.reservedUsd = 0;
+  const sink = {};
+  const spy = (cfg) => { sink.options = cfg.options; return (async function* () { yield { type: 'result', subtype: 'success', num_turns: 1, total_cost_usd: 0, usage: { input_tokens: 1 } }; })(); };
+  await runWorkerReal(baseTask(), { query: spy });
+  const input = { file_path: '/tmp/pact-wt/src/ok.js', content: 'x' };
+  const r = await sink.options.canUseTool('Write', input);
+  assert.equal(r.behavior, 'allow');
+  assert.deepEqual(r.updatedInput, input, 'CLI Zod 가 allow 에 record updatedInput 을 요구 — 누락 시 전 도구 거부');
+});
+
+test('canUseTool — deny 응답은 message(string) 포함 (기존 계약 유지)', async () => {
+  ledger.spentUsd = 0; ledger.reservedUsd = 0;
+  const sink = {};
+  const spy = (cfg) => { sink.options = cfg.options; return (async function* () { yield { type: 'result', subtype: 'success', num_turns: 1, total_cost_usd: 0, usage: { input_tokens: 1 } }; })(); };
+  await runWorkerReal({ ...baseTask(), allowed_paths: ['src/**'] }, { query: spy });
+  const r = await sink.options.canUseTool('Write', { file_path: '/tmp/pact-wt/docs/evil.md' });
+  assert.equal(r.behavior, 'deny');
+  assert.equal(typeof r.message, 'string');
+});
