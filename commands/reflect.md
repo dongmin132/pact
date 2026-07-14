@@ -11,39 +11,21 @@ description: 사이클 회고 — 잘된 점·실패 원인·개선 후보 (prop
 - `CLAUDE.md`, `PROGRESS.md`, `DECISIONS.md` 존재
 - 마지막 cycle이 `done` 또는 `aborted`인 상태가 자연스러움 (running 중에도 호출은 가능)
 
-## 단계 1.5: Docs drift 사전 수집 (Bash)
+## 단계 1.5: 드리프트·요약 결정적 수집 (`pact drift`)
 
-마지막 머지 시점 이후 사용자가 직접 수정한 코드와 문서 갱신 누락 검사:
-
-```bash
-LAST_MERGE_TS=$(jq -r '.timestamp // empty' .pact/merge-result.json 2>/dev/null)
-if [ -n "$LAST_MERGE_TS" ]; then
-  # 마지막 머지 이후 commit들의 변경 파일 수집
-  CHANGED=$(git log --since="$LAST_MERGE_TS" --name-only --pretty=format: | sort -u | grep -v '^$')
-  CODE_CHANGED=$(echo "$CHANGED" | grep -E '\.(ts|tsx|js|jsx|py|go|rs|java|kt|rb)$' || true)
-  DOCS_CHANGED=$(echo "$CHANGED" | grep -E '^(contracts/|tasks/|docs/.*\.md$|PROGRESS\.md|ARCHITECTURE\.md|CLAUDE\.md)' || true)
-fi
-```
-
-planner에 이 결과를 전달 (아래 prompt에 inline).
-
-## 단계 1.6: 사이클 요약 추출 (Bash)
-
-`merge-result.json`은 사이클 deterministic SOT다. `run-cycle collect` 경로는 `failures`·`verification_summary`·`decisions_to_record`를 이미 계산해 담고 있으므로, planner가 done task의 status.json을 통째 읽지 않도록 이 요약만 뽑아 inline 주입한다 ("결정적=CLI, 판단=LLM"):
+드리프트 검출과 사이클 요약 추출은 판단이 아니라 결정적 사실 — CLI 한 번으로 수집한다 (A-3):
 
 ```bash
-MR=.pact/merge-result.json
-STANDALONE_MERGE=0
-if [ -f "$MR" ]; then
-  FAILURES=$(jq -c '.failures // empty' "$MR" 2>/dev/null)
-  VERIFY=$(jq -c '.verification_summary // empty' "$MR" 2>/dev/null)
-  DECISIONS=$(jq -c '.decisions_to_record // empty' "$MR" 2>/dev/null)
-  # standalone `pact merge` 경로엔 위 세 필드가 없음 → status.json 폴백 신호
-  if [ -z "$VERIFY$FAILURES$DECISIONS" ]; then STANDALONE_MERGE=1; fi
-fi
+DRIFT=$(node ${CLAUDE_PLUGIN_ROOT}/bin/pact drift)
 ```
 
-`FAILURES` / `VERIFY` / `DECISIONS`를 아래 planner prompt에 inline. `STANDALONE_MERGE=1`이면 요약 필드가 없으니 planner가 status.json(소용량)으로 폴백한다.
+출력(JSON): `clean` / `code_changed[]` / `docs_changed[]` / `failures[]` / `rejected_count` / `verify_fails[]` / `verification_summary` / `decisions_to_record[]` / `standalone_merge?` / `no_cycle?`.
+
+**조기 종료 (LLM 0토큰)**: `clean: true` 면 — 마지막 머지 이후 코드 변경 0 + failures 0 + rejected 0 + verify fail 0 — planner 를 호출하지 않고 사용자에게 한 줄만 출력 후 종료한다:
+
+> ✅ 표류 없음 — 마지막 머지 이후 변경·실패가 없어 회고할 내용이 없습니다. (planner 미호출)
+
+`clean: false` 면 아래 단계 2로 진행하고, `DRIFT` JSON 을 planner prompt 에 inline 주입한다. `standalone_merge: true`(요약 필드 없는 standalone `pact merge` 산출물)면 planner 가 status.json(소용량)으로 폴백한다. `no_cycle: true`(merge-result 없음 — 사이클 전)면 드리프트 항목 없이 일반 회고만 진행.
 
 ## 단계 2: planner 서브에이전트 호출 (회고 모드)
 
@@ -58,7 +40,7 @@ Task tool:
   - 잘 된 부분 (3개 이내)
   - 안 된 부분 + 가능한 원인 (3개 이내)
   - 개선 후보 ADR (DECISIONS.md 추가용, 사용자 승인 전제)
-  - **Docs drift** — 마지막 머지 이후 사용자가 직접 수정했지만 갱신이 누락된 SOT 파일 (단계 1.5에서 수집된 CODE_CHANGED / DOCS_CHANGED 비교)
+  - **Docs drift** — 마지막 머지 이후 사용자가 직접 수정했지만 갱신이 누락된 SOT 파일 (단계 1.5 `DRIFT.code_changed` / `DRIFT.docs_changed` 비교)
   
   **갱신 권장 시 SOT 우선순위 (역순 = 절대 금지)**:
   1. **1순위: shard** — `contracts/api/<domain>.md`, `contracts/db/<domain>.md`, `contracts/modules/<domain>.md`. 해당 domain shard가 존재하면 **무조건 shard를 가리킬 것**.
@@ -69,7 +51,7 @@ Task tool:
   domain 매핑은 `contracts/manifest.md` 또는 `ls contracts/api/ contracts/db/` 로 먼저 확인할 것.
   
   입력 (요약은 inline 주입 · 전문은 lazy read):
-  - 사이클 요약 (단계 1.6에서 추출, inline): FAILURES / VERIFY / DECISIONS
+  - 사이클 요약 (단계 1.5 `DRIFT`, inline): failures / verification_summary / decisions_to_record
     → done task의 status.json은 이 요약에 이미 반영됨. **개별 status.json 전량 read 금지.**
   - PROGRESS.md
   - 워커 보고서 report.md — **lazy**: `FAILURES`에 든 task + ADR 승격을 실제로 논할 task만 `.pact/runs/<id>/report.md`를 그때 read. N개 전문 통째 로드 금지.

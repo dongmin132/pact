@@ -28,6 +28,7 @@ const commands = {
   'validate-status': () => require('./cmds/validate-status.js')(args),
   'report-gen': () => require('./cmds/report-gen.js')(args),
   metrics: () => require('./cmds/metrics.js')(args),
+  drift: () => require('./cmds/drift.js')(args),
   prelude: () => require('./cmds/prelude.js')(args),
   sizecheck: () => require('./cmds/sizecheck.js')(args),
   testguard: () => require('./cmds/testguard.js')(args),
@@ -56,6 +57,7 @@ if (!cmd || !commands[cmd]) {
   console.error('  validate-status <path/to/status.json>   worker self-validate (issue #3)');
   console.error('  report-gen <task_id>|--all [--force] [--json]  status.json → report.md 결정적 렌더 (0토큰)');
   console.error('  metrics [--project <path>] [--json] [--cycle <prefix>]  사이클 계측기 (read-only 스코어카드)');
+  console.error('  drift [--project <path>]  마지막 머지 이후 드리프트·실패 결정적 산출 — clean 이면 reflect 가 LLM 생략 (read-only)');
   console.error('  prelude [--project <path>] [--min=N] [--json]  공유표면 freeze 추출 제안 (propose-only)');
   console.error('  sizecheck [--project <path>] [--max-files=N] [--json]  턴소진 위험 task 사이징 (propose-only)');
   console.error('  testguard [--project <path>] [--json]  test-as-law — 자기검증 테스트 수정 가능 task 플래그 (propose-only)');

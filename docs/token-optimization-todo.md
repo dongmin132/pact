@@ -6,6 +6,13 @@
 
 ## 이미 한 것 (참고)
 
+- ✅ **C-1 완료** (2026-07-14) — task frontmatter `worker_model`(haiku|sonnet|opus) → payload → task_prompts → 드라이버 SDK options.model / 인터랙티브 Task model. validate-mini plan-time enum 검증.
+- ✅ **C-3 베타 적용** (2026-07-14) — `agents/reviewer-arch.md` model: opus → sonnet. 품질 저하 체감 시 롤백(frontmatter 주석 참고).
+- ✅ **C-4 완료** (2026-07-14) — `commands/verify.md` 단계 2에 docs-only 스킵(git diff 코드파일 0이면 Code 축 skip).
+- ✅ **C-5 완료** (2026-07-14) — agents/*.md 8곳의 중복 "parallel tool use" 블록 제거 (modern 모델 기본 동작).
+- ✅ **C-6 해당 없음** (2026-07-14) — plan-arch-review 는 이미 단일 호출로 4섹션 일괄 출력(리팩토링 과정에서 해소됨).
+- ✅ **A-3 완료** (2026-07-14) — `pact drift` CLI (scripts/drift.js). reflect 가 clean 사이클에서 planner(LLM) 호출 생략 — 깨끗한 사이클 회고 비용 ~3M→0.
+
 - ✅ `commands/parallel.md` 단계 9 추가 — cycle 끝나면 "새 세션 권장" 안내 출력
 - ✅ **A-1 완료** (2026-05-26) — `commands/reflect.md` drift grep 패턴 확장
 - ✅ **A-2 완료** (2026-05-26) — `commands/reflect.md` planner prompt 에 SOT 우선순위 룰 추가

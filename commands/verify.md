@@ -12,6 +12,8 @@ P1+: 4축 모두. (P0 단순 버전: Code 축만 — 이미 폐지됨)
 
 ## 단계 2: Code 축 (검증 명령 실행)
 
+**docs-only 스킵 (C-4)**: 실행 전에 `git diff --name-only HEAD~1 -- . ':!*.md' ':!docs/'` 로 코드 파일 변경 여부를 먼저 확인한다. 출력이 비어 있으면(=이번 변경이 전부 마크다운/docs) Code 축 4개 명령을 실행하지 않고 전부 `skip` 으로 표기한 뒤 단계 3으로 — docs-only 사이클에서 lint/typecheck/test/build 낭비(~수 분·수 M 토큰) 방지. 코드 파일이 하나라도 있으면 아래 정상 실행.
+
 CLAUDE.md `verify_commands` 추출 + 실행:
 
 ```bash
