@@ -30,6 +30,14 @@ function guardToolUse(toolName, input, ctx = {}) {
   input = input || {};
   const { workingDir, allowedPaths } = ctx;
 
+  // 워커의 서브에이전트 spawn 금지 (dogfood #9) — 워커는 일회용 단일 task 실행자
+  // (ARCHITECTURE §14.2 nesting 금지). 서브에이전트는 이 가드·예산 밖에서 도는 비용
+  // 폭주 벡터다(라이브 실측: 막힌 워커가 Agent 로 우회 시도). 나머지 미지 도구는
+  // 기존대로 fail-open(맨 아래 allow) — 무해 도구(TodoWrite 등)까지 막지 않는다.
+  if (toolName === 'Agent' || toolName === 'Task') {
+    return { allow: false, reason: 'pact: 워커의 서브에이전트 spawn 금지 — 워커는 일회용 단일 task 실행자(중첩 금지). task 가 너무 크면 blocked 로 보고하세요.' };
+  }
+
   // Read: 긴 SOT 원문 통째 Read 차단 (pre-tool-guard 와 동일 판정)
   if (toolName === 'Read') {
     const target = input.file_path || input.path || input.file;
