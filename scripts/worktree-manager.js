@@ -155,6 +155,15 @@ function removeWorktree(taskId, opts = {}) {
   const wtPath = path.join(WORKTREE_BASE, taskId);
   const absPath = path.join(cwd, wtPath);
 
+  // 이미 없는 worktree 는 정리 성공(멱등) — branch_missing/already_merged 재진입에서 removeWorktree
+  // 가 'not a working tree' 실패를 내 merge-result cleanup SOT 에 거짓 실패 엔트리를 쌓던 문제 방지.
+  // git 등록만 남았을 수 있어 prune + branch -D 는 best-effort.
+  if (!fs.existsSync(absPath)) {
+    git(['worktree', 'prune'], opts);
+    git(['branch', '-D', `pact/${taskId}`], opts);
+    return { ok: true, removed: false };
+  }
+
   // 우리가 만든 node_modules symlink는 git worktree remove 전에 unlink (untracked 거부 회피)
   const dstNm = path.join(absPath, 'node_modules');
   try {

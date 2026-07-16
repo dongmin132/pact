@@ -196,6 +196,15 @@ test('createWorktree — opts.linkNodeModules: false 시 skip', () => {
   } finally { cleanup(repo); }
 });
 
+test('removeWorktree — 이미 없는 worktree 는 ok:true 멱등 (거짓 실패 엔트리 방지)', () => {
+  const repo = makeRepo();
+  try {
+    const r = removeWorktree('GONE-001', { cwd: repo });
+    assert.equal(r.ok, true, '없는 worktree 정리는 성공으로 간주해야 함');
+    assert.equal(r.removed, false);
+  } finally { cleanup(repo); }
+});
+
 test('removeWorktree — node_modules symlink이 있어도 정리 성공', () => {
   const repo = makeRepo();
   try {

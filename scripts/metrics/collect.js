@@ -45,19 +45,17 @@ function readMergeResults(pactDir) {
   return out;
 }
 
-// tasks/*.md frontmatter(yaml 블록) → task 객체 (allowed_paths·dependencies 포함).
+// task 객체 (allowed_paths·dependencies 포함). M14: discoverTaskFiles 로 위임해 tasks/*.md 우선 +
+// legacy TASKS.md 폴백을 얻는다 — 과거엔 tasks/ 만 스캔해, TASKS.md 만 쓰는 프로젝트에서 batch 는
+// 되는데 이 readTasks 를 쓰는 propose-only 가드(sizecheck·scopecheck·testguard·prelude)·metrics 가
+// 전부 0 task 로 침묵 무력화됐다.
 function readTasks(projectDir) {
-  const tdir = path.join(projectDir, 'tasks');
-  const tasks = [];
-  if (fs.existsSync(tdir)) {
-    for (const f of fs.readdirSync(tdir)) {
-      if (!f.endsWith('.md')) continue;
-      try {
-        const { tasks: ts } = parseTasks(fs.readFileSync(path.join(tdir, f), 'utf8'));
-        tasks.push(...ts);
-      } catch { /* 깨진 파일 무시 */ }
-    }
-  }
+  const { discoverTaskFiles, parseTaskFiles } = require('../task-sources.js');
+  let tasks = [];
+  try {
+    const files = discoverTaskFiles({ cwd: projectDir });
+    tasks = parseTaskFiles(files, { cwd: projectDir }).tasks || [];
+  } catch { tasks = []; }
   const byId = {};
   for (const t of tasks) byId[t.id] = t;
   return { tasks, byId };

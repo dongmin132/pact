@@ -16,9 +16,14 @@ function main() {
     process.exit(0);
   }
 
-  // 서브에이전트 타입 확인 — worker만 처리
-  const subagentType = payload.subagent_type || (payload.metadata && payload.metadata.subagent_type);
-  if (subagentType !== 'worker') process.exit(0);
+  // 서브에이전트 타입 확인 — worker만 처리. 실제 SubagentStop 페이로드 필드는 agent_type 이고,
+  // 플러그인 스코프면 'pact:worker' 로 온다(M0: 과거 존재하지 않는 subagent_type 을 읽어 워커 검증
+  // 가드 전체가 죽은 코드였음). agent_type 우선 + subagent_type 하위호환 + 스코프 접미사 수용.
+  const agentType = payload.agent_type
+    || payload.subagent_type
+    || (payload.metadata && (payload.metadata.agent_type || payload.metadata.subagent_type));
+  const isWorker = agentType === 'worker' || (typeof agentType === 'string' && agentType.endsWith(':worker'));
+  if (!isWorker) process.exit(0);
 
   const cwd = payload.cwd || process.cwd();
 
