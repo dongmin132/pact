@@ -90,6 +90,50 @@ test('bookkeeping 커밋 없이 코드 커밋만 있어도 code_changed=true', (
   } finally { fs.rmSync(d, { recursive: true, force: true }); }
 });
 
+test('인터랙티브 파이프라인: 머지마다 status 커밋이 끼어도 앞쪽 코드 머지를 놓치지 않는다 (H7-2)', () => {
+  const d = repo();
+  try {
+    commit(d, { 'README.md': '# base\n' }, 'init');
+    // 인터랙티브: 코드 task 먼저 머지 → collect-one status 커밋 → 문서 task 머지 → status 커밋 → bookkeeping
+    commit(d, { 'src/auth.js': 'code\n' }, 'Merge task AUTH-1');
+    commit(d, { 'tasks/auth.md': '## done\n' }, 'pact: cycle status updates');   // 사이클 중간 status 커밋
+    commit(d, { 'docs/note.md': 'note\n' }, 'Merge task DOC-2');
+    commit(d, { 'tasks/doc.md': '## done\n' }, 'pact: cycle status updates');
+    commit(d, { 'PROGRESS.md': '# p\n' }, 'pact: cycle bookkeeping');
+
+    const r = cycleCodeChanges({ cwd: d });
+    assert.equal(r.code_changed, true, '중간 status 커밋을 경계로 오인해 앞쪽 코드 머지를 놓치면 안 됨');
+    assert.ok(r.files.includes('src/auth.js'));
+  } finally { fs.rmSync(d, { recursive: true, force: true }); }
+});
+
+test('이전 bookkeeping 경계로 직전 사이클을 정확히 배제 — 이번 사이클이 docs-only면 false (H7-2)', () => {
+  const d = repo();
+  try {
+    commit(d, { 'README.md': '# base\n' }, 'init');
+    // 이전 사이클: 코드 머지 + bookkeeping 경계
+    commit(d, { 'src/old.js': 'old\n' }, 'Merge task OLD-1');
+    commit(d, { 'PROGRESS.md': '# p1\n' }, 'pact: cycle bookkeeping');
+    // 이번 사이클: 문서만
+    commit(d, { 'docs/new.md': 'new\n' }, 'Merge task DOC-2');
+    commit(d, { 'PROGRESS.md': '# p2\n' }, 'pact: cycle bookkeeping');
+
+    const r = cycleCodeChanges({ cwd: d });
+    assert.equal(r.code_changed, false, '이번 사이클이 docs-only면 직전 사이클의 코드 머지에 오염되면 안 됨');
+  } finally { fs.rmSync(d, { recursive: true, force: true }); }
+});
+
+test('window 안에서 이전 bookkeeping 경계를 못 찾으면 fail-safe code_changed=true (H7-2)', () => {
+  const d = repo();
+  try {
+    // bookkeeping 경계 없이 코드 커밋만 (첫 사이클 또는 window 초과 시뮬)
+    commit(d, { 'README.md': '# base\n' }, 'init');
+    commit(d, { 'src/a.js': 'a\n' }, 'Merge task A');
+    const r = cycleCodeChanges({ cwd: d, window: 2 });  // 작은 window 로 경계 못 찾는 상황 강제
+    assert.equal(r.code_changed, true, '경계 불확실 시 skip 하지 말고 Code 축 실행');
+  } finally { fs.rmSync(d, { recursive: true, force: true }); }
+});
+
 test('git 저장소 아니면 fail-safe 로 code_changed=true(false-skip 금지)', () => {
   const d = fs.mkdtempSync(path.join(os.tmpdir(), 'pact-vscope-nogit-'));
   try {

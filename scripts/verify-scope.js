@@ -14,13 +14,25 @@
 
 const { spawnSync } = require('child_process');
 
-const BOOKKEEPING_SUBJECTS = new Set([
+// 사이클당 한 번, 사이클 끝에만 찍히는 마커 — 이전 사이클 경계 판정용(H7-2).
+// ※ 'pact: cycle status updates' 는 인터랙티브 파이프라인에서 collect-one 머지마다 찍혀
+//   사이클 중간에 나타나므로 경계로 쓰면 안 된다. 트레일링 스킵 대상일 뿐(아래 분리).
+const CYCLE_BOUNDARY = 'pact: cycle bookkeeping';
+// 트레일링(사이클 끝) md-only 커밋 — 스킵 대상(경계 판정과 무관).
+const TRAILING_MD_SUBJECTS = new Set([
   'pact: cycle bookkeeping',
   'pact: cycle status updates',
 ]);
 
+function isCycleBoundary(subject) {
+  return (subject || '').trim() === CYCLE_BOUNDARY;
+}
+function isTrailingMd(subject) {
+  return TRAILING_MD_SUBJECTS.has((subject || '').trim());
+}
+// 하위호환 export 유지(테스트·소비자용) — 트레일링 md 판정.
 function isBookkeeping(subject) {
-  return BOOKKEEPING_SUBJECTS.has((subject || '').trim());
+  return isTrailingMd(subject);
 }
 
 function git(cwd, args) {
@@ -48,29 +60,39 @@ function cycleCodeChanges(opts = {}) {
   });
   if (!commits.length) return { ok: true, code_changed: false, files: [], reason: 'no commits' };
 
-  // 1) 트레일링 bookkeeping/status(md-only) 건너뛰기 → 이번 사이클 마지막 작업 커밋.
+  // 1) 트레일링 md-only(bookkeeping/status updates) 건너뛰기 → 이번 사이클 마지막 작업 커밋.
   let i = 0;
-  while (i < commits.length && isBookkeeping(commits[i].subject)) i++;
+  while (i < commits.length && isTrailingMd(commits[i].subject)) i++;
   if (i >= commits.length) {
-    // 창 전체가 bookkeeping — 코드 작업 없음.
+    // 창 전체가 md-only — 코드 작업 없음.
     return { ok: true, code_changed: false, files: [], reason: 'all-bookkeeping' };
   }
 
-  // 2) 이전 bookkeeping 경계까지 = 이번 사이클 첫 작업 커밋(base).
-  let j = i;
-  while (j + 1 < commits.length && !isBookkeeping(commits[j + 1].subject)) j++;
-  const base = commits[j].hash;
+  // 2) 이전 사이클 경계(bookkeeping 단독)를 찾는다 — 그 커밋의 트리 = 이번 사이클 시작 직전 상태.
+  //    사이클 중간의 'status updates' 커밋은 경계가 아니라 건너뛴다(H7-2: 인터랙티브 오경계 방지).
+  let k = i;
+  while (k < commits.length && !isCycleBoundary(commits[k].subject)) k++;
 
-  // 3) base 의 부모(있으면)부터 HEAD 까지 non-md/docs 파일 변경. 부모 없으면(루트) base 자신부터.
-  const hasParent = git(cwd, ['rev-parse', '--verify', '-q', `${base}^`]).status === 0;
-  const from = hasParent ? `${base}^` : base;
+  let from;
+  if (k < commits.length) {
+    from = commits[k].hash;               // 이전 사이클 bookkeeping — 그 트리부터 HEAD 까지가 이번 사이클
+  } else {
+    // 창 안에 이전 경계 없음. 창이 가득 찼으면 경계가 창 밖일 수 있어 판정 불확실 → fail-safe true.
+    if (commits.length >= window) {
+      return { ok: true, code_changed: true, files: [], reason: 'boundary-not-found-fail-safe' };
+    }
+    // 히스토리가 창보다 짧다 = 전 이력을 봤고 이전 사이클 없음 → 가장 오래된 커밋 트리부터 diff.
+    from = commits[commits.length - 1].hash;
+  }
+
+  // 3) from 트리부터 HEAD 까지 non-md/docs 파일 변경.
   const diff = git(cwd, ['diff', '--name-only', from, 'HEAD', '--', '.', ':!*.md', ':!docs/']);
   if (diff.status !== 0) {
     // diff 실패 시 안전하게 code_changed=true (false-skip 금지).
-    return { ok: true, code_changed: true, files: [], from, base, reason: 'diff-failed-fail-safe' };
+    return { ok: true, code_changed: true, files: [], from, reason: 'diff-failed-fail-safe' };
   }
   const files = (diff.stdout || '').trim().split('\n').filter(Boolean);
-  return { ok: true, code_changed: files.length > 0, files, from, base };
+  return { ok: true, code_changed: files.length > 0, files, from };
 }
 
 // CLI: pact verify-scope [--project <path>] [--json]
