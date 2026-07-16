@@ -42,6 +42,30 @@ test('Read — 허용 문서(tasks/x.md)면 allow', () => {
   assert.equal(r.allow, true);
 });
 
+// M9: 헤드리스 Read 가드가 worktree-상대만 검사해 repo-절대경로 SOT 통독을 놓치던 문제.
+test('Read — repo 절대경로 SOT(/repo/ARCHITECTURE.md) 통독도 deny (M9 parity)', () => {
+  const r = guardToolUse('Read', { file_path: '/repo/ARCHITECTURE.md' }, { workingDir: WD });
+  assert.equal(r.allow, false, 'repo-상대 SOT 도 차단돼야 함');
+  assert.match(r.reason, /SOT/);
+});
+
+// M21: Bash cat 로 긴 SOT 통째 읽기 우회.
+test('Bash — cat 으로 긴 SOT(TASKS.md) 통독 시 deny (M21)', () => {
+  const r = guardToolUse('Bash', { command: 'cat TASKS.md' }, { workingDir: WD, allowedPaths: ['src/**'] });
+  assert.equal(r.allow, false, 'cat TASKS.md 통독은 차단돼야 함');
+  assert.match(r.reason, /SOT|섹션|rg/);
+});
+
+test('Bash — rg 로 SOT 섹션 추출은 allow (M21 — 섹션 도구는 허용)', () => {
+  const r = guardToolUse('Bash', { command: 'rg "^## §9" ARCHITECTURE.md' }, { workingDir: WD, allowedPaths: ['src/**'] });
+  assert.equal(r.allow, true, 'rg 섹션 추출은 허용돼야 함(권장 우회)');
+});
+
+test('Bash — cat 으로 자기 소스 파일 읽기는 allow (M21 오탐 방지)', () => {
+  const r = guardToolUse('Bash', { command: 'cat src/foo.ts' }, { workingDir: WD, allowedPaths: ['src/**'] });
+  assert.equal(r.allow, true);
+});
+
 test('Bash — 파괴적 명령(rm -rf)이면 deny', () => {
   const r = guardToolUse('Bash', { command: 'rm -rf /' }, { workingDir: WD });
   assert.equal(r.allow, false);

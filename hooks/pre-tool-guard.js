@@ -195,6 +195,36 @@ function checkWorkerRead(filePath, cwd) {
   return { allowed: true };
 }
 
+// 긴 SOT 를 통째로 읽는 Bash 뷰어(cat/less/more/bat) 차단(M21). rg/grep/sed/head/tail 은 섹션
+// 추출 도구라 허용(deny 메시지가 권장하는 우회 경로) — 통독 뷰어만 막는다. worktree·repo 상대 둘 다 검사.
+const WHOLE_FILE_VIEWERS = new Set(['cat', 'less', 'more', 'bat', 'batcat', 'view']);
+function checkBashSotRead(command, cwd) {
+  const wt = detectWorktreeContext(cwd);
+  if (!wt) return { allowed: true };
+  const idx = cwd.indexOf(`.pact/worktrees/${wt.task_id}`);
+  const repoRoot = cwd.slice(0, idx);
+  for (const line of String(command || '').split('\n')) {
+    for (const seg of splitSegments(line)) {
+      const { name, args } = commandOf(seg);
+      if (!WHOLE_FILE_VIEWERS.has(name)) continue;
+      for (const a of args) {
+        if (a.startsWith('-')) continue;
+        const abs = path.isAbsolute(a) ? a : path.resolve(cwd, a);
+        const relToWt = normalizeRel(path.relative(wt.worktreeRoot, abs));
+        const relToRepo = normalizeRel(path.relative(repoRoot, abs));
+        if (isBlockedLongSotRel(relToWt) || isBlockedLongSotRel(relToRepo)) {
+          return {
+            allowed: false,
+            reason: `pact: 워커 ${wt.task_id}가 Bash(${name})로 긴 SOT 원문 ${normalizeRel(a)} 통째 읽기 시도. ` +
+              `rg/sed 로 섹션만 추출하세요 (예: rg "^## §9" ARCHITECTURE.md 또는 sed -n '/^## ADR-005/,/^## ADR-006/p' DECISIONS.md).`,
+          };
+        }
+      }
+    }
+  }
+  return { allowed: true };
+}
+
 // 한 줄에서 "파일을 새로 쓰는" 타겟(> >> tee touch)을 휴리스틱 추출. 따옴표 안 > 무시.
 function scanLineWriteTargets(line) {
   const targets = [];
@@ -735,6 +765,14 @@ function main() {
     const command = (payload.tool_input || {}).command || '';
     const wt = detectWorktreeContext(cwdB);
     if (wt) {
+      // M21: cat/less 등으로 긴 SOT 통째 읽기 우회 차단(Read 가드와 대칭). rg/sed 섹션추출은 허용.
+      const sot = checkBashSotRead(command, cwdB);
+      if (!sot.allowed) {
+        process.stdout.write(JSON.stringify({
+          hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: sot.reason },
+        }));
+        process.exit(0);
+      }
       const idx = cwdB.indexOf(`.pact/worktrees/${wt.task_id}`);
       const repoRoot = cwdB.slice(0, idx);
       const payloadPath = path.join(repoRoot, '.pact', 'runs', wt.task_id, 'payload.json');
@@ -902,7 +940,7 @@ module.exports = {
   detectWorktreeContext, isInsideWorktree,
   isBlockedLongSotRel, isAllowedReadRel, checkWorkerRead,
   extractWriteTargets, extractDeleteTargets, checkBashWrite,
-  hasDestructiveDelete, isRecursiveForceRm,
+  hasDestructiveDelete, isRecursiveForceRm, checkBashSotRead,
 };
 
 if (require.main === module) main();

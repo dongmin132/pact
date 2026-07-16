@@ -13,7 +13,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { isAlive, reclaimStale } = require('./lock.js');
+const { isAlive, reclaimStale, isHeld } = require('./lock.js');
 const { writeFileExclusive } = require('./lib/atomic-write.js');
 const yaml = require('./lib/yaml-mini.js');
 
@@ -264,13 +264,19 @@ function cleanStaleEditLocks(opts = {}) {
   const dir = editLocksDir(cwd);
   if (!fs.existsSync(dir)) return { cleaned: [] };
 
+  const pid = opts.pid || process.pid;
   const cleaned = [];
   for (const f of fs.readdirSync(dir)) {
     if (!f.endsWith('.lock')) continue;
     const full = path.join(dir, f);
     const holder = readLockFile(full);
     if (!holder || !isAlive(holder.pid)) {
-      try { fs.unlinkSync(full); cleaned.push(holder ? holder.target : f); } catch {}
+      // M5: 직접 unlink 대신 reclaimStale(rename-후-재검증) — 판정~삭제 사이 타 세션 takeover 가
+      // 게시한 fresh live 락을 삭제하지 않는다. edit-lock 은 pid liveness 로 held 판정.
+      const rec = reclaimStale(full, pid, { heldFn: (h) => !!h && isAlive(h.pid), readFn: readLockFile });
+      if (!rec.ok) continue; // live 락 복원됨 → 회수 취소
+      if (rec.stalePath) { try { fs.unlinkSync(rec.stalePath); } catch { /* ignore */ } }
+      cleaned.push(holder ? holder.target : f);
     }
   }
   return { cleaned };

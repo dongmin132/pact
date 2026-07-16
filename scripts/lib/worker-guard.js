@@ -40,14 +40,13 @@ function guardToolUse(toolName, input, ctx = {}) {
     return { allow: false, reason: 'pact: 워커의 서브에이전트 spawn 금지 — 워커는 일회용 단일 task 실행자(중첩 금지). task 가 너무 크면 blocked 로 보고하세요.' };
   }
 
-  // Read: 긴 SOT 원문 통째 Read 차단 (pre-tool-guard 와 동일 판정)
+  // Read: 긴 SOT 원문 통째 Read 차단. M9: worktree-상대만 보던 것을 ptg.checkWorkerRead 로 위임해
+  // repo-상대 경로(절대경로 SOT)까지 인터랙티브 훅과 동일하게 검사(패리티).
   if (toolName === 'Read') {
     const target = input.file_path || input.path || input.file;
     if (target && workingDir) {
-      const { rel } = relInWorktree(target, workingDir);
-      if (ptg.isBlockedLongSotRel(rel)) {
-        return { allow: false, reason: `pact: 긴 SOT 원문(${rel}) 통째 Read 금지 — context.md / tasks/*.md / pact slice 사용` };
-      }
+      const r = ptg.checkWorkerRead(target, workingDir);
+      if (!r.allowed) return { allow: false, reason: r.reason };
     }
     return { allow: true };
   }
@@ -76,11 +75,16 @@ function guardToolUse(toolName, input, ctx = {}) {
     return { allow: true };
   }
 
-  // Bash: 정적 파괴 명령 차단 + allowed_paths 우회(워크트리 내 쓰기) 차단
+  // Bash: 정적 파괴 명령 차단 + allowed_paths 우회(워크트리 내 쓰기) 차단 + SOT 통독(cat) 차단
   if (toolName === 'Bash') {
     const cmd = input.command || '';
     if (DESTRUCTIVE.test(cmd) || ptg.hasDestructiveDelete(cmd)) {
       return { allow: false, reason: `pact: 위험 명령 차단 — ${cmd}` };
+    }
+    // M21: cat/less 등으로 긴 SOT 통째 읽기 우회 차단(Read 가드와 대칭).
+    if (workingDir) {
+      const sot = ptg.checkBashSotRead(cmd, workingDir);
+      if (!sot.allowed) return { allow: false, reason: sot.reason };
     }
     // Write 툴은 allowed_paths 로 막지만 Bash 리다이렉션(> cat tee touch)이 백도어가 된다 (실측 CLEANUP-029).
     // 단일 소스: pre-tool-guard.checkBashWrite (parallel hook 과 동일 규칙). 워크트리 밖 타겟은 경계 분류

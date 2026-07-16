@@ -336,7 +336,7 @@ function getTasksPact() {
   // JSON 은 stdout 에 emit 돼 있다. makeAdmit/mergeOnePact 와 동형으로 e.stdout 에서 JSON 을 살려
   // 읽어, 'Command failed' 셸 덤프 대신 stage + message + actionable fix 를 리포트에 노출한다.
   let out;
-  try { out = execSync(`node ${PACT_BIN} run-cycle prepare --max=${MAX} --graph --owner-pid=${process.pid} --session=drive`, { encoding: 'utf8' }); }
+  try { out = execSync(`node "${PACT_BIN}" run-cycle prepare --max=${MAX} --graph --owner-pid=${process.pid} --session=drive`, { encoding: 'utf8' }); }
   catch (e) { out = (e.stdout || '').toString(); }
   let j;
   try { j = JSON.parse(out); }
@@ -640,8 +640,22 @@ function reportOutcome(o) {
 
 // 배치 collect(레거시 배리어 + ready_to_collect resume 경로 공용). 'conflict'|'ok' 반환.
 function collectBatch() {
-  const out = execSync(`node ${PACT_BIN} run-cycle collect --commit-status`, { encoding: 'utf8' });
-  const cj = JSON.parse(out);
+  // M8: collect 가 exit≠0(외부 MERGE_HEAD·cycle-busy)로 끝나면 execSync 가 throw 해 드라이버가
+  // 스택트레이스로 통째 크래시하고 driver-state 가 collecting 고착·최종보고 스킵됐다. stdout 에 JSON 이
+  // 실려 오면(admit/collect-one 규약과 동일) 그것으로 진행하고, 아니면 정지 신호로 우아하게 종료.
+  let out;
+  try {
+    out = execSync(`node "${PACT_BIN}" run-cycle collect --commit-status`, { encoding: 'utf8' });
+  } catch (e) {
+    out = (e.stdout || '').toString();
+    if (!out.trim()) {
+      ledger.stoppedReason = `collect 실패 (exit≠0): ${(e.stderr || e.message || '').toString().trim().slice(0, 200)}`;
+      return 'conflict'; // 신규 dispatch 중단 + 정지(루프가 break)
+    }
+  }
+  let cj;
+  try { cj = JSON.parse(out); }
+  catch { ledger.stoppedReason = 'collect 출력 파싱 실패 (비 JSON)'; return 'conflict'; }
   const committed = cj.status_commit && cj.status_commit.committed ? 'committed' : 'no-commit';
   const rejected = cj.rejected || [];
   console.log(`  collect: merged=${(cj.merged || []).length} conflicted=${cj.conflicted ? 'YES' : 'no'} rejected=${rejected.length} failures=${(cj.failures || []).length} status=${committed}`);
@@ -665,7 +679,7 @@ function makeAdmit(cachedPayloads) {
     const flags = inFlightIds && inFlightIds.length ? ` --in-flight=${inFlightIds.join(',')}` : '';
     let out;
     // STAB-1: admit 도 드라이버 owner-pid 를 유지해 사이클 소유권이 끊기지 않게 한다.
-    try { out = execSync(`node ${PACT_BIN} run-cycle admit ${id}${flags} --owner-pid=${process.pid} --session=drive`, { encoding: 'utf8' }); }
+    try { out = execSync(`node "${PACT_BIN}" run-cycle admit ${id}${flags} --owner-pid=${process.pid} --session=drive`, { encoding: 'utf8' }); }
     catch (e) { out = (e.stdout || '').toString(); } // admit hard-fail 은 exit≠0 이나 stdout 에 JSON 존재
     let j;
     try { j = JSON.parse(out); } catch { return { ok: false, reason: 'admit 응답 파싱 실패' }; }
@@ -681,7 +695,7 @@ function makeAdmit(cachedPayloads) {
 // PACT 단건 머지 — 워커 완료 즉시 그 task 만 게이트(planMerge) 경유. 충돌은 자동해결 X(정지 신호).
 async function mergeOnePact(id) {
   let out;
-  try { out = execSync(`node ${PACT_BIN} run-cycle collect-one ${id} --commit-status`, { encoding: 'utf8' }); }
+  try { out = execSync(`node "${PACT_BIN}" run-cycle collect-one ${id} --commit-status`, { encoding: 'utf8' }); }
   catch (e) { out = (e.stdout || '').toString(); }
   let j;
   try { j = JSON.parse(out); } catch { return { result: 'rejected', detail: { task_id: id, error: 'collect-one 응답 파싱 실패' } }; }
