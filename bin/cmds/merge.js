@@ -48,10 +48,11 @@ function executeMerge(args) {
 
   const result = mergeAll(eligible);
 
-  // 머지 성공한 task만 source file에 status:done 박기 (다음 batch에서 제외).
-  // 충돌·skipped는 건드리지 않음 (재시도 가능 상태 보존).
+  // 머지 성공(merged) + 이미 머지됨(already_merged: 이전 cycle 정리 또는 수동 충돌해결 후, H8-2)
+  // 둘 다 source status:done 박기(멱등). 충돌·skipped 는 건드리지 않음(재시도 가능 상태 보존).
+  const alreadyMerged = result.already_merged || [];
   const statusUpdates = [];
-  for (const taskId of result.merged) {
+  for (const taskId of [...result.merged, ...alreadyMerged]) {
     const r = setTaskStatus(taskId, 'done', { cwd });
     statusUpdates.push({ task_id: taskId, ...r });
   }
@@ -60,6 +61,7 @@ function executeMerge(args) {
     timestamp: new Date().toISOString(),
     eligible: eligible.length,
     merged: result.merged,
+    already_merged: alreadyMerged,
     conflicted: result.conflicted,
     skipped: result.skipped,
     rejected,

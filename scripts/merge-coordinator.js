@@ -30,11 +30,25 @@ function branchExists(name, opts) {
   return git(['show-ref', '--verify', '--quiet', `refs/heads/${name}`], opts).status === 0;
 }
 
-// branch 가 이미 base(HEAD)에 머지됐는가 = branch tip 이 HEAD 의 조상인가 (H8-2).
-// 수동 충돌해결·커밋 후 branch 는 남아있지만 base 조상이 된다 — 재머지는 no-op 이고 3-dot diff 도
-// 비어 planMerge 의 files_changed 대조가 거짓 거부를 낸다. 이 신호로 already_merged 처리한다.
-function isMergedIntoHead(branchName, opts) {
-  return git(['merge-base', '--is-ancestor', branchName, 'HEAD'], opts).status === 0;
+// branch 가 실제로 base(HEAD)에 --no-ff 로 머지됐는가 (H8-2 / R3 정밀화).
+// = branch tip 이 HEAD 도달가능 merge 커밋의 '머지된 부모'(2nd+ parent)인가.
+// 단순 조상(is-ancestor)만 보면 zero-commit 브랜치(tip=base=항상 조상·머지 첫부모)가
+// 거짓 done 보고만으로 already_merged 로 통과해 ADR-012 게이트를 우회한다(적대검증 확인).
+// 2nd+ parent 는 실제로 그 브랜치가 머지됐을 때만 참이라 zero-commit 을 배제한다.
+function isMergedViaCommit(branchName, opts) {
+  const tipR = git(['rev-parse', '--verify', '-q', branchName], opts);
+  if (tipR.status !== 0) return false;
+  const tip = (tipR.stdout || '').trim();
+  if (!tip) return false;
+  const r = git(['rev-list', '--merges', '--parents', 'HEAD'], opts);
+  if (r.status !== 0) return false;
+  for (const line of (r.stdout || '').trim().split('\n')) {
+    if (!line) continue;
+    const parts = line.trim().split(/\s+/);
+    // parts[0]=머지커밋, parts[1]=mainline(첫)부모, parts[2..]=머지된 부모.
+    if (parts.slice(2).includes(tip)) return true;
+  }
+  return false;
 }
 
 /**
@@ -54,7 +68,7 @@ function mergeWorktree(taskId, opts = {}) {
   // H8-2: branch 가 남아있지만 이미 base 에 머지됨(수동 충돌해결 후) → already_merged.
   // git merge --no-ff 는 "Already up to date" no-op 이나, 그 전에 이 신호로 분류해 상위(doCollectOne)가
   // status=done 스탬프·worktree 정리하게 한다(planMerge 빈-diff 거부·재spawn·prepare 블록 방지).
-  if (isMergedIntoHead(branchName, opts)) {
+  if (isMergedViaCommit(branchName, opts)) {
     return { ok: false, already_merged: true, branch_name: branchName };
   }
 
@@ -226,7 +240,7 @@ function planMerge(opts = {}) {
     // H8-2: 이미 base 에 머지된 branch(수동 충돌해결 후)는 3-dot diff 가 비어 files_changed 대조가
     // 거짓 거부를 낸다. 머지 완료 = 검증은 충돌 전 이미 통과 → eligible 로 통과시키고 merge 단계의
     // already_merged 가 status=done 스탬프·정리한다. (정상 미머지 branch 는 diff 가 비지 않아 무영향.)
-    if (diff.length === 0 && isMergedIntoHead(branchName, { cwd })) {
+    if (diff.length === 0 && isMergedViaCommit(branchName, { cwd })) {
       eligible.push(taskId);
       continue;
     }

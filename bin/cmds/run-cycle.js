@@ -863,11 +863,15 @@ function doCollectOne(args, opts, cwd, taskId) {
       statusUpdates.push({ task_id: taskId, ok: su.ok, action: su.action, file: su.file, error: su.error });
       const rm = removeWorktree(taskId, { cwd });
       cleanup.push({ task_id: taskId, ok: rm.ok, error: rm.error });
-    } else if (r.branch_missing) {
-      // 이미 머지+정리됨(재진입) — 충돌 아님. status done 멱등 보장.
+    } else if (r.branch_missing || r.already_merged) {
+      // 이미 머지됨 — branch_missing(이전 cycle 정리) 또는 already_merged(수동 충돌해결 후, H8-2).
+      // 충돌 아님. status done 멱등 보장 + worktree 정리(수동해결 케이스는 worktree 가 남아있어
+      // 다음 prepare 가 stage:worktree 로 막히므로 반드시 정리).
       alreadyMerged.push(taskId);
       const su = setTaskStatus(taskId, 'done', { cwd });
       statusUpdates.push({ task_id: taskId, ok: su.ok, action: su.action, file: su.file, error: su.error });
+      const rm = removeWorktree(taskId, { cwd });
+      cleanup.push({ task_id: taskId, ok: rm.ok, error: rm.error });
     } else {
       // 실제 충돌 — abort 안 함(merge-coordinator 규약). 드라이버가 conflicted 로 정지·escalate.
       conflicted = { task_id: taskId, branch_name: r.branch_name, files: r.conflicted_files || [], error: r.error };

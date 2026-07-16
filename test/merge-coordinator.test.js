@@ -269,6 +269,29 @@ test('planMerge — 이미 base 에 머지된 branch(수동 해결 후)는 rejec
   } finally { cleanupRepo(repo); }
 });
 
+test('planMerge — zero-commit 브랜치(거짓 done 보고)는 already_merged 우회 못 하고 reject (R3 우회차단)', () => {
+  const repo = makeRepo();
+  try {
+    // 워커가 아무 커밋도 안 한 브랜치(tip=base=항상 조상) — createWorktree 만, 커밋 X.
+    createWorktree('PM-903', 'main', { cwd: repo });
+    // status.json 은 done + files_changed 거짓 보고.
+    writeRun(repo, 'PM-903', { file: 'a.txt', allowedPaths: ['a.txt'], filesChanged: ['a.txt'] });
+    const plan = planMerge({ cwd: repo, taskIds: ['PM-903'] });
+    assert.deepEqual(plan.eligible, [], 'zero-commit 거짓 done 은 eligible 통과 금지');
+    assert.ok(plan.rejected.length === 1 && /files_changed|diff/.test(plan.rejected[0].reason), JSON.stringify(plan.rejected));
+  } finally { cleanupRepo(repo); }
+});
+
+test('mergeWorktree — zero-commit 브랜치는 already_merged 아님 (R3 우회차단)', () => {
+  const repo = makeRepo();
+  try {
+    createWorktree('PM-904', 'main', { cwd: repo });
+    const r = mergeWorktree('PM-904', { cwd: repo });
+    // 커밋 없는 브랜치 머지 → "Already up to date" no-op(ok:true) 이지만 already_merged 신호는 아님.
+    assert.notEqual(r.already_merged, true, 'zero-commit 을 already_merged 로 오분류하면 안 됨');
+  } finally { cleanupRepo(repo); }
+});
+
 test('mergeWorktree — 이미 머지된 branch 는 already_merged (재머지 no-op, H8-2)', () => {
   const repo = makeRepo();
   try {
