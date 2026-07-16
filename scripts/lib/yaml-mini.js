@@ -176,9 +176,11 @@ function parseSequence(lines, baseIndent) {
       arr.push(parseBlock(lines.slice(subStart, subEnd),
         subStart < subEnd ? indent(lines[subStart]) : baseIndent + 1));
       i = subEnd;
-    } else if (after.includes(':') && !after.startsWith('"') && !after.startsWith("'")
+    } else if (/:(\s|$)/.test(after) && !after.startsWith('"') && !after.startsWith("'")
                && !after.startsWith('[') && !after.startsWith('{')) {
-      const colon = after.indexOf(':');
+      // M13: 콜론+공백(또는 EOL)만 key:value 구분자로 본다. `- http://foo`·`- 12:30` 처럼 콜론 뒤
+      // 공백이 없는 항목은 매핑이 아니라 스칼라(URL·포트·시각이 객체로 변질되던 문제).
+      const colon = after.search(/:(\s|$)/);
       const valPart = after.slice(colon + 1).trim();
       // 객체 시작 — "- key: val" + 추가 키들
       const subStart = i + 1;

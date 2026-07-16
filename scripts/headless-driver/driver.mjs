@@ -114,7 +114,7 @@ const loopState = new Map(LOOP);            // 가변 남은 카운트
 // 트랙2 잔여: finally 는 예약 해제(reservedUsd)와 실지출 가산(spentUsd)을 한 동기 블록으로 원자 처리해
 // '예약 제거'가 '지출 가산' 없이 관측되는 순간을 없앤다 — 그 간극의 재투입 워커가 잔여 예산을 과대평가해
 // 예산을 초과 지출하던 경로 차단. 상위 호출자는 spentAccounted 마커를 보고 중복 가산을 스킵한다.
-const ledger = { orchestratorTokens: 0, spentUsd: 0, reservedUsd: 0, budgetExhausted: false, attempts: [], escalations: [], mergeRejected: [], skipped: [], stoppedReason: null, live: { done: 0, escalated: 0, rejected: 0 } };
+const ledger = { orchestratorTokens: 0, spentUsd: 0, reservedUsd: 0, budgetExhausted: false, attempts: [], escalations: [], mergeRejected: [], held: [], skipped: [], stoppedReason: null, live: { done: 0, escalated: 0, rejected: 0 } };
 // DRV-3: 현재 in-flight 워커 수(pool onEvent 로 갱신). runWorkerReal 이 per-worker 예산 cap 을
 // '남은예산/동시수' 로 나누는 분모 — 동시 K 워커가 각자 예산 전액을 받아 K×BUDGET 로 폭주하는 것 방지.
 let liveInFlight = 0;
@@ -632,7 +632,7 @@ async function mergeOneMock(id) {
 // 워커 산출 1건 콘솔 보고(파이프라인/레거시 공용).
 function reportOutcome(o) {
   // DRV-2: rejected = 워커는 done 이나 머지 게이트에서 거부돼 base 에 미반영(done 아님) → ⛔.
-  const icon = { done: '✓', failed: '✗', denied: '⛔', escalated: '🚨', rejected: '⛔' }[o.status] || '?';
+  const icon = { done: '✓', failed: '✗', denied: '⛔', escalated: '🚨', rejected: '⛔', held: '⏸' }[o.status] || '?';
   const tok = o.usage ? (tokOf(o.usage) / 1e6).toFixed(2) + 'M' : '—';
   const extra = o.status === 'done' ? `${o.turns}턴 ${tok}` : (o.reason || '');
   console.log(`  ${icon} ${o.task_id}  [${o.status}]  시도 ${o.attempts || '?'}회  ${extra}`);
@@ -698,11 +698,16 @@ async function mergeOnePact(id) {
   try { out = execSync(`node "${PACT_BIN}" run-cycle collect-one ${id} --commit-status`, { encoding: 'utf8' }); }
   catch (e) { out = (e.stdout || '').toString(); }
   let j;
-  try { j = JSON.parse(out); } catch { return { result: 'rejected', detail: { task_id: id, error: 'collect-one 응답 파싱 실패' } }; }
+  try { j = JSON.parse(out); } catch { return { result: 'held', detail: { task_id: id, stage: 'parse-failure', reason: 'collect-one 응답 파싱 실패' } }; }
   if (j.conflicted) return { result: 'conflicted', detail: j.conflicted };
   if ((j.merged || []).includes(id)) return { result: 'merged', detail: { verification: j.verification_summary } };
   if ((j.already_merged || []).includes(id)) return { result: 'already_merged', detail: {} };
-  return { result: 'rejected', detail: (j.rejected && j.rejected[0]) || { task_id: id } };
+  const rej = (j.rejected || []).find((r) => r && r.task_id === id);
+  if (rej) return { result: 'rejected', detail: rej };   // 실제 planMerge 게이트 거부(terminal)
+  // M6: merged/already/rejected 어디에도 없음 = 게이트 이전 stage 실패(cycle-busy 락 경쟁·
+  // merge-in-progress 의 dangling MERGE_HEAD). 완료된 task 를 거짓 rejected(terminal)로 만들지 말고
+  // held(보류·재시도 대상 — worktree 보존)로 분류한다. 다음 사이클/충돌해결 후 재머지된다.
+  return { result: 'held', detail: { task_id: id, stage: j.stage || j.reason || 'stage-failure' } };
 }
 
 // 한 라운드: batch0 ∪ graph 를 K-슬롯 풀로 드레인. 완료 즉시 단건 머지가 다른 워커 실행과 겹친다.
@@ -876,6 +881,12 @@ for (let c = 1; c <= CYCLES; c++) {
         o.status = 'rejected';
         o.reason = o.reason || (mg.detail && (mg.detail.reason || mg.detail.error)) || `머지 ${mg.result}`;
         ledger.mergeRejected.push({ task_id: o.task_id, reason: o.reason });
+      } else if (o.status === 'done' && mg && mg.result === 'held') {
+        // M6: transient stage 실패(cycle-busy·merge-in-progress) — 거짓 rejected 아님. 워커 산출은
+        // 보존되고 재시도 대상. done 오보(미머지)도 아니게 held 로 재라벨 + 원장(비성공, 비-rejected).
+        o.status = 'held';
+        o.reason = o.reason || (mg.detail && mg.detail.stage) || 'merge 보류(stage 실패)';
+        ledger.held.push({ task_id: o.task_id, reason: o.reason });
       }
       allOutcomes.push(o);
       if (o.status === 'escalated') ledger.escalations.push(o);
@@ -951,7 +962,7 @@ if (USE_PACT) {
     const shown = leftover.slice(0, 8).join(', ') + (leftover.length > 8 ? ' …' : '');
     console.log(`\n⚠️ 잔여 미완 task ${leftover.length}건: ${shown} (이 실행에서 완료되지 않음)`);
     if (!ledger.stoppedReason && ledger.escalations.length === 0
-        && ledger.mergeRejected.length === 0 && ledger.skipped.length === 0) {
+        && ledger.mergeRejected.length === 0 && ledger.held.length === 0 && ledger.skipped.length === 0) {
       ledger.stoppedReason = `잔여 미완 task ${leftover.length}건 — 완료로 오보 방지(재개: pact drive / /pact:parallel)`;
     }
   }
@@ -998,7 +1009,7 @@ if (!REAL) console.log('[MOCK] 실제 spawn: cd scripts/headless-driver && npm i
 
 // 위임/미머지/미투입/정지 중 하나라도 있으면 비정상 종료코드(자동화 파이프라인이 성공 오보 안 하도록).
 // DRV-2: mergeRejected(base 미반영) + skipped(미투입) 를 exit 판정에 포함 — 워커 done ≠ 사이클 완료.
-const incomplete = ledger.escalations.length || ledger.mergeRejected.length || ledger.skipped.length || ledger.stoppedReason;
+const incomplete = ledger.escalations.length || ledger.mergeRejected.length || ledger.held.length || ledger.skipped.length || ledger.stoppedReason;
 process.exit(incomplete ? 3 : 0);
 }
 

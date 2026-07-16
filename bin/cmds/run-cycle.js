@@ -1057,7 +1057,11 @@ function doCollect(args, opts, cwd, cbPath) {
     : undefined;
 
   try { fs.unlinkSync(journalPath); } catch {}
-  try { fs.unlinkSync(cbPath); } catch {}
+  // M7: 미해소(충돌 또는 미머지 skipped)가 남았으면 current_batch(사이클 SOT)를 삭제하지 않는다 —
+  // 삭제하면 남은 task 를 잃고 resume 이 already_collected no-op 이 된다. 전부 해소된 경우에만 정리.
+  // (doCollect 는 cycle lock 하에 실행되므로 동시 collect 는 차단됨.)
+  const fullyResolved = !result.conflicted && (result.skipped || []).length === 0;
+  if (fullyResolved) { try { fs.unlinkSync(cbPath); } catch {} }
 
   emit({
     ok: true,

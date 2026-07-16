@@ -836,3 +836,22 @@ test('pact resume-prompt — task_id 인자 누락 시 exit 1 (usage)', () => {
     assert.equal(r.status, 1);
   } finally { cleanupRepo(repo); }
 });
+
+// M16: 인자 파싱 견고성 + 종료코드 정정
+test('pact slice --status 값 누락 → raw TypeError 아니라 exit 2 actionable (M16)', () => {
+  const repo = makeRepo();
+  try {
+    const r = runPact(['slice', '--status'], repo);
+    assert.equal(r.status, 2, r.stderr);
+    assert.match(r.stderr, /값이 필요/);
+  } finally { cleanupRepo(repo); }
+});
+
+test('pact --help → exit 0, 알 수 없는 명령 → exit 1 (M16 종료코드)', () => {
+  const repo = makeRepo();
+  try {
+    assert.equal(runPact(['--help'], repo).status, 0, '--help 는 exit 0');
+    assert.equal(runPact([], repo).status, 0, '무인자 usage 는 exit 0');
+    assert.equal(runPact(['bogus-cmd'], repo).status, 1, '알 수 없는 명령은 exit 1');
+  } finally { cleanupRepo(repo); }
+});

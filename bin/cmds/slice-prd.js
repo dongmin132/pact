@@ -14,13 +14,22 @@ const path = require('path');
 
 function parseArgs(args) {
   const opts = { sections: null, headers: false, refsFrom: null, file: null };
+  // M16: 옵션 값 누락 시 raw TypeError 방지 — actionable 에러(exit 2).
+  const need = (i, flag) => {
+    const v = args[i + 1];
+    if (v === undefined || v.startsWith('--')) {
+      console.error(`pact slice-prd: ${flag} 에 값이 필요합니다`);
+      process.exit(2);
+    }
+    return v;
+  };
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (!a.startsWith('--') && !opts.file) { opts.file = a; continue; }
-    if (a === '--section') opts.sections = [args[++i]];
-    else if (a === '--sections') opts.sections = args[++i].split(',').map(s => s.trim());
+    if (a === '--section') { opts.sections = [need(i, a)]; i++; }
+    else if (a === '--sections') { opts.sections = need(i, a).split(',').map(s => s.trim()); i++; }
     else if (a === '--headers') opts.headers = true;
-    else if (a === '--refs-from') opts.refsFrom = args[++i];
+    else if (a === '--refs-from') { opts.refsFrom = need(i, a); i++; }
   }
   return opts;
 }
