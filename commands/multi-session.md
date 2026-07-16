@@ -32,7 +32,7 @@ pact next --all
 
 흐름 (한 worker 세션당):
   1. pact next                       # 미점유 task 한 개 추천
-  2. pact claim <task_id> --owner-pid=$PPID   # 명시적 점유 (셸 수명 pid 로 lock)
+  2. pact claim <task_id>             # 명시적 점유 (세션 UUID·조부모 pid 로 lock, 자동)
   3. cd .pact/worktrees/<task_id>/    # worktree 진입
   4. claude                           # 새 세션 시작. prompt.md를 첫 입력으로 붙여넣음
   5. 워커가 작업 끝나면 status.json 남기고 종료 (report.md 는 머지 시 report-gen 이 자동 렌더 — 수기 작성 X)
@@ -47,7 +47,7 @@ pact next --all
 
 | 주의점 | 대응 |
 |---|---|
-| 같은 task를 두 세션이 시작 | `pact claim --owner-pid=$PPID`이 셸 수명 pid로 lock — 다른 세션이 시작하면 거부 |
+| 같은 task를 두 세션이 시작 | `pact claim`이 세션 UUID·조부모 pid로 lock — 다른 세션이 시작하면 거부 |
 | status.json mid-write race | 워커가 마지막에 한 번에 write (작은 파일이라 partial 가능성 낮음) |
 | 비정상 종료한 워커가 남긴 lock | session-start / progress-check hook이 stale lock 자동 정리 |
 | 머지 시점 | **단일 지점에서만** (`pact run-cycle collect`) |

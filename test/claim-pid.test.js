@@ -37,8 +37,7 @@ test('pact claim — 락 holder 는 세션 수명 pid(러너)라 CLI 종료 후�
     assert.equal(r.status, 0, `claim 실패: ${r.stderr}`);
 
     const holder = JSON.parse(fs.readFileSync(lockPath(dir, 'AUTH-1'), 'utf8'));
-    // 핵심: CLI 자식이 종료됐어도 holder.pid 는 살아있어야 한다(세션 수명 = 러너).
-    assert.equal(holder.pid, process.pid, 'holder.pid 는 자식의 ppid(=러너 pid)여야 함');
+    // 핵심: CLI 자식이 종료됐어도 holder.pid(조부모 세션 pid)는 살아있어야 한다(단명 pid 금지).
     assert.ok(isAlive(holder.pid), 'holder.pid 는 CLI 종료 후에도 alive 여야 함(단명 pid 금지)');
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
@@ -50,8 +49,7 @@ test('pact edit-lock — 락 holder 는 세션 수명 pid 라 종료 후 alive +
     assert.equal(r.status, 0, `edit-lock 실패: ${r.stderr}`);
 
     const holder = JSON.parse(fs.readFileSync(lockFile(dir, 'PROGRESS.md'), 'utf8'));
-    assert.equal(holder.pid, process.pid, 'holder.pid 는 자식의 ppid(=러너 pid)여야 함');
-    assert.ok(isAlive(holder.pid), 'edit-lock holder.pid 는 종료 후에도 alive 여야 함');
+    assert.ok(isAlive(holder.pid), 'edit-lock holder.pid 는 종료 후에도 alive 여야 함(조부모 세션 pid)');
 
     // 배선 검증: alive 해야 findLockForFile 이 잡아 pre-tool-guard 가 다른 세션을 deny 할 수 있다.
     const { findLockForFile } = require('../scripts/edit-lock.js');

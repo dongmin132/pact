@@ -39,14 +39,28 @@ test('resolveSessionLabel — env $PACT_SESSION fallback', () => {
   }
 });
 
-test('resolveSessionLabel — 자동 fallback은 ppid-<N>', () => {
-  const old = process.env.PACT_SESSION;
+test('resolveSessionLabel — 세션 UUID 부재 시 fallback은 ppid-<N> (H3-2)', () => {
+  const old = { p: process.env.PACT_SESSION, c: process.env.CLAUDE_CODE_SESSION_ID };
   delete process.env.PACT_SESSION;
+  delete process.env.CLAUDE_CODE_SESSION_ID;
   try {
     const r = resolveSessionLabel();
     assert.match(r, /^ppid-\d+$/);
   } finally {
-    if (old !== undefined) process.env.PACT_SESSION = old;
+    if (old.p !== undefined) process.env.PACT_SESSION = old.p;
+    if (old.c !== undefined) process.env.CLAUDE_CODE_SESSION_ID = old.c;
+  }
+});
+
+test('resolveSessionLabel — 세션 UUID 있으면 그것을 라벨로 (H3-2)', () => {
+  const old = { p: process.env.PACT_SESSION, c: process.env.CLAUDE_CODE_SESSION_ID };
+  delete process.env.PACT_SESSION;
+  process.env.CLAUDE_CODE_SESSION_ID = 'UUID-123';
+  try {
+    assert.equal(resolveSessionLabel(), 'UUID-123');
+  } finally {
+    if (old.p !== undefined) process.env.PACT_SESSION = old.p; else delete process.env.PACT_SESSION;
+    if (old.c !== undefined) process.env.CLAUDE_CODE_SESSION_ID = old.c; else delete process.env.CLAUDE_CODE_SESSION_ID;
   }
 });
 

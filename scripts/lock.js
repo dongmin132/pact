@@ -173,17 +173,21 @@ function acquireLock(taskId, opts = {}) {
     return { ok: false, error: `run dir 없음: ${runDir} (pact run-cycle prepare 먼저)` };
   }
 
+  const myLabel = opts.sessionLabel || null;
   let action = 'fresh';
   let stalePath = null;
   if (fs.existsSync(file)) {
     const holder = readLock(file);
-    if (holder && isHeld(holder)) {
+    // H3-2: 자기 세션(session_label 일치) 재획득은 멱등 허용 — owner pid 가 살아있게 된 뒤, 같은
+    // 세션의 크래시 후 재claim/재시도가 24h TTL 까지 거부되던 회귀 방지(acquireEditLock 과 대칭).
+    const heldByOther = (h) => isHeld(h) && !(myLabel && h.session_label === myLabel);
+    if (holder && heldByOther(holder)) {
       return { ok: false, error: `이미 점유 중 (pid=${holder.pid}${holder.session_label ? `, session=${holder.session_label}` : ''})`, holder };
     }
-    // stale(죽은 PID·재부팅·TTL) — 옆으로 치우되 rename 후 재검증(P1-#1). 판정~rename 사이 fresh
-    // live 락이 공개됐으면 복원 + 점유 실패(둘 다 획득 방지). 죽은/stale 확인 시에만 재공개 진행.
-    action = 'takeover';
-    const rec = reclaimStale(file, pid);
+    // 자기 세션 재획득 또는 stale(죽은 PID·재부팅·TTL) — 옆으로 치우되 rename 후 재검증(P1-#1).
+    // 판정~rename 사이 타 세션 fresh live 락이 공개됐으면 복원 + 점유 실패(둘 다 획득 방지).
+    action = holder && myLabel && holder.session_label === myLabel ? 're-acquire' : 'takeover';
+    const rec = reclaimStale(file, pid, { heldFn: heldByOther });
     if (!rec.ok) {
       const h = rec.holder;
       return { ok: false, error: `이미 점유 중 (pid=${h.pid}${h.session_label ? `, session=${h.session_label}` : ''})`, holder: h };

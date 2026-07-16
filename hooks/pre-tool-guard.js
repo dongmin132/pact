@@ -750,12 +750,17 @@ function main() {
   const absFile = path.isAbsolute(filePath) ? filePath : path.join(cwd, filePath);
 
   // 0) edit-lock 검사 (v0.7.0) — 다른 세션이 이 파일을 잡고 있나
-  // 환경변수 또는 ppid로 자기 session_label 추정. 정확히 일치 안 하면 차단.
+  // 자기 session_label = 세션 UUID(payload.session_id, CLI 의 CLAUDE_CODE_SESSION_ID 와 동일 값).
+  // H3-2: 과거 ppid-${process.ppid} 로만 추정해 CLI 가 건 자기 락(session UUID)과 불일치 → 소유
+  // 세션 자신의 Edit 를 deny 하던 자기 락아웃 회귀를 봉쇄. UUID 부재 시에만 ppid 폴백.
   try {
     const { findLockForFile } = require(path.join(__dirname, '..', 'scripts', 'edit-lock.js'));
     const hit = findLockForFile(absFile, { cwd });
     if (hit) {
-      const mySession = process.env.PACT_SESSION || `ppid-${process.ppid}`;
+      const mySession = process.env.PACT_SESSION
+        || payload.session_id
+        || process.env.CLAUDE_CODE_SESSION_ID
+        || `ppid-${process.ppid}`;
       if (hit.session_label !== mySession) {
         const out = {
           hookSpecificOutput: {

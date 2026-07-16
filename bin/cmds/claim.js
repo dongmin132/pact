@@ -1,13 +1,15 @@
 'use strict';
 
 // pact claim <task_id> [<task_id>...] — 멀티세션에서 task 명시적 점유.
-// 한 번에 여러 task 가능 (v0.6.2). session_label 자동 인식:
-//   --session <label> > $PACT_SESSION > process.ppid (부모 셸 PID)
+// 한 번에 여러 task 가능 (v0.6.2). session_label 자동 인식(H3-2):
+//   --session <label> > $PACT_SESSION > $CLAUDE_CODE_SESSION_ID(세션 UUID) > ppid-<세션 pid>
+// liveness pid: --owner-pid > $PACT_OWNER_PID > 조부모 세션 pid.
 // 이미 살아있는 lock 있으면 거부. stale lock은 takeover.
 
 const fs = require('fs');
 const path = require('path');
 const { acquireLock } = require('../../scripts/lock.js');
+const { sessionPid, sessionId } = require('../../scripts/lib/session-pid.js');
 
 function parseArgs(args) {
   const taskIds = [];
@@ -25,22 +27,24 @@ function parseArgs(args) {
   return { taskIds, sessionLabel, ownerPid, json };
 }
 
+// session_label = 세션 정체성(H3-2). 세션 UUID(CLAUDE_CODE_SESSION_ID)를 써야 CLI 가 건 락을
+// 훅(payload.session_id)이 자기 것으로 인식(자기 락아웃 방지)하고 다른 세션과 구분된다.
+// UUID 부재 시에만 조부모 세션 pid 기반 폴백 라벨.
 function resolveSessionLabel(explicit) {
-  if (explicit) return explicit;
-  if (process.env.PACT_SESSION) return process.env.PACT_SESSION;
-  // 자동: 부모 셸 PID (PPID). 셸이 살아있는 동안 동일 세션으로 인식됨.
-  return `ppid-${process.ppid}`;
+  const id = sessionId(explicit);
+  if (id) return id;
+  return `ppid-${sessionPid()}`;
 }
 
-// 락 holder 로 기록할 세션 수명 pid (H3). 단명 CLI process.pid 를 쓰면 명령 반환 즉시
-// dead-pid stale 이 돼 상호배제가 no-op 이 된다. 부모 셸(PPID)은 세션이 사는 동안 살아있어
-// isAlive 판정이 유효하다. 우선순위: --owner-pid > $PACT_OWNER_PID > process.ppid.
-// (parallel.md 의 prepare --owner-pid=$PPID 관례와 동일.)
+// 락 holder liveness pid (H3-2). 단명 CLI process.pid·즉사 셸 process.ppid 를 쓰면 명령 반환 즉시
+// dead-pid stale 이 돼 상호배제가 no-op 이 된다(적대검증 실측). 조부모(=세션 프로세스 claude/터미널)는
+// 세션 동안 살아있어 isAlive 판정이 유효하다. 우선순위: --owner-pid > $PACT_OWNER_PID > sessionPid().
 function resolveOwnerPid(explicit) {
   const raw = explicit || process.env.PACT_OWNER_PID;
   const n = raw != null ? Number(raw) : NaN;
-  if (Number.isInteger(n) && n > 0) return n;
-  return process.ppid;
+  // 유효 pid 범위만 채택 — 오버플로/비정수는 조용한 no-op 락(isAlive 가 즉시 false)이 되므로 폴백.
+  if (Number.isSafeInteger(n) && n > 0 && n < 2 ** 31) return n;
+  return sessionPid();
 }
 
 module.exports = function claim(args) {
