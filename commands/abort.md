@@ -47,9 +47,17 @@ git merge --abort 2>/dev/null
 
 ## 단계 5: 사용자 선택 따라 처리
 
+> **필수 (M27): 사이클 SOT 무효화.** 보존·삭제 어느 쪽이든 `.pact/current_batch.json` 을 제거한다.
+> 안 지우면 다음 `/pact:parallel` 이 중단된 옛 batch 를 `already_prepared` 로 조용히 채택해 옛 payload
+> 로 워커를 spawn 한다. 보존된 worktree 는 `/pact:resume <id>`(per-task)로 재개하므로 current_batch
+> 없이도 재개 가능하다.
+> ```bash
+> rm -f .pact/current_batch.json
+> ```
+
 ### 5-A: 보존
-- worktree 그대로 둠
-- branch도 그대로
+- worktree 그대로 둠, branch도 그대로 (`/pact:resume <id>` 로 재개)
+- `.pact/current_batch.json` 은 위에서 제거됨 (stale 사이클 채택 방지)
 
 ### 5-B: 삭제
 각 worktree에 대해:

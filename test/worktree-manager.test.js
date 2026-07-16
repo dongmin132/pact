@@ -83,6 +83,17 @@ test('checkEnvironment — 리포 서브디렉토리에서 실행 시 거부 (H6
   } finally { cleanup(repo); }
 });
 
+test('checkEnvironment — git init 직후(첫 커밋 전)는 "첫 커밋 필요"로 안내 (M24)', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pact-nocommit-'));
+  try {
+    execSync('git init -b main', { cwd: dir, stdio: 'ignore' });
+    const r = checkEnvironment({ cwd: dir });
+    assert.equal(r.ok, false);
+    assert.ok(r.errors.some(e => /커밋/.test(e)), `첫 커밋 안내여야 함 — ${JSON.stringify(r.errors)}`);
+    assert.ok(!r.errors.some(e => /브랜치가 없습니다/.test(e)), '브랜치 없음 오진 문구는 없어야 함');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('checkEnvironment — 리포 루트에서는 통과 (H6 회귀 방지)', () => {
   const repo = makeRepo();
   try {

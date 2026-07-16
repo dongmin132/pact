@@ -102,7 +102,13 @@ function checkEnvironment(opts = {}) {
   }
 
   if (!hasBranch('main', opts) && !hasBranch('master', opts)) {
-    errors.push('main 또는 master 브랜치가 없습니다');
+    // M24: git init 직후 첫 커밋 전이면 브랜치 자체가 없다 — "브랜치 없음"이 아니라 "첫 커밋 필요"로 안내.
+    const hasCommit = git(['rev-parse', '--verify', '-q', 'HEAD'], opts).status === 0;
+    if (!hasCommit) {
+      errors.push('아직 커밋이 없습니다 — 첫 커밋 후 재실행: git add -A && git commit -m "init" (worktree 는 커밋된 base 가 필요)');
+    } else {
+      errors.push('main 또는 master 브랜치가 없습니다 (현재 브랜치명을 main/master 로 변경 권장)');
+    }
   }
 
   if (!isClean(opts)) {

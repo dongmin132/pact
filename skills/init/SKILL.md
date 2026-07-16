@@ -30,25 +30,25 @@ description: pact 프로젝트 초기 셋업 — 빈 디렉토리에 4개 문서
 
 ## 단계 1: 사전 검사
 
-다음 파일 중 하나라도 현재 디렉토리에 존재하면 **즉시 중단**하고 사용자에게 알립니다:
+기존 파일과 **pact 초기화 여부를 구분**한다 (M23: 흔한 파일 CLAUDE.md 하나만으로 "이미 pact"라 오진하고 백업·삭제를 권하던 문제).
 
-```
-CLAUDE.md, PROGRESS.md, TASKS.md, DECISIONS.md
-```
-
-중단 시 메시지 (한국어):
-
-```
-⚠️  이미 pact가 초기화된 프로젝트로 보입니다.
-
-발견된 파일: <발견된 파일 목록>
-
-새로 시작하려면 기존 파일을 백업·삭제 후 다시 실행해주세요.
-기존 프로젝트에 pact를 도입하는 brownfield 모드는 v1.1+에서 지원됩니다.
-```
+- **`.pact/` 디렉토리가 있으면** → 이미 pact 초기화됨. 중단하고 안내:
+  ```
+  ⚠️  이미 pact가 초기화된 프로젝트입니다 (.pact/ 존재).
+  재초기화하려면 .pact/ 와 pact 생성 문서를 백업·삭제 후 다시 실행해주세요.
+  ```
+- **`.pact/` 는 없는데 CLAUDE.md/PROGRESS.md/TASKS.md/DECISIONS.md 중 일부가 있으면** → 기존(비-pact) 파일. 덮어쓰지 말고 사용자에게 선택 요청 (오진 금지):
+  ```
+  ℹ️  기존 파일이 있습니다: <발견된 파일 목록>
+  pact 는 이 파일들을 덮어쓰지 않습니다. 어떻게 할까요?
+    - 기존 CLAUDE.md 에 pact 섹션을 추가(권장) / 별도 백업 후 pact 템플릿 생성
+  (기존 코드베이스 도입 brownfield 모드는 v1.1+ — /pact:adopt)
+  ```
+- 아무것도 없으면 → 단계 2 로 진행.
 
 검사 명령:
 ```bash
+test -d .pact && echo "PACT_INITIALIZED"
 ls CLAUDE.md PROGRESS.md TASKS.md DECISIONS.md 2>/dev/null
 ```
 
