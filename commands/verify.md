@@ -12,7 +12,9 @@ P1+: 4축 모두. (P0 단순 버전: Code 축만 — 이미 폐지됨)
 
 ## 단계 2: Code 축 (검증 명령 실행)
 
-**docs-only 스킵 (C-4)**: 실행 전에 `git diff --name-only HEAD~1 -- . ':!*.md' ':!docs/'` 로 코드 파일 변경 여부를 먼저 확인한다. 출력이 비어 있으면(=이번 변경이 전부 마크다운/docs) Code 축 4개 명령을 실행하지 않고 전부 `skip` 으로 표기한 뒤 단계 3으로 — docs-only 사이클에서 lint/typecheck/test/build 낭비(~수 분·수 M 토큰) 방지. 코드 파일이 하나라도 있으면 아래 정상 실행.
+**docs-only 스킵 (C-4)**: 실행 전에 `node ${CLAUDE_PLUGIN_ROOT}/bin/pact verify-scope --json` 으로 이번 사이클의 코드 파일 변경 여부를 결정적으로 판정한다. `code_changed: false` 면(=이번 사이클이 전부 마크다운/docs) Code 축 4개 명령을 실행하지 않고 전부 `skip` 으로 표기한 뒤 단계 3으로 — docs-only 사이클에서 lint/typecheck/test/build 낭비(~수 분·수 M 토큰) 방지. `code_changed: true` 면 아래 정상 실행.
+
+> ⚠️ 단순 `git diff HEAD~1` 을 쓰지 말 것: 표준 사이클은 코드 머지 뒤에 항상 md-only bookkeeping/status 커밋(`pact: cycle bookkeeping`, `pact: cycle status updates`)이 붙어, HEAD~1 만 보면 코드 대량 머지 사이클도 docs-only 로 오판돼 Code 축이 통째 skip 된다(검증 없이 병합 방지의 사후 축 무력화). `verify-scope` 는 트레일링 bookkeeping 을 건너뛴 사이클 범위로 판정한다.
 
 CLAUDE.md `verify_commands` 추출 + 실행:
 

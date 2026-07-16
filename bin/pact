@@ -33,6 +33,7 @@ const commands = {
   sizecheck: () => require('./cmds/sizecheck.js')(args),
   testguard: () => require('./cmds/testguard.js')(args),
   scopecheck: () => require('./cmds/scopecheck.js')(args),
+  'verify-scope': () => require('../scripts/verify-scope.js').runCli(args),
 };
 
 if (!cmd || !commands[cmd]) {
@@ -62,6 +63,7 @@ if (!cmd || !commands[cmd]) {
   console.error('  sizecheck [--project <path>] [--max-files=N] [--json]  턴소진 위험 task 사이징 (propose-only)');
   console.error('  testguard [--project <path>] [--json]  test-as-law — 자기검증 테스트 수정 가능 task 플래그 (propose-only)');
   console.error('  scopecheck [--project <path>] [--json]  done_criteria ⊄ allowed_paths 계약모순 검출 (propose-only)');
+  console.error('  verify-scope [--project <path>] [--json]  이번 사이클 코드 변경 여부 판정 — /pact:verify docs-only skip 결정 (read-only)');
   process.exit(cmd ? 1 : 0);
 }
 
