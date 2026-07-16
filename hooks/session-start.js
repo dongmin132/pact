@@ -38,13 +38,20 @@ function main() {
     state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
   } catch { /* 새로 생성 */ }
 
-  // 직전 세션이 남긴 런타임 mode 는 새 세션에선 stale — 제거해 detect-yolo 가 오염 없이
-  // 판정하게 한다(런타임 값은 이번 세션 첫 도구 호출 때 pre-tool-guard 가 다시 스탬프).
-  delete state.permission_mode;
-  // startup 경고용 best-effort: state 무시하고 settings(defaultMode) 직행.
-  const det = detectYolo({ cwd, ignoreState: true });
-  state.is_yolo = det.is_yolo;
-  state.yolo_source = det.source;
+  // H1-2: compact/resume 는 같은 세션 연속 — 런타임 스탬프를 지우면 다음 도구 호출까지 CLI-flag
+  // yolo 감지 공백이 생긴다. 새 세션(startup/clear)에서만 stale 런타임 mode 를 리셋한다.
+  const source = payload.source || 'startup';
+  const freshSession = source === 'startup' || source === 'clear';
+  if (freshSession) {
+    // 직전 세션이 남긴 런타임 mode 는 새 세션에선 stale — 제거해 detect-yolo 가 오염 없이
+    // 판정하게 한다(런타임 값은 이번 세션 첫 도구 호출 때 pre-tool-guard 가 다시 스탬프).
+    delete state.permission_mode;
+    // startup 경고용 best-effort: state 무시하고 settings(defaultMode) 직행.
+    const det = detectYolo({ cwd, ignoreState: true });
+    state.is_yolo = det.is_yolo;
+    state.yolo_source = det.source;
+  }
+  // compact/resume: permission_mode·is_yolo 보존(런타임 연속). 아래 메타만 갱신.
   state.session_started_at = new Date().toISOString();
   state.session_id = payload.session_id || null;
 
