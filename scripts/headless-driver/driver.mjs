@@ -417,6 +417,19 @@ async function runWorkerReal(task, opts = {}) {
   // clamp — remaining 이 floor 보다 작으면(예: --budget=0.1) remaining 이 상한이라 declared 예산 초과 X.
   const BUDGET_FLOOR = 0.5;
   const workerBudgetUsd = Math.min(remainingBudget, Math.max(BUDGET_FLOOR, remainingBudget / Math.max(1, activeWorkers)));
+  // H4: 잔여 예산이 in-flight 예약으로 소진되면 cap 이 0(이하)이 된다. SDK 는 undefined 만 거르고
+  // 0 을 --max-budget-usd 0 으로 CLI 에 넘기는데, CLI 는 "must be a positive number greater than 0"
+  // 로 즉사시킨다 → 스폰 실패가 incomplete 로 오분류돼 resume 2회 헛돌고 '3회 실패' 로 거짓 위임된다.
+  // 스폰하지 않고 budgetExhausted 신호를 반환한다(예약도 안 잡음 → 팬텀 예약 방지). 예산 여유가
+  // 생기면(in-flight 워커 종료로 예약 해제) 다음 슬롯/사이클에서 정상 cap 으로 재투입된다.
+  if (!(workerBudgetUsd > 0)) {
+    return {
+      ok: false,
+      budgetExhausted: true,
+      reason: `예산 소진 — 남은 예산 없음 (spent $${ledger.spentUsd.toFixed(2)} + reserved $${ledger.reservedUsd.toFixed(2)} ≥ cap $${capBudget}). --budget 상향 또는 사이클 진행 후 재투입 필요`,
+      cost: 0, usage: null, turns: 0, via: 'real',
+    };
+  }
   // 예약 회계: 배정한 cap 을 예약액에 즉시 더한다(finally 에서 해제). 다음 워커의 남은 예산 계산에 반영돼
   // 슬롯 재충전 시 in-flight 워커의 미사용 상한까지 차감된다 → 전체 잠재 지출 ≤ capBudget 불변식 보장.
   ledger.reservedUsd += workerBudgetUsd;
@@ -528,6 +541,9 @@ async function attemptTask(task, opts = {}) {
       if (!r.spentAccounted) ledger.spentUsd += r.cost || 0;
       if (r.ok) return { ...r, status: 'done' };
       if (r.denied) return { ...r, status: 'denied' };          // 가드 deny — 재시도 무의미
+      // H4: 예산 소진으로 스폰조차 못 함 → 재시도·resume 무의미(예산은 안 늘어남). 부분작업도 없어
+      // salvage 대상 아님. 예산 상향/다음 사이클 안내 사유와 함께 즉시 위임(거짓 3회실패 오보 제거).
+      if (r.budgetExhausted) return { ...r, status: 'escalated', salvageable: false };
       // budget/시간 소진(incomplete) → 재시도해도 또 소진 + 부분작업 손실 위험 → 즉시 위임(보존).
       if (r.incomplete) return { ...r, status: 'escalated', salvageable: true };
       last = r;                                                  // 일시 error subtype → 재시도

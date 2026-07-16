@@ -220,34 +220,61 @@ test('P1-#3(b) — 동시 K 워커의 배정 cap 합이 budget 을 넘지 않는
   const { make, releaseAll } = gatedQueryFactory();
   const sinks = Array.from({ length: K }, () => ({}));
   const promises = [];
-  // 레이스 인터리빙 모델: 워커가 슬롯을 채우며 순차 spawn → 각자 그 순간의 in-flight 수(1,2,…,K)를
-  // activeWorkers 로 본다. 구코드는 이미 실행 중인 워커의 미사용 상한을 예약으로 안 빼서 W1 이 잔여
-  // 전액을 쥔 채로 W2,W3… 가 또 '잔여/현재수'를 받아 배정 cap 합이 budget 을 크게 초과(잠재 지출 폭주).
-  for (let i = 0; i < K; i++) promises.push(runWorkerReal(baseTask(), { query: make(sinks[i]), budget, activeWorkers: i + 1 }));
-  const caps = sinks.map((s) => s.cap);
+  // 동시 K 워커가 모두 in-flight(activeWorkers=K)인 현실 모델. 예약 회계가 각자에게 잔여/동시수를
+  // 배정하되, 이미 실행 중인 워커의 미사용 상한을 예약으로 차감해 배정 cap 합 ≤ budget 을 보장한다.
+  // (예산이 충분하면 아무도 bail 하지 않고 모두 양수 cap 을 받는다 — H4 는 잔여 0 일 때만 발동.)
+  for (let i = 0; i < K; i++) promises.push(runWorkerReal(baseTask(), { query: make(sinks[i]), budget, activeWorkers: K }));
+  const caps = sinks.map((s) => s.cap).filter((c) => typeof c === 'number');
   const sum = caps.reduce((a, b) => a + b, 0);
-  assert.equal(caps.filter((c) => typeof c === 'number').length, K, 'K 워커 모두 cap 배정됨');
+  assert.equal(caps.length, K, '예산 충분 → K 워커 모두 양수 cap 배정(bail 없음)');
+  assert.ok(caps.every((c) => c > 0), '배정된 cap 은 모두 0 초과여야 함(cap 0 스폰 금지)');
   assert.ok(sum <= budget + 1e-9, `동시 ${K} 워커의 배정 cap 합(${sum.toFixed(4)}) 이 budget(${budget}) 을 넘으면 안 됨`);
   releaseAll();
   await Promise.all(promises);
   assert.ok(Math.abs(ledger.reservedUsd) < 1e-9, `모든 워커 종료 후 예약액이 0 으로 해제돼야 함 — reservedUsd=${ledger.reservedUsd}`);
 });
 
-test('P1-#3(b) — 예약 소진 후 마지막 워커는 잔여를 초과 배정하지 않는다(floor 도 잔여로 clamp)', async () => {
+test('P1-#3(b) — 예약 소진 후 마지막 워커는 스폰되지 않고 budgetExhausted (H4: cap 0 스폰 금지)', async () => {
   ledger.spentUsd = 0; ledger.reservedUsd = 0;
   const { make, releaseAll } = gatedQueryFactory();
   const budget = 1;
   const s1 = {}, s2 = {};
-  // W1 이 active=1 로 잔여 전액(1)을 예약 → 남은 예산 0. 구코드는 W1 의 예약을 안 차감해 W2 도 전액(1)을
-  // 다시 배정(잠재 지출 2 > budget 1). 수리 후 W2 는 잔여 0(floor 0.5 도 잔여로 clamp).
+  // W1 이 active=1 로 잔여 전액(1)을 예약 → 남은 예산 0. W2 는 cap 0 이 되는데, CLI 가
+  // --max-budget-usd 0 을 거부해 즉사하므로 스폰하지 않고 budgetExhausted 로 즉시 반환해야 한다.
   const p1 = runWorkerReal(baseTask(), { query: make(s1), budget, activeWorkers: 1 });
-  const p2 = runWorkerReal(baseTask(), { query: make(s2), budget, activeWorkers: 1 });
+  const r2 = await runWorkerReal(baseTask(), { query: make(s2), budget, activeWorkers: 1 });
   assert.equal(s1.cap, 1, 'W1 = 잔여 전액');
-  assert.ok(s2.cap <= 1e-9, `W2 는 남은 예산(0)을 초과 배정 못 함(예약 차감) — cap=${s2.cap}`);
-  assert.ok(s1.cap + s2.cap <= budget + 1e-9, '배정 cap 합 ≤ budget');
+  assert.equal(s2.cap, undefined, 'W2 는 query 를 호출조차 하지 않아야 함(스폰 금지)');
+  assert.equal(r2.ok, false);
+  assert.equal(r2.budgetExhausted, true, 'W2 는 budgetExhausted 로 반환');
+  assert.equal(r2.cost, 0, '스폰 안 했으니 비용 0');
   releaseAll();
-  await Promise.all([p1, p2]);
+  await Promise.all([p1]);
   ledger.reservedUsd = 0;
+});
+
+// ---- H4: 잔여 예산이 예약으로 소진되면 cap 0 워커를 스폰하지 않는다(CLI --max-budget-usd 0 거부 회피) ----
+
+test('runWorkerReal — 잔여 예산 0 이면 cap 0 스폰 대신 budgetExhausted (예약 미변동)', async () => {
+  ledger.spentUsd = 0; ledger.reservedUsd = 1;   // 전액이 in-flight 예약으로 잡힘
+  const sink = {};
+  const r = await runWorkerReal(baseTask(), { query: budgetSpyQuery(sink), budget: 1, activeWorkers: 1 });
+  assert.equal(r.ok, false);
+  assert.equal(r.budgetExhausted, true);
+  assert.equal(sink.cap, undefined, 'cap 0 워커를 스폰하면 안 됨(query 미호출)');
+  assert.equal(ledger.reservedUsd, 1, '스폰 안 했으니 예약이 늘지 않아야 함(팬텀 예약 금지)');
+  ledger.reservedUsd = 0;
+});
+
+test('attemptTask — budgetExhausted 는 재시도·resume 없이 즉시 escalated (거짓 3회실패 오보 제거)', async () => {
+  ledger.spentUsd = 0; ledger.reservedUsd = 0;
+  let calls = 0;
+  const budgetRunner = async () => { calls++; return { ok: false, budgetExhausted: true, reason: '예산 소진', cost: 0, usage: null, via: 'real' }; };
+  const r = await attemptTask(baseTask(), { runWorker: budgetRunner });
+  assert.equal(r.status, 'escalated');
+  assert.equal(calls, 1, 'budgetExhausted 면 재시도하지 않아야 함(1회 호출)');
+  assert.equal(r.attempts, 1);
+  assert.match(r.reason || '', /예산/);
 });
 
 // ---- 트랙2 잔여: 예약 해제 ↔ 지출 기입 원자성 (해제-기입 간극 재현) ----
