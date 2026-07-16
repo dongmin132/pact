@@ -133,6 +133,31 @@ test('Bash — 백틱 `rm -rf` 내부 파괴 삭제 deny', () => {
   assert.equal(r.allow, false);
 });
 
+test('Bash — 개행(\\n)으로 분리된 rm 파괴삭제 deny (R3 개행 우회)', () => {
+  const r = guardToolUse('Bash', { command: 'printf done\nrm -rf ~/important' },
+    { workingDir: WD, allowedPaths: [] });
+  assert.equal(r.allow, false, '개행 뒤 rm -rf 가 첫 줄 인자로 병합돼 우회되면 안 됨');
+});
+
+test('Bash — 개행 분리 rm 의 워크트리 밖 삭제 boundary deny (R3)', () => {
+  const r = guardToolUse('Bash', { command: 'echo x\nrm ../OTHER-1/f.js' },
+    { workingDir: WD, allowedPaths: ['src/**'] });
+  assert.equal(r.allow, false);
+});
+
+test('Bash — 깊게 중첩된 $(...) 도 스택오버플로 없이 처리(fail-open 방지, R3)', () => {
+  const deep = 'echo ' + '$('.repeat(300) + 'rm -rf x' + ')'.repeat(300);
+  // 크래시(RangeError)로 fail-open 되지 않고 결정을 내려야 한다(여기선 안전하게 deny 또는 allow, 크래시 X).
+  assert.doesNotThrow(() => guardToolUse('Bash', { command: deep }, { workingDir: WD, allowedPaths: ['**'] }));
+});
+
+test('Bash — 무관한 밖 find + 별개 xargs rm 이 한 줄이어도 find 경로를 오차단 안 함 (R3 회귀)', () => {
+  // 세미콜론으로 분리된 별개 명령: 밖 읽기 find 와 워크트리 내 xargs rm — find 경로를 삭제타겟 오승격 금지.
+  const r = guardToolUse('Bash', { command: 'find ../.. -type d ; git ls-files | xargs rm src/build.js' },
+    { workingDir: WD, allowedPaths: ['src/**'] });
+  assert.equal(r.allow, true, '무관한 밖 find 경로를 xargs rm 파이프와 결합해 거짓 deny 하면 안 됨');
+});
+
 test('Bash — git rm 은 파괴삭제 아님 (과차단 회귀 방지)', () => {
   const r = guardToolUse('Bash', { command: 'git rm --cached src/foo.ts' },
     { workingDir: WD, allowedPaths: ['src/**'] });

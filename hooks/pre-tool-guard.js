@@ -380,24 +380,46 @@ function normalizeCmdName(tok) {
 }
 
 // $(...) 및 백틱 명령치환 본문을 재귀 수집 — 서브셸 안의 rm 도 스캔 대상에 넣는다(H5-2).
-function collectSubshellBodies(str) {
+// 깊이 상한(R3): 병적으로 깊은 중첩에서 스택오버플로→가드 fail-open 을 막는다.
+const SUBSHELL_MAX_DEPTH = 40;
+function collectSubshellBodies(str, depth = 0) {
+  if (depth >= SUBSHELL_MAX_DEPTH) return [];
   const bodies = [];
   const s = String(str || '');
   for (let i = 0; i < s.length; i++) {
     if (s[i] === '$' && s[i + 1] === '(') {
-      let depth = 1; let j = i + 2; const start = j;
-      for (; j < s.length && depth > 0; j++) {
-        if (s[j] === '(') depth++;
-        else if (s[j] === ')') { depth--; if (depth === 0) break; }
+      let d = 1; let j = i + 2; const start = j;
+      for (; j < s.length && d > 0; j++) {
+        if (s[j] === '(') d++;
+        else if (s[j] === ')') { d--; if (d === 0) break; }
       }
       const body = s.slice(start, j);
-      bodies.push(body, ...collectSubshellBodies(body));
+      bodies.push(body, ...collectSubshellBodies(body, depth + 1));
       i = j;
     }
   }
   const bt = s.split('`');
-  for (let k = 1; k < bt.length; k += 2) bodies.push(bt[k], ...collectSubshellBodies(bt[k]));
+  for (let k = 1; k < bt.length; k += 2) bodies.push(bt[k], ...collectSubshellBodies(bt[k], depth + 1));
   return bodies;
+}
+
+// 라인을 statement(;/&&/||/&)로 분리 — 파이프(|)는 statement 내부에 유지(따옴표 존중). R3:
+// xargs rm 파이프 연결을 statement 범위로 국한해, 별개 명령(;)의 무관한 find 경로를 삭제 타겟으로
+// 오승격하던 거짓 deny 회귀를 막는다.
+function splitStatements(line) {
+  const stmts = [];
+  const n = line.length; let i = 0, start = 0, q = null;
+  while (i < n) {
+    const c = line[i];
+    if (q) { if (c === q) q = null; i++; continue; }
+    if (c === '"' || c === "'") { q = c; i++; continue; }
+    if (c === ';') { stmts.push(line.slice(start, i)); i++; while (i < n && line[i] === ';') i++; start = i; continue; }
+    if (c === '&') { stmts.push(line.slice(start, i)); i++; while (i < n && line[i] === '&') i++; start = i; continue; }
+    if (c === '|' && line[i + 1] === '|') { stmts.push(line.slice(start, i)); i += 2; start = i; continue; }
+    i++;
+  }
+  stmts.push(line.slice(start));
+  return stmts;
 }
 
 // 세그먼트에서 (env 대입/래퍼 접두 제거 후) 실제 명령 이름과 인자를 분리. name = basename 정규화.
@@ -451,24 +473,27 @@ function scanLineDeleteTargets(line) {
   const targets = [];
   const chunks = [String(line || ''), ...collectSubshellBodies(line)];
   for (const chunk of chunks) {
-    const segs = splitSegments(chunk).map((s) => commandOf(s));
-    const xargsRmInPipe = segs.some((s) => s.name === 'xargs' && (xargsInner(s.args) || {}).name === 'rm');
-    for (const { name, args } of segs) {
-      if (name === 'rm') {
-        let afterDD = false;
-        for (const a of args) {
-          if (a === '--') { afterDD = true; continue; }
-          if (!afterDD && a.startsWith('-')) continue;
-          targets.push(a);
-        }
-      } else if (name === 'xargs') {
-        const inner = xargsInner(args);
-        if (inner && inner.name === 'rm') for (const a of inner.args) if (!a.startsWith('-')) targets.push(a);
-      } else if (name === 'find') {
-        if (findDeletes(args) || xargsRmInPipe) {
+    for (const stmt of splitStatements(chunk)) {   // statement 범위(파이프만 내부) — 무관한 ; 명령 격리
+      const segs = splitSegments(stmt).map((s) => commandOf(s));
+      // xargs rm 파이프는 같은 statement 안에서만 find 경로를 삭제타겟으로 승격(R3 거짓 deny 방지).
+      const xargsRmInPipe = segs.some((s) => s.name === 'xargs' && (xargsInner(s.args) || {}).name === 'rm');
+      for (const { name, args } of segs) {
+        if (name === 'rm') {
+          let afterDD = false;
           for (const a of args) {
-            if (a.startsWith('-') || a === '(' || a === '!') break;  // predicate 시작 = 경로 끝
+            if (a === '--') { afterDD = true; continue; }
+            if (!afterDD && a.startsWith('-')) continue;
             targets.push(a);
+          }
+        } else if (name === 'xargs') {
+          const inner = xargsInner(args);
+          if (inner && inner.name === 'rm') for (const a of inner.args) if (!a.startsWith('-')) targets.push(a);
+        } else if (name === 'find') {
+          if (findDeletes(args) || xargsRmInPipe) {
+            for (const a of args) {
+              if (a.startsWith('-') || a === '(' || a === '!') break;  // predicate 시작 = 경로 끝
+              targets.push(a);
+            }
           }
         }
       }
@@ -499,13 +524,15 @@ function isRecursiveForceRm(args) {
 function hasDestructiveDelete(command) {
   const chunks = [String(command || ''), ...collectSubshellBodies(command)];
   for (const chunk of chunks) {
-    for (const seg of splitSegments(chunk)) {
-      const { name, args } = commandOf(seg);
-      if (name === 'rm' && isRecursiveForceRm(args)) return true;
-      if (name === 'find' && findDeletes(args)) return true;
-      if (name === 'xargs') {
-        const inner = xargsInner(args);
-        if (inner && inner.name === 'rm' && isRecursiveForceRm(inner.args)) return true;
+    for (const line of chunk.split('\n')) {   // R3: splitSegments 는 개행을 안 뜯음 — 줄 단위로 먼저 분리
+      for (const seg of splitSegments(line)) {
+        const { name, args } = commandOf(seg);
+        if (name === 'rm' && isRecursiveForceRm(args)) return true;
+        if (name === 'find' && findDeletes(args)) return true;
+        if (name === 'xargs') {
+          const inner = xargsInner(args);
+          if (inner && inner.name === 'rm' && isRecursiveForceRm(inner.args)) return true;
+        }
       }
     }
   }
