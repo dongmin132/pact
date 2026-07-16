@@ -71,6 +71,27 @@ test('checkEnvironment — uncommitted changes 거부', () => {
   } finally { cleanup(repo); }
 });
 
+// H6: 모노리포 서브디렉토리에서 실행하면 산출물이 리포 루트로 조용히 머지되던 결함 — 루트가 아니면 거부.
+test('checkEnvironment — 리포 서브디렉토리에서 실행 시 거부 (H6 루트 가드)', () => {
+  const repo = makeRepo();
+  try {
+    const sub = path.join(repo, 'packages', 'app');
+    fs.mkdirSync(sub, { recursive: true });
+    const r = checkEnvironment({ cwd: sub });
+    assert.equal(r.ok, false, '서브디렉토리 실행은 거부돼야 함');
+    assert.ok(r.errors.some(e => /루트|root|서브디렉/i.test(e)), JSON.stringify(r.errors));
+  } finally { cleanup(repo); }
+});
+
+test('checkEnvironment — 리포 루트에서는 통과 (H6 회귀 방지)', () => {
+  const repo = makeRepo();
+  try {
+    fs.mkdirSync(path.join(repo, 'packages'), { recursive: true });
+    const r = checkEnvironment({ cwd: repo });
+    assert.equal(r.ok, true, JSON.stringify(r));
+  } finally { cleanup(repo); }
+});
+
 test('createWorktree — 경로·branch 생성', () => {
   const repo = makeRepo();
   try {

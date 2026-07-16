@@ -387,7 +387,7 @@ pact/
 - **다국어**: 한국어 사용자 향. v1.1+
 - **Codex 외 어댑터**: 인터페이스만 열려 있고 v1.1+에서 Gemini/Cursor 추가
 - **PRD 자동 변환**: `.docx`/`.pdf` 미지원 — `.md`로 변환 후 사용
-- **monorepo 디스크 부담**: worktree 1개당 GB 가능. 동시 워커 수 기본 5, 최대 5 (prepare·drive 상한)
+- **monorepo**: 반드시 **리포 루트**에서 실행(서브디렉토리 실행은 거부 — 산출물 오머지 방지, H6). worktree 1개당 GB 가능·동시 워커 수 기본 5, 최대 5 (prepare·drive 상한). 서브패키지 단위 지원은 v1.1
 - **OpenAPI 자동 검증**: v1.1+
 
 ## v1.0 out-of-scope (영구)

@@ -33,6 +33,19 @@ function isGitRepo(opts) {
   return git(['rev-parse', '--git-dir'], opts).status === 0;
 }
 
+// cwd 가 리포 루트인가 (H6). git worktree add 는 전체 리포를 체크아웃하고 WORKTREE_BASE 는 cwd
+// 상대라, 모노리포 서브디렉토리(packages/app 등)에서 실행하면 산출물이 리포 루트로 조용히 머지된다
+// (e2e 실증). --show-toplevel 과 cwd 를 realpath 비교해 루트가 아니면 checkEnvironment 가 거부한다.
+// (서브패키지 단위 지원은 v1.1 — 여기선 '조용한 오머지'만 fail-loud 로 막는다.)
+function repoRootCheck(opts = {}) {
+  const cwd = opts.cwd || process.cwd();
+  const r = git(['rev-parse', '--show-toplevel'], opts);
+  if (r.status !== 0) return { ok: false, top: null };
+  const canon = (p) => { try { return fs.realpathSync(p); } catch { return path.resolve(p); } };
+  const top = canon((r.stdout || '').trim());
+  return { ok: top === canon(cwd), top };
+}
+
 function hasBranch(name, opts) {
   return git(['show-ref', '--verify', '--quiet', `refs/heads/${name}`], opts).status === 0;
 }
@@ -77,6 +90,14 @@ function checkEnvironment(opts = {}) {
 
   if (!isGitRepo(opts)) {
     errors.push('현재 디렉토리는 git 저장소가 아닙니다');
+    return { ok: false, errors };
+  }
+
+  // H6: 리포 루트가 아니면(모노리포 서브디렉토리 등) 거부 — 산출물이 리포 루트로 조용히 머지되는
+  // 오작동 방지. 루트에서 재실행하도록 안내(서브패키지 단위 지원은 v1.1).
+  const rootChk = repoRootCheck(opts);
+  if (!rootChk.ok && rootChk.top) {
+    errors.push(`리포 루트가 아닙니다 (서브디렉토리 실행). pact 는 리포 루트에서 실행해야 합니다: cd ${rootChk.top} 후 재실행. (모노리포 서브패키지 단위 지원은 v1.1)`);
     return { ok: false, errors };
   }
 
