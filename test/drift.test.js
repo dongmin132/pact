@@ -107,3 +107,29 @@ test('drift — standalone pact merge 산출물(요약 필드 없음)은 standal
     assert.equal(r.standalone_merge, true, 'planner 가 status.json 폴백해야 함을 신호');
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('drift — head_sha 있으면 오래된 날짜의 새 커밋도 토폴로지로 감지 (M17 false-clean 수리)', () => {
+  const dir = makeRepo();
+  try {
+    // 머지 시점 HEAD 기록
+    const headSha = execSync('git rev-parse HEAD', { cwd: dir, encoding: 'utf8' }).trim();
+    writeMergeResult(dir, { head_sha: headSha });
+    // 머지 후, 커밋 날짜를 과거로 백데이트한 코드 커밋(옛 브랜치 수동 머지 시뮬)
+    fs.writeFileSync(path.join(dir, 'src.js'), 'code\n');
+    sh('git add . && GIT_AUTHOR_DATE="2020-01-01T00:00:00" GIT_COMMITTER_DATE="2020-01-01T00:00:00" git commit -m old', { cwd: dir });
+    const r = computeDrift({ cwd: dir });
+    assert.equal(r.clean, false, '오래된 날짜라도 head_sha 이후 커밋은 drift 로 잡혀야 함(--since 날짜 함정 회피)');
+    assert.ok(r.code_changed.includes('src.js'), JSON.stringify(r.code_changed));
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('drift — head_sha == HEAD(변경 없음)이면 clean', () => {
+  const dir = makeRepo();
+  try {
+    const headSha = execSync('git rev-parse HEAD', { cwd: dir, encoding: 'utf8' }).trim();
+    writeMergeResult(dir, { head_sha: headSha });
+    const r = computeDrift({ cwd: dir });
+    assert.equal(r.clean, true);
+    assert.deepEqual(r.code_changed, []);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});

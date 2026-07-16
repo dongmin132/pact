@@ -919,6 +919,15 @@ function main() {
     process.exit(0);  // allow 유지
   }
 
+  // M11: pact 관리 문서(루트 *.md·tasks/·contracts/·docs/·.pact/)는 모듈 '코드'가 아니라 ownership
+  // 검사 대상이 아니다 — ownership 이 정의되면 메인 세션의 PROGRESS.md·DECISIONS.md 편집이 일괄
+  // deny 돼 /pact:wrap 단계 1(PROGRESS.md 갱신)과 정면 충돌하던 문제 해소.
+  const relN = normalizeRel(rel).replace(/^\.\//, '');
+  const isPactDoc = /^[^/]+\.md$/.test(relN)
+    || relN.startsWith('.pact/') || relN.startsWith('tasks/')
+    || relN.startsWith('contracts/') || relN.startsWith('docs/');
+  if (isPactDoc) process.exit(0);
+
   const r = checkPath(rel, owners);
   if (r.allowed) process.exit(0);
 

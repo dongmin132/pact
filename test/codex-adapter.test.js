@@ -107,6 +107,18 @@ test('createCodexAdapter — call_review 실패 시 어댑터 자체 finding', a
   assert.match(findings[0].message, /codex 호출 실패/);
 });
 
+test('createCodexAdapter — ENOENT(미설치)/ETIMEDOUT 는 unknown 아니라 인프라 원인 명시 (M26)', async () => {
+  const enoent = createCodexAdapter({ runner: () => ({ status: null, error: { code: 'ENOENT' } }) });
+  const f1 = await enoent.call_review({ target: 'plan', artifacts: [], context: '' });
+  assert.equal(f1[0].kind, 'infra');
+  assert.match(f1[0].message, /미설치|codex/);
+  assert.doesNotMatch(f1[0].message, /unknown/);
+
+  const timeout = createCodexAdapter({ runner: () => ({ status: null, error: { code: 'ETIMEDOUT' } }) });
+  const f2 = await timeout.call_review({ target: 'plan', artifacts: [], context: '' });
+  assert.match(f2[0].message, /타임아웃/);
+});
+
 // XREV-CODEX-3 — 결정적 출력 캡처 (--output-last-message)
 
 test('createCodexAdapter — --output-last-message 파일 캡처가 stdout 스크레이핑보다 우선', async () => {

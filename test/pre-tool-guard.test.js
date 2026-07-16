@@ -650,6 +650,22 @@ owner_paths:
   } finally { fs.rmSync(repo, { recursive: true, force: true }); }
 });
 
+test('hook 통합 — ownership 정의돼도 메인 세션의 PROGRESS.md 편집은 허용 (M11 /pact:wrap 충돌 해소)', () => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'pact-hook-own-'));
+  try {
+    fs.writeFileSync(path.join(repo, 'MODULE_OWNERSHIP.md'),
+      '## auth\n\n```yaml\nmodule: auth\nowner_paths:\n  - src/auth/**\n```\n');
+    for (const doc of ['PROGRESS.md', 'DECISIONS.md', 'tasks/auth.md', 'docs/x.md']) {
+      const r = runHook({ tool_name: 'Edit', tool_input: { file_path: doc }, cwd: repo });
+      assert.equal(r.status, 0, r.stderr);
+      assert.doesNotMatch(r.stdout, /deny/, `${doc} 편집은 ownership 에 막히면 안 됨`);
+    }
+    // 반면 ownership 밖의 실제 코드 파일은 여전히 deny
+    const code = runHook({ tool_name: 'Edit', tool_input: { file_path: 'src/other/x.ts' }, cwd: repo });
+    assert.match(code.stdout, /deny/, '모듈 밖 코드 파일은 여전히 차단');
+  } finally { fs.rmSync(repo, { recursive: true, force: true }); }
+});
+
 test('hook 통합 — 정상 ownership + 소유 경로 편집은 경고/차단 없음 (STAB-9 회귀)', () => {
   const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'pact-hook-own-'));
   try {

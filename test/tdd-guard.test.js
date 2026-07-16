@@ -15,8 +15,11 @@ const {
 test('isTestFile — *.test.ts 인식', () => {
   assert.equal(isTestFile('src/foo.test.ts'), true);
   assert.equal(isTestFile('src/foo.spec.js'), true);
-  assert.equal(isTestFile('test_foo.py'), false);  // _test.py만 인식
+  assert.equal(isTestFile('test_foo.py'), true);   // M10: pytest 관례 test_*.py 인식
+  assert.equal(isTestFile('tests/test_auth.py'), true);
+  assert.equal(isTestFile('conftest.py'), true);   // pytest fixture
   assert.equal(isTestFile('foo_test.py'), true);
+  assert.equal(isTestFile('src/foo.py'), false);   // 일반 코드 파일은 테스트 아님
 });
 
 test('isCodeFile — 코드 파일이지만 테스트 아닌 것만', () => {

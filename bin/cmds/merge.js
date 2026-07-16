@@ -57,8 +57,11 @@ function executeMerge(args) {
     statusUpdates.push({ task_id: taskId, ...r });
   }
 
+  let headSha = null;
+  try { const rp = require('child_process').spawnSync('git', ['rev-parse', 'HEAD'], { cwd, encoding: 'utf8' }); headSha = rp.status === 0 ? rp.stdout.trim() : null; } catch { /* */ }
   const out = {
     timestamp: new Date().toISOString(),
+    head_sha: headSha, // M17: drift 토폴로지 판정 기준점
     eligible: eligible.length,
     merged: result.merged,
     already_merged: alreadyMerged,

@@ -17,9 +17,12 @@ const TEST_PATTERNS = [
   /\.test\.[jt]sx?$/,
   /\.spec\.[jt]sx?$/,
   /_test\.py$/,
+  /(^|\/)test_[^/]*\.py$/,   // M10: pytest 관례 test_*.py — 없어서 테스트 작성이 catch-22 로 막히던 문제
+  /(^|\/)conftest\.py$/,      // pytest fixture 파일도 테스트 인프라
   /_test\.go$/,
   /_spec\.rb$/,
   /Test\.java$/,
+  /Tests?\.(cs|kt)$/,        // xUnit/Kotlin 관례
 ];
 
 const CODE_EXTS = /\.(ts|tsx|js|jsx|py|go|rs|java|kt|rb|cpp|c|swift|cs|php)$/;

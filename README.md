@@ -3,7 +3,7 @@
 > Claude Code 위에 얹는 **계약 기반 AI 개발 운영 시스템**.
 > 문서·계약·검증·worktree 격리 병렬 에이전트로 통제하는 플러그인.
 
-[![tests](https://img.shields.io/badge/tests-762%2F762-brightgreen)](./test) [![version](https://img.shields.io/badge/version-0.12.1-blue)](./.claude-plugin/plugin.json) [![deps](https://img.shields.io/badge/deps-zero-success)](./package.json) [![license](https://img.shields.io/badge/license-MIT-blue)](#라이선스)
+[![tests](https://img.shields.io/badge/tests-774%2F774-brightgreen)](./test) [![version](https://img.shields.io/badge/version-0.12.1-blue)](./.claude-plugin/plugin.json) [![deps](https://img.shields.io/badge/deps-zero-success)](./package.json) [![license](https://img.shields.io/badge/license-MIT-blue)](#라이선스)
 
 ---
 
@@ -375,7 +375,7 @@ pact/
 ├── skills/init/                  # /pact:init 스킬 정의
 ├── bin/                          # pact CLI 진입점 + bin/cmds/*.js
 ├── docs/                         # CLAUDE_CODE_SPEC, WORKTREE_POLICY, context-map
-├── test/                         # node:test 단위 테스트 (49 파일, 762 통과)
+├── test/                         # node:test 단위 테스트 (49 파일, 774 통과)
 ├── ARCHITECTURE.md               # 18 ADR 매트릭스 + 매니저 명세
 ├── DECISIONS.md                  # ADR 누적 로그
 ├── TASKS.md                      # 빌드 task (v1.0 완료)

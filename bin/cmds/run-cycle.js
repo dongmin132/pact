@@ -734,6 +734,15 @@ function dedupByTaskId(items) {
   });
 }
 
+// M17: 현재 HEAD SHA — merge-result 에 기록해 drift 가 커밋 날짜(--since, 오래된 날짜의 새 커밋 놓침)
+// 대신 토폴로지(head_sha..HEAD)로 판정하게 한다.
+function currentHeadSha(cwd) {
+  try {
+    const r = spawnSync('git', ['rev-parse', 'HEAD'], { cwd, encoding: 'utf8' });
+    return r.status === 0 ? r.stdout.trim() : null;
+  } catch { return null; }
+}
+
 function appendMergeResult(cwd, patch, cycleId = null) {
   const p = path.join(cwd, '.pact/merge-result.json');
   let cur = {};
@@ -743,6 +752,7 @@ function appendMergeResult(cwd, patch, cycleId = null) {
   const arr = (k) => (Array.isArray(base[k]) ? base[k] : []);
   const out = {
     timestamp: new Date().toISOString(),
+    head_sha: currentHeadSha(cwd), // M17: drift 토폴로지 판정 기준점
     ...(cycleId != null ? { cycle_id: cycleId } : {}),
     single_merge: true, // 마커: collect-one append 로 조립된 사이클 결과(batch collect 와 구분).
     eligible: (base.eligible || 0) + (patch.eligible || 0),
@@ -1034,6 +1044,7 @@ function doCollect(args, opts, cwd, cbPath) {
   // 한 번에 기록 → drive 후 /pact:wrap 가 LLM 없이 이 파일만 읽어 PROGRESS/DECISIONS 서사 갱신 가능.
   writeJsonAtomic(path.join(cwd, '.pact/merge-result.json'), {
     timestamp: new Date().toISOString(),
+    head_sha: currentHeadSha(cwd), // M17: drift 토폴로지 판정 기준점
     // ORCH-1/CI-1: collect-one 과 동일 사이클 마커. batch collect 는 통째 overwrite 라 이미
     // fresh-per-cycle 이지만, 마커를 남겨 두 writer 의 SOT 사이클 규약을 일치시킨다.
     ...(currentBatch.prepared_at ? { cycle_id: currentBatch.prepared_at } : {}),

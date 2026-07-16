@@ -49,26 +49,22 @@ function extractSection(md, sectionNum) {
   }
   if (start === -1) return null;
 
-  // 다음 섹션 (같거나 더 높은 레벨) 찾기
+  // 다음 섹션 경계 찾기. M15: 과거엔 번호 있는 헤더(^#+\s+[\d.]+)만 경계로 봐서 'Appendix' 같은
+  // 무번호 동급/상위 헤더를 못 끝내 무관한 내용이 누출됐다. 모든 헤더를 보고 레벨·번호로 판정한다.
   const startLevel = lines[start].match(/^(#+)/)[1].length;
   for (let i = start + 1; i < lines.length; i++) {
-    const m = lines[i].match(/^(#+)\s+([\d.]+)/);
-    if (m) {
-      const level = m[1].length;
-      const num = m[2].replace(/\.$/, '');
-      // 같은 레벨에 다른 번호면 끝
-      if (level <= startLevel) {
-        // 같은 레벨인데 같은 prefix로 시작 안 하면 (= sibling 아닌 다음 chapter)
-        if (level === startLevel && !num.startsWith(sectionNum + '.') && num !== sectionNum) {
-          end = i;
-          break;
-        }
-        if (level < startLevel) {
-          end = i;
-          break;
-        }
-      }
-    }
+    const m = lines[i].match(/^(#+)\s+(.*)/);
+    if (!m) continue;
+    const level = m[1].length;
+    if (level > startLevel) continue;                 // 하위 섹션 → 이 섹션에 포함
+    if (level < startLevel) { end = i; break; }        // 상위 레벨 → 확실히 끝
+    // 같은 레벨: 이 섹션의 번호 하위(sectionNum.*)·같은 번호면 계속(sub), 그 외(다른 번호·무번호
+    // Appendix 등)면 sibling 이라 끝.
+    const numM = m[2].trim().match(/^([\d.]+)/);
+    const num = numM ? numM[1].replace(/\.$/, '') : null;
+    if (num && (num.startsWith(sectionNum + '.') || num === sectionNum)) continue;
+    end = i;
+    break;
   }
 
   return lines.slice(start, end).join('\n');
