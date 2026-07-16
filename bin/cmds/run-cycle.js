@@ -994,7 +994,10 @@ function doCollect(args, opts, cwd, cbPath) {
   }
 
   const cleanup = [];
-  for (const id of result.merged) {
+  // merged + already_merged 둘 다 worktree 정리(H8-2). 수동 충돌해결 후 already_merged 가 된 task 의
+  // 보존 worktree 가 남으면 다음 prepare 가 stage:worktree 로 막힌다. branch_missing 재진입 케이스는
+  // 이미 worktree 가 없어 removeWorktree 가 안전한 no-op.
+  for (const id of [...result.merged, ...alreadyMerged]) {
     const r = removeWorktree(id, { cwd });
     cleanup.push({ task_id: id, ok: r.ok, error: r.error });
   }

@@ -13,15 +13,14 @@ git status
 git diff --name-only --diff-filter=U
 ```
 
-충돌 파일이 없으면:
-```
-충돌 상태가 아닙니다.
-이미 해결됐다면 git commit으로 머지를 마무리하세요.
-처음 시도하려면 /pact:parallel을 먼저 실행해주세요.
-```
-후 종료.
+충돌한 **task_id**를 결정적으로 확인한다 (추측 X, 우선순위):
+1. `.pact/merge-result.json`의 `conflicted.task_id` (collect-one/collect가 충돌 시 기록).
+2. 없으면 진행 중 머지 메시지에서: `sed -n 's/.*pact\/\([A-Z][A-Z0-9]*-[0-9]*\).*/\1/p' .git/MERGE_MSG`.
+3. 그래도 없으면 보존된 worktree 목록(`.pact/worktrees/`)에서 사용자에게 확인.
 
-충돌한 **task_id**를 결정적으로 확인한다 (추측 X): `.pact/merge-result.json`의 `conflicted.task_id`(또는 `single_merge.conflicted.task_id`)를 읽거나, 없으면 `git rev-parse --abbrev-ref MERGE_HEAD`(= `pact/<task-id>`)에서 도출. 이 `<task-id>`를 이후 단계에서 사용한다.
+충돌 파일이 없으면 두 경우로 분기:
+- **아직 커밋 전(git add만 함 또는 미해결)**: 위에서 찾은 `<task-id>`가 있으면 단계 3-1의 마무리(git commit + collect-one 스탬프)로 진행. 없으면 "충돌 상태 아님 — /pact:parallel 먼저" 후 종료.
+- **이미 git commit까지 끝냄**: 단계 3-1의 **collect-one 스탬프만** 실행(status=done + worktree 정리). 이 스탬프를 빼면 재spawn·prepare 블록이 남는다(H8).
 
 ## 단계 2: 충돌 정보 표시 (한국어)
 
