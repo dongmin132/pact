@@ -875,7 +875,16 @@ for (let c = 1; c <= CYCLES; c++) {
 
     // 머지 충돌 = 판단 에러 → 자동해결 X, 정지+위임. (그 외 정지사유=예산 등도 루프 중단)
     if (pr.conflicted) { ledger.stoppedReason = pr.stoppedReason || '머지 충돌 — 자동해결 안 함, 사람 위임(/pact:resolve-conflict)'; break; }
-    if (pr.stoppedReason) { ledger.stoppedReason = pr.stoppedReason; break; }
+    if (pr.stoppedReason) {
+      // H4-2/R3: 예약 소진(budgetExhausted)으로 인한 this-cycle 정지는 run 종료가 아니다 — in-flight
+      // 는 이미 drain 됐고, 잔여 실예산이 있고 사이클이 남았으면 다음 사이클이 예약 해제·spent 확정
+      // 후 skipped task 를 재평가한다(상단에서 budgetExhausted 리셋). 진짜 예산 초과만 run 종료.
+      if (ledger.budgetExhausted && ledger.spentUsd < BUDGET && c < CYCLES) {
+        console.log(`  ⏸  이번 사이클 예약 소진 → 다음 사이클 재평가 (spent $${ledger.spentUsd.toFixed(2)}/$${BUDGET}, skipped ${pr.skipped.length})`);
+        continue;
+      }
+      ledger.stoppedReason = pr.stoppedReason; break;
+    }
     if (ledger.spentUsd >= BUDGET) { ledger.stoppedReason = `예산 초과 ($${ledger.spentUsd.toFixed(2)} ≥ $${BUDGET})`; break; }
     continue;
   }

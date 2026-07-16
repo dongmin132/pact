@@ -34,14 +34,20 @@ function main() {
 
   const statePath = path.join(stateDir, 'state.json');
   let state = {};
-  try {
-    state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
-  } catch { /* 새로 생성 */ }
+  let corrupt = false;
+  if (fs.existsSync(statePath)) {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) state = parsed;
+      else corrupt = true;   // valid-JSON 이나 스칼라·배열 = 비정상 (H1-2: typeof 가드로 크래시 방지)
+    } catch { corrupt = true; }  // torn/손상
+  }
 
-  // H1-2: compact/resume 는 같은 세션 연속 — 런타임 스탬프를 지우면 다음 도구 호출까지 CLI-flag
-  // yolo 감지 공백이 생긴다. 새 세션(startup/clear)에서만 stale 런타임 mode 를 리셋한다.
+  // H1-2: compact 는 같은 세션 연속(컨텍스트 압축) — 런타임 스탬프를 지우면 다음 도구 호출까지
+  // CLI-flag yolo 감지 공백이 생긴다. compact 만 보존하고, 나머지(startup/clear/resume)는 새
+  // 프로세스라 stale 런타임 mode 를 리셋한다(resume 는 플래그가 바뀔 수 있어 승계 금지).
   const source = payload.source || 'startup';
-  const freshSession = source === 'startup' || source === 'clear';
+  const freshSession = source !== 'compact';
   if (freshSession) {
     // 직전 세션이 남긴 런타임 mode 는 새 세션에선 stale — 제거해 detect-yolo 가 오염 없이
     // 판정하게 한다(런타임 값은 이번 세션 첫 도구 호출 때 pre-tool-guard 가 다시 스탬프).
@@ -51,20 +57,28 @@ function main() {
     state.is_yolo = det.is_yolo;
     state.yolo_source = det.source;
   }
-  // compact/resume: permission_mode·is_yolo 보존(런타임 연속). 아래 메타만 갱신.
+  // compact: permission_mode·is_yolo 보존(런타임 연속). 아래 메타만 갱신.
   state.session_started_at = new Date().toISOString();
   state.session_id = payload.session_id || null;
 
-  fs.writeFileSync(statePath, JSON.stringify(state, null, 2) + '\n');
+  // H1-2: 손상 state 를 compact(보존 의도)에서 덮어쓰면 permission_mode·current_cycle 등 소실 →
+  // 손상+compact 면 write skip(다음 도구 호출이 재스탬프). 그 외엔 원자적 write(torn 창 제거).
+  if (!(corrupt && !freshSession)) {
+    try {
+      const { writeJsonAtomic } = require(path.join(__dirname, '..', 'scripts', 'lib', 'atomic-write.js'));
+      writeJsonAtomic(statePath, state);
+    } catch { /* best-effort */ }
+  }
 
   const messages = [];
 
-  // settings 가 yolo(defaultMode:bypassPermissions)이면 사용자에게 한 번 경고 (systemMessage).
-  // ※ CLI 플래그(--dangerously-skip-permissions)로 켠 yolo 는 SessionStart 페이로드에 신호가
-  //    없어 여기서 못 잡는다 — 그 경우 첫 도구 호출 때 pre-tool-guard 스탬프로 감지가 정정된다.
+  // yolo(권한 자동 승인) 감지 시 사용자에게 한 번 경고 (systemMessage). 출처는 settings(defaultMode)
+  // 또는 직전 도구 호출의 런타임 스탬프(compact 보존)일 수 있어 특정 출처로 단정하지 않는다.
+  // ※ CLI 플래그(--dangerously-skip-permissions)의 startup 은 페이로드에 신호가 없어 여기서 못 잡고,
+  //    첫 도구 호출 때 pre-tool-guard 스탬프로 감지가 정정된다.
   if (state.is_yolo) {
     messages.push(
-      '⚠️ pact: yolo 모드(settings defaultMode:bypassPermissions) 감지. 권한 자동 승인됨. ' +
+      '⚠️ pact: yolo 모드(권한 자동 승인) 감지. ' +
       '파일 수정·삭제·외부 호출이 묻지 않고 진행됩니다. /pact:abort로 중단 가능.',
     );
   }
