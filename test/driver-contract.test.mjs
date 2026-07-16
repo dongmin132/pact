@@ -266,6 +266,34 @@ test('runWorkerReal — 잔여 예산 0 이면 cap 0 스폰 대신 budgetExhaust
   ledger.reservedUsd = 0;
 });
 
+test('runWorkerReal — 극소 양수 잔여(FP 잔재)도 스폰 대신 budgetExhausted (H4-2 극소양수 우회)', async () => {
+  ledger.spentUsd = 0; ledger.reservedUsd = 0.9999999;   // 잔여 1e-7 수준
+  ledger.budgetExhausted = false;
+  const sink = {};
+  const r = await runWorkerReal(baseTask(), { query: budgetSpyQuery(sink), budget: 1, activeWorkers: 1 });
+  assert.equal(r.ok, false);
+  assert.equal(r.budgetExhausted, true, '1턴 비용 미만 극소 잔여면 doomed 워커를 스폰하면 안 됨');
+  assert.equal(sink.cap, undefined, 'query 미호출(스폰 금지)');
+  ledger.reservedUsd = 0;
+});
+
+test('runWorkerReal — budgetExhausted 시 ledger.budgetExhausted 플래그를 세운다 (H4-2 캐스케이드 정지 신호)', async () => {
+  ledger.spentUsd = 0; ledger.reservedUsd = 1;
+  ledger.budgetExhausted = false;
+  await runWorkerReal(baseTask(), { query: budgetSpyQuery({}), budget: 1, activeWorkers: 1 });
+  assert.equal(ledger.budgetExhausted, true, '예산 소진 신호로 pool 이 신규 dispatch 를 멈춰야 함');
+  ledger.reservedUsd = 0; ledger.budgetExhausted = false;
+});
+
+test('runWorkerReal — declared budget 이 작아도(0.1) 잔여가 그만큼이면 스폰 (극소양수 임계 회귀 방지)', async () => {
+  ledger.spentUsd = 0; ledger.reservedUsd = 0;
+  ledger.budgetExhausted = false;
+  const sink = {};
+  const r = await runWorkerReal(baseTask(), { query: budgetSpyQuery(sink), budget: 0.1, activeWorkers: 1 });
+  assert.equal(r.ok, true, 'declared budget 0.1 은 정상 스폰돼야 함(임계가 declared 를 침범 금지)');
+  assert.ok(sink.cap <= 0.1 + 1e-9 && sink.cap > 0);
+});
+
 test('attemptTask — budgetExhausted 는 재시도·resume 없이 즉시 escalated (거짓 3회실패 오보 제거)', async () => {
   ledger.spentUsd = 0; ledger.reservedUsd = 0;
   let calls = 0;

@@ -114,7 +114,7 @@ const loopState = new Map(LOOP);            // 가변 남은 카운트
 // 트랙2 잔여: finally 는 예약 해제(reservedUsd)와 실지출 가산(spentUsd)을 한 동기 블록으로 원자 처리해
 // '예약 제거'가 '지출 가산' 없이 관측되는 순간을 없앤다 — 그 간극의 재투입 워커가 잔여 예산을 과대평가해
 // 예산을 초과 지출하던 경로 차단. 상위 호출자는 spentAccounted 마커를 보고 중복 가산을 스킵한다.
-const ledger = { orchestratorTokens: 0, spentUsd: 0, reservedUsd: 0, attempts: [], escalations: [], mergeRejected: [], skipped: [], stoppedReason: null, live: { done: 0, escalated: 0, rejected: 0 } };
+const ledger = { orchestratorTokens: 0, spentUsd: 0, reservedUsd: 0, budgetExhausted: false, attempts: [], escalations: [], mergeRejected: [], skipped: [], stoppedReason: null, live: { done: 0, escalated: 0, rejected: 0 } };
 // DRV-3: 현재 in-flight 워커 수(pool onEvent 로 갱신). runWorkerReal 이 per-worker 예산 cap 을
 // '남은예산/동시수' 로 나누는 분모 — 동시 K 워커가 각자 예산 전액을 받아 K×BUDGET 로 폭주하는 것 방지.
 let liveInFlight = 0;
@@ -417,16 +417,22 @@ async function runWorkerReal(task, opts = {}) {
   // clamp — remaining 이 floor 보다 작으면(예: --budget=0.1) remaining 이 상한이라 declared 예산 초과 X.
   const BUDGET_FLOOR = 0.5;
   const workerBudgetUsd = Math.min(remainingBudget, Math.max(BUDGET_FLOOR, remainingBudget / Math.max(1, activeWorkers)));
-  // H4: 잔여 예산이 in-flight 예약으로 소진되면 cap 이 0(이하)이 된다. SDK 는 undefined 만 거르고
-  // 0 을 --max-budget-usd 0 으로 CLI 에 넘기는데, CLI 는 "must be a positive number greater than 0"
-  // 로 즉사시킨다 → 스폰 실패가 incomplete 로 오분류돼 resume 2회 헛돌고 '3회 실패' 로 거짓 위임된다.
-  // 스폰하지 않고 budgetExhausted 신호를 반환한다(예약도 안 잡음 → 팬텀 예약 방지). 예산 여유가
-  // 생기면(in-flight 워커 종료로 예약 해제) 다음 슬롯/사이클에서 정상 cap 으로 재투입된다.
-  if (!(workerBudgetUsd > 0)) {
+  // H4/H4-2: 잔여 예산이 in-flight 예약으로 소진되면 cap 이 0(이하) 또는 극소 양수(FP 잔재·1턴 비용
+  // 미만)가 된다. SDK 는 undefined 만 거르고 0 을 --max-budget-usd 0 으로 CLI 에 넘겨 CLI 가
+  // "must be a positive number greater than 0" 로 즉사시키고, 극소 양수는 스폰돼도 즉시 예산 소진 →
+  // incomplete 오분류·resume 헛돌기. 둘 다 스폰하지 않고 budgetExhausted 신호를 반환한다(예약도
+  // 안 잡음 → 팬텀 예약 방지). MIN_DISPATCH 는 declared budget(예: --budget=0.1)을 침범하지 않는
+  // 절대 하한 — 잔여가 그보다 작을 때만 발동(=예약 소진/FP 잔재).
+  // ⚠️ 재투입은 자동이 아니다: budgetExhausted 는 ledger 플래그로 pool 의 신규 dispatch 를 정지시켜
+  // 잔여 ready 큐가 escalated 로 캐스케이드되는 걸 막는다(H4-2). 남은 task 는 skipped 로 다음
+  // 사이클(예약 해제·spent 확정 후)에 재평가된다.
+  const MIN_DISPATCH = 0.005;
+  if (remainingBudget < MIN_DISPATCH || !(workerBudgetUsd > 0)) {
+    ledger.budgetExhausted = true;   // pool.shouldStop 신호 → 캐스케이드 정지
     return {
       ok: false,
       budgetExhausted: true,
-      reason: `예산 소진 — 남은 예산 없음 (spent $${ledger.spentUsd.toFixed(2)} + reserved $${ledger.reservedUsd.toFixed(2)} ≥ cap $${capBudget}). --budget 상향 또는 사이클 진행 후 재투입 필요`,
+      reason: `예산 소진 — 남은 예산 $${remainingBudget.toFixed(4)} < 최소치 $${MIN_DISPATCH} (spent $${ledger.spentUsd.toFixed(2)} + reserved $${ledger.reservedUsd.toFixed(2)} ≈ cap $${capBudget}). --budget 상향 필요`,
       cost: 0, usage: null, turns: 0, via: 'real',
     };
   }
@@ -563,8 +569,13 @@ async function runResumableTask(task, opts = {}) {
   let cur = task;
   for (let resume = 0; ; resume++) {
     const r = await attemptTask(cur, opts);
-    // 미완(턴/예산 소진)이 아니면 그대로 (done/denied/일반 escalate) — 기존 동작 불변
-    if (!(r.status === 'escalated' && r.incomplete)) return { ...r, resumes: resume };
+    // 미완(턴/예산 소진)이 아니면 그대로 (done/denied/일반 escalate) — 기존 동작 불변.
+    // H4-2: budgetExhausted 로 스폰 못 했어도 이전 세대(resume>0)가 worktree 에 부분작업을 남겼으면
+    // salvageable(=takeover 대상). 첫 시도(resume=0) 부터 소진이면 산출물 없음 → salvageable:false 유지.
+    if (!(r.status === 'escalated' && r.incomplete)) {
+      const salvageable = r.budgetExhausted ? resume > 0 : r.salvageable;
+      return { ...r, salvageable, resumes: resume };
+    }
     if (ledger.spentUsd >= BUDGET)
       return { ...r, status: 'escalated', salvageable: true, resumes: resume, reason: `${r.reason || '미완'} — 예산 소진으로 resume 중단` };
     if (!shouldResume(r, resume, MAX_RESUME))
@@ -588,6 +599,8 @@ async function runLoopTask(task) {
     if (ledger.spentUsd >= BUDGET) return { task_id: task.task_id, status: 'escalated', reason: `budget 소진 ($${ledger.spentUsd.toFixed(2)} ≥ $${BUDGET})`, salvageable: true, attempts: iter, usage: lastUsage };
     let r;
     try { r = await runWorker(task, ++iter); } catch (e) { r = { ok: false, reason: (e && e.message) || String(e), cost: 0, usage: null }; }
+    // H4-2: loop task 도 예산 소진으로 스폰조차 못 했으면 '정체' 로 오라벨하지 말고 예산 사유로 위임.
+    if (r.budgetExhausted) return { task_id: task.task_id, status: 'escalated', reason: r.reason || '예산 소진 — 스폰 불가', salvageable: iter > 1, attempts: iter - 1, usage: lastUsage };
     // 트랙2 잔여: real 워커는 runWorkerReal.finally 가 예약 해제와 원자적으로 spent 가산(마커) → 스킵.
     if (!r.spentAccounted) ledger.spentUsd += (r.cost || 0);
     if (r.usage) lastUsage = r.usage;
@@ -723,7 +736,13 @@ async function runCyclePipeline(c, tasks, graph) {
       if (evt.type === 'dispatch' || evt.type === 'settle' || evt.type === 'downshift') appendDriverEvent(driverEventLine(evt));
       if (evt.in_flight) { liveInFlight = evt.in_flight.length; writeDriverState({ phase: 'spawning', cycle: c, active_workers: evt.in_flight }); } // liveInFlight: DRV-3 예산 분할 분모
     },
-    shouldStop: () => (ledger.spentUsd >= BUDGET ? `예산 초과 ($${ledger.spentUsd.toFixed(2)} ≥ $${BUDGET})` : null),
+    shouldStop: () => {
+      if (ledger.spentUsd >= BUDGET) return `예산 초과 ($${ledger.spentUsd.toFixed(2)} ≥ $${BUDGET})`;
+      // H4-2: 워커가 예산 소진(remaining < MIN_DISPATCH)으로 스폰 못 하면 신규 dispatch 정지 —
+      // 잔여 ready 큐가 전부 bail→escalated 로 캐스케이드되는 걸 막고 skipped 로 남긴다.
+      if (ledger.budgetExhausted) return `예산 예약 소진 — 신규 dispatch 정지(잔여 task 는 skipped, 다음 사이클 재평가)`;
+      return null;
+    },
   });
 }
 
@@ -803,6 +822,9 @@ let allOutcomes = [];
 for (let c = 1; c <= CYCLES; c++) {
   // (4) 예산 회로차단기 — 사이클 시작 전 점검
   if (ledger.spentUsd >= BUDGET) { ledger.stoppedReason = `예산 초과 ($${ledger.spentUsd.toFixed(2)} ≥ $${BUDGET})`; break; }
+  // H4-2: budgetExhausted 는 사이클 내 캐스케이드 정지용 — 새 사이클은 예약 해제·spent 확정 후라
+  // 재평가한다. 진짜 소진은 위 spentUsd>=BUDGET 가이드가 잡는다.
+  ledger.budgetExhausted = false;
 
   let tasks, readyToCollect, graph;
   try { ({ tasks, readyToCollect, graph } = getTasks()); }
