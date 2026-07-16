@@ -11,7 +11,9 @@ const ptg = require('../../hooks/pre-tool-guard.js');
 
 const WRITE_TOOLS = new Set(['Write', 'Edit', 'MultiEdit', 'NotebookEdit']);
 // 워크트리 cwd 격리로도 못 막는 동적 파괴 — 정적 차단 (사후엔 collect git-diff 가 최종 방어선).
-const DESTRUCTIVE = /\brm\s+-rf\b|\bgit\s+push\b|\b(sudo|mkfs|dd)\b|>\s*\/(etc|usr|bin|System)\b/;
+// rm/find 파괴 삭제는 ptg.hasDestructiveDelete 가 플래그 순서·철자 무관하게 잡는다(H5) — 아래
+// 정규식은 그 외(push·특권·장치·시스템경로 쓰기)만 담당. `rm -rf` 리터럴 대체됨.
+const DESTRUCTIVE = /\bgit\s+push\b|\b(sudo|mkfs|dd)\b|>\s*\/(etc|usr|bin|System)\b/;
 
 function relInWorktree(target, workingDir) {
   const abs = path.isAbsolute(target) ? target : path.resolve(workingDir, target);
@@ -77,7 +79,7 @@ function guardToolUse(toolName, input, ctx = {}) {
   // Bash: 정적 파괴 명령 차단 + allowed_paths 우회(워크트리 내 쓰기) 차단
   if (toolName === 'Bash') {
     const cmd = input.command || '';
-    if (DESTRUCTIVE.test(cmd)) {
+    if (DESTRUCTIVE.test(cmd) || ptg.hasDestructiveDelete(cmd)) {
       return { allow: false, reason: `pact: 위험 명령 차단 — ${cmd}` };
     }
     // Write 툴은 allowed_paths 로 막지만 Bash 리다이렉션(> cat tee touch)이 백도어가 된다 (실측 CLEANUP-029).

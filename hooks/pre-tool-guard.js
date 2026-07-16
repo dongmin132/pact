@@ -366,23 +366,89 @@ function collectDd(args, targets) {
   }
 }
 
+// 명령 이름 앞에 올 수 있는 래퍼/환경 접두 — 실제 명령 이름을 찾을 때 건너뛴다.
+const PREFIX_CMDS = new Set(['sudo', 'env', 'command', 'nohup']);
+
+// 세그먼트에서 (env 대입/래퍼 접두 제거 후) 실제 명령 이름과 인자를 분리.
+function commandOf(seg) {
+  const toks = tokenizeSegment(seg);
+  if (!toks.length) return { cmd: null, args: [] };
+  let k = 0;
+  while (k < toks.length && (/^[A-Za-z_][A-Za-z0-9_]*=/.test(toks[k]) || PREFIX_CMDS.has(toks[k]))) k++;
+  return { cmd: toks[k], args: toks.slice(k + 1) };
+}
+
 // 리다이렉션이 아닌 "인자로 파일을 쓰는" 명령(cp/mv/install/sed -i/dd/ln)의 목적지를 추출.
 // 세그먼트 단위로 나눠 각 명령의 실제 이름을 보고 분기 → `npm install`·`git mv` 같은 서브커맨드 오탐 회피.
 function scanLineCommandWriteTargets(line) {
   const targets = [];
-  const PREFIX = new Set(['sudo', 'env', 'command', 'nohup']);
   for (const seg of splitSegments(line)) {
-    const toks = tokenizeSegment(seg);
-    if (!toks.length) continue;
-    let k = 0;
-    while (k < toks.length && (/^[A-Za-z_][A-Za-z0-9_]*=/.test(toks[k]) || PREFIX.has(toks[k]))) k++;
-    const cmd = toks[k];
-    const args = toks.slice(k + 1);
+    const { cmd, args } = commandOf(seg);
+    if (!cmd) continue;
     if (cmd === 'cp' || cmd === 'mv' || cmd === 'install' || cmd === 'ln') collectDestArg(args, targets);
     else if (cmd === 'sed') collectSedInPlace(args, targets);
     else if (cmd === 'dd') collectDd(args, targets);
   }
   return targets;
+}
+
+// rm/find 의 삭제 대상 경로를 추출(H5). 경계 분류(자기 worktree 밖 삭제 차단)용 — 삭제는
+// 쓰기와 별개 싱크라 extractWriteTargets 에 안 잡혔고, rm 은 checkBashWrite 스캔 밖이었다.
+// rm: `--` 이후 포함 모든 non-flag 인자. find: -delete 또는 -exec rm 있을 때 경로 피연산자.
+function scanLineDeleteTargets(line) {
+  const targets = [];
+  for (const seg of splitSegments(line)) {
+    const { cmd, args } = commandOf(seg);
+    if (cmd === 'rm') {
+      let afterDD = false;
+      for (const a of args) {
+        if (a === '--') { afterDD = true; continue; }
+        if (!afterDD && a.startsWith('-')) continue;   // 플래그 스킵
+        targets.push(a);
+      }
+    } else if (cmd === 'find') {
+      const hasDelete = args.includes('-delete')
+        || args.some((a, i) => a === '-exec' && /(^|\/)rm$/.test(args[i + 1] || ''));
+      if (hasDelete) {
+        for (const a of args) {
+          if (a.startsWith('-') || a === '(' || a === '!') break;  // predicate 시작 = 경로 끝
+          targets.push(a);
+        }
+      }
+    }
+  }
+  return targets;
+}
+
+// rm 인자가 재귀(-r/-R/--recursive)+강제(-f/--force) 조합인지 — 플래그 순서·철자·클러스터 무관.
+function isRecursiveForceRm(args) {
+  let recursive = false;
+  let force = false;
+  for (const a of args) {
+    if (a === '--') break;
+    if (a === '--recursive') recursive = true;
+    else if (a === '--force') force = true;
+    else if (/^-[A-Za-z]+$/.test(a)) {   // short 클러스터 (-rf, -fr, -Rf, -r ...)
+      if (/[rR]/.test(a)) recursive = true;
+      if (/f/.test(a)) force = true;
+    }
+  }
+  return recursive && force;
+}
+
+// 워크트리 cwd 격리로도 못 막는 파괴적 삭제(재귀-강제 rm · find -delete/-exec rm)를 정적 감지.
+// `rm -rf` 리터럴 순서만 잡던 정규식이 rm -fr/-r -f/-Rf/--recursive --force/find -delete 를
+// 전부 통과시키던 구멍(H5)을 닫는다. 헤드리스 worker-guard·인터랙티브 hook 공용 단일 소스.
+function hasDestructiveDelete(command) {
+  for (const seg of splitSegments(String(command || ''))) {
+    const { cmd, args } = commandOf(seg);
+    if (cmd === 'rm' && isRecursiveForceRm(args)) return true;
+    if (cmd === 'find') {
+      if (args.includes('-delete')) return true;
+      if (args.some((a, i) => a === '-exec' && /(^|\/)rm$/.test(args[i + 1] || ''))) return true;
+    }
+  }
+  return false;
 }
 
 // heredoc 오프너( <<EOF, <<-EOF, << EOF, <<'EOF', <<"END" )를 인식해 델리미터명 캡처.
@@ -409,6 +475,28 @@ function extractWriteTargets(cmd) {
     }
     for (const t of scanLineWriteTargets(raw)) targets.push(t);
     for (const t of scanLineCommandWriteTargets(raw)) targets.push(t);
+    let m;
+    HEREDOC_OPENER.lastIndex = 0;
+    while ((m = HEREDOC_OPENER.exec(raw))) {
+      pending.push({ delim: m[2] || m[3], stripTabs: raw[m.index + 2] === '-' });
+    }
+  }
+  return targets.filter((t) => t && !t.startsWith('/dev/'));
+}
+
+// 삭제 타겟을 heredoc-aware 로 추출(H5). extractWriteTargets 와 같은 본문 스킵 규율.
+function extractDeleteTargets(cmd) {
+  const lines = String(cmd || '').split('\n');
+  const targets = [];
+  const pending = [];
+  for (const raw of lines) {
+    if (pending.length) {
+      const cur = pending[0];
+      const probe = cur.stripTabs ? raw.replace(/^\t+/, '') : raw;
+      if (probe === cur.delim) pending.shift();
+      continue;
+    }
+    for (const t of scanLineDeleteTargets(raw)) targets.push(t);
     let m;
     HEREDOC_OPENER.lastIndex = 0;
     while ((m = HEREDOC_OPENER.exec(raw))) {
@@ -492,6 +580,16 @@ function checkBashWrite(command, opts = {}) {
     const cls = classifyOutsideTarget(abs, bnd);
     if (cls.deny) {
       return { allowed: false, rel: normalizeRel(abs), reason: cls.reason };
+    }
+  }
+  // 삭제 타겟(H5): 워크트리 내 삭제는 격리돼 diff 로 드러나므로 allowed_paths 강제 없이 허용하되,
+  // 워크트리 밖(형제 WT·본체 트리·홈) 삭제는 경계 분류로 차단 — rm 이 checkBashWrite 밖이던 구멍.
+  for (const tgt of extractDeleteTargets(command)) {
+    const abs = resolveWriteTarget(tgt, base);
+    if (isInsideWorktree(abs, root)) continue;
+    const cls = classifyOutsideTarget(abs, bnd);
+    if (cls.deny) {
+      return { allowed: false, rel: normalizeRel(abs), reason: cls.reason.replace('쓰기', '삭제') };
     }
   }
   return { allowed: true };
@@ -675,7 +773,8 @@ module.exports = {
   matchesGlob, checkPath, readOwnership, countOwnershipParseErrors, globToRegex,
   detectWorktreeContext, isInsideWorktree,
   isBlockedLongSotRel, isAllowedReadRel, checkWorkerRead,
-  extractWriteTargets, checkBashWrite,
+  extractWriteTargets, extractDeleteTargets, checkBashWrite,
+  hasDestructiveDelete, isRecursiveForceRm,
 };
 
 if (require.main === module) main();

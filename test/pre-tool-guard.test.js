@@ -596,6 +596,36 @@ test('hook 통합 — 워커가 sed -i 로 홈(~/.zshrc) 쓰기 시 deny (P1-#4)
   } finally { fs.rmSync(repo, { recursive: true, force: true }); }
 });
 
+// --- H5: 인터랙티브 hook 도 워크트리 밖 rm 삭제를 boundary 로 deny (rm 이 checkBashWrite 밖이던 구멍) ---
+
+test('hook 통합 — 워커가 rm 으로 형제 worktree(../OTHER-1) 삭제 시 deny (H5)', () => {
+  const { repo, wt } = makeWtRepo();
+  try {
+    const r = runHook({ tool_name: 'Bash', tool_input: { command: 'rm ../OTHER-1/src/f.js' }, cwd: wt });
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /deny/);
+    assert.match(r.stdout, /worktree|삭제/);
+  } finally { fs.rmSync(repo, { recursive: true, force: true }); }
+});
+
+test('hook 통합 — 워커가 rm -rf 로 홈 삭제 시 deny (H5)', () => {
+  const { repo, wt } = makeWtRepo();
+  try {
+    const r = runHook({ tool_name: 'Bash', tool_input: { command: 'rm -rf ~/.ssh' }, cwd: wt });
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /deny/);
+  } finally { fs.rmSync(repo, { recursive: true, force: true }); }
+});
+
+test('hook 통합 — 워크트리 내 rm(격리)은 통과 (H5 회귀 방지)', () => {
+  const { repo, wt } = makeWtRepo();
+  try {
+    const r = runHook({ tool_name: 'Bash', tool_input: { command: 'rm apps/stale.log' }, cwd: wt });
+    assert.equal(r.status, 0, r.stderr);
+    assert.doesNotMatch(r.stdout, /deny/);
+  } finally { fs.rmSync(repo, { recursive: true, force: true }); }
+});
+
 // --- STAB-9: 손상 ownership → 비차단 경고 (조용한 fail-open 방지, 차단은 안 함) ---
 
 test('hook 통합 — 손상 MODULE_OWNERSHIP는 경고만 표면화하고 차단 안 함 (STAB-9)', () => {

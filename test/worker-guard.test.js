@@ -52,6 +52,43 @@ test('Bash — 일반 명령이면 allow', () => {
   assert.equal(r.allow, true);
 });
 
+// --- H5: rm -rf 동등 변형이 정적 차단을 우회하던 구멍 봉쇄 (플래그 순서·철자 무관) ---
+
+for (const cmd of [
+  'rm -fr /tmp/x',
+  'rm -r -f build',
+  'rm -Rf dist',
+  'rm --recursive --force node_modules',
+  'rm -rf ../sibling',
+  'find . -delete',
+  "find . -name '*.log' -exec rm {} \\;",
+  'sudo rm -fr /',
+]) {
+  test(`Bash — 파괴 삭제 변형 deny: ${cmd}`, () => {
+    const r = guardToolUse('Bash', { command: cmd }, { workingDir: WD, allowedPaths: ['**'] });
+    assert.equal(r.allow, false, `"${cmd}" 는 차단돼야 함`);
+  });
+}
+
+test('Bash — 워크트리 밖(형제 WT) 단순 rm 삭제도 boundary 로 deny', () => {
+  const r = guardToolUse('Bash', { command: 'rm ../OTHER-1/src/f.js' },
+    { workingDir: WD, allowedPaths: ['src/**'] });
+  assert.equal(r.allow, false);
+  assert.match(r.reason, /worktree|삭제|밖/);
+});
+
+test('Bash — 홈 디렉토리 파일 rm 삭제도 deny', () => {
+  const r = guardToolUse('Bash', { command: 'rm ~/.ssh/id_rsa' },
+    { workingDir: WD, allowedPaths: ['src/**'] });
+  assert.equal(r.allow, false);
+});
+
+test('Bash — 워크트리 내 단순 rm(격리, diff 로 드러남)은 allow (회귀 방지)', () => {
+  const r = guardToolUse('Bash', { command: 'rm src/foo.ts' },
+    { workingDir: WD, allowedPaths: ['src/**'] });
+  assert.equal(r.allow, true);
+});
+
 test('allowed_paths 없으면 worktree 안의 쓰기는 allow', () => {
   const r = guardToolUse('Edit', { file_path: path.join(WD, 'anything.ts') }, { workingDir: WD });
   assert.equal(r.allow, true);
