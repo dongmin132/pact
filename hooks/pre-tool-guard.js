@@ -367,15 +367,67 @@ function collectDd(args, targets) {
 }
 
 // 명령 이름 앞에 올 수 있는 래퍼/환경 접두 — 실제 명령 이름을 찾을 때 건너뛴다.
-const PREFIX_CMDS = new Set(['sudo', 'env', 'command', 'nohup']);
+const PREFIX_CMDS = new Set(['sudo', 'env', 'command', 'nohup', 'time', 'exec']);
 
-// 세그먼트에서 (env 대입/래퍼 접두 제거 후) 실제 명령 이름과 인자를 분리.
+// 명령 토큰을 basename 정규화(H5-2): '/bin/rm'→'rm', '\rm'(alias 우회)→'rm', './rm'→'rm'.
+// 정확일치(cmd==='rm')만 보던 정적차단·삭제경계 추출이 경로/백슬래시 접두 rm 을 통째로
+// 우회하던 구멍을 닫는다. find 의 -exec 판정과 동일한 basename 정규화 원칙.
+function normalizeCmdName(tok) {
+  if (!tok) return tok;
+  const stripped = String(tok).replace(/^\\+/, '');   // alias 우회 백슬래시 제거
+  const base = stripped.split('/').pop();
+  return base || stripped;
+}
+
+// $(...) 및 백틱 명령치환 본문을 재귀 수집 — 서브셸 안의 rm 도 스캔 대상에 넣는다(H5-2).
+function collectSubshellBodies(str) {
+  const bodies = [];
+  const s = String(str || '');
+  for (let i = 0; i < s.length; i++) {
+    if (s[i] === '$' && s[i + 1] === '(') {
+      let depth = 1; let j = i + 2; const start = j;
+      for (; j < s.length && depth > 0; j++) {
+        if (s[j] === '(') depth++;
+        else if (s[j] === ')') { depth--; if (depth === 0) break; }
+      }
+      const body = s.slice(start, j);
+      bodies.push(body, ...collectSubshellBodies(body));
+      i = j;
+    }
+  }
+  const bt = s.split('`');
+  for (let k = 1; k < bt.length; k += 2) bodies.push(bt[k], ...collectSubshellBodies(bt[k]));
+  return bodies;
+}
+
+// 세그먼트에서 (env 대입/래퍼 접두 제거 후) 실제 명령 이름과 인자를 분리. name = basename 정규화.
 function commandOf(seg) {
   const toks = tokenizeSegment(seg);
-  if (!toks.length) return { cmd: null, args: [] };
+  if (!toks.length) return { cmd: null, name: null, args: [] };
   let k = 0;
-  while (k < toks.length && (/^[A-Za-z_][A-Za-z0-9_]*=/.test(toks[k]) || PREFIX_CMDS.has(toks[k]))) k++;
-  return { cmd: toks[k], args: toks.slice(k + 1) };
+  while (k < toks.length && (/^[A-Za-z_][A-Za-z0-9_]*=/.test(toks[k]) || PREFIX_CMDS.has(normalizeCmdName(toks[k])))) k++;
+  const cmd = toks[k];
+  return { cmd, name: normalizeCmdName(cmd), args: toks.slice(k + 1) };
+}
+
+// xargs 인자에서 실제 실행 명령(name, args)을 추출 — `find | xargs rm` 우회 차단용.
+function xargsInner(args) {
+  const valFlags = new Set(['-n', '-P', '-I', '-L', '-s', '-d', '-a', '-E',
+    '--max-args', '--max-procs', '--replace', '--max-lines', '--delimiter', '--arg-file', '--eof']);
+  let k = 0;
+  while (k < args.length && args[k].startsWith('-')) {
+    // 부착형 값 플래그(-I{}, -n1)는 다음 토큰 안 먹음; 분리형(-I {}, -n 1)만 스킵.
+    k += (valFlags.has(args[k]) ? 2 : 1);
+  }
+  if (k >= args.length) return null;
+  return { name: normalizeCmdName(args[k]), args: args.slice(k + 1) };
+}
+
+// find 가 파일을 삭제하는가: -delete 또는 -exec/-execdir rm.
+function findDeletes(args) {
+  if (args.includes('-delete')) return true;
+  return args.some((a, i) => (a === '-exec' || a === '-execdir')
+    && /(^|\/)rm$/.test(String(args[i + 1] || '').replace(/^\\+/, '')));
 }
 
 // 리다이렉션이 아닌 "인자로 파일을 쓰는" 명령(cp/mv/install/sed -i/dd/ln)의 목적지를 추출.
@@ -383,36 +435,41 @@ function commandOf(seg) {
 function scanLineCommandWriteTargets(line) {
   const targets = [];
   for (const seg of splitSegments(line)) {
-    const { cmd, args } = commandOf(seg);
-    if (!cmd) continue;
-    if (cmd === 'cp' || cmd === 'mv' || cmd === 'install' || cmd === 'ln') collectDestArg(args, targets);
-    else if (cmd === 'sed') collectSedInPlace(args, targets);
-    else if (cmd === 'dd') collectDd(args, targets);
+    const { name, args } = commandOf(seg);
+    if (!name) continue;
+    if (name === 'cp' || name === 'mv' || name === 'install' || name === 'ln') collectDestArg(args, targets);
+    else if (name === 'sed') collectSedInPlace(args, targets);
+    else if (name === 'dd') collectDd(args, targets);
   }
   return targets;
 }
 
-// rm/find 의 삭제 대상 경로를 추출(H5). 경계 분류(자기 worktree 밖 삭제 차단)용 — 삭제는
-// 쓰기와 별개 싱크라 extractWriteTargets 에 안 잡혔고, rm 은 checkBashWrite 스캔 밖이었다.
-// rm: `--` 이후 포함 모든 non-flag 인자. find: -delete 또는 -exec rm 있을 때 경로 피연산자.
+// rm/find/xargs 의 삭제 대상 경로를 추출(H5). 경계 분류(자기 worktree 밖 삭제 차단)용.
+// name 은 basename 정규화라 /bin/rm·\rm 도 잡힌다. `find … | xargs rm` 파이프는 find 의 경로
+// 피연산자를 삭제 타겟으로 본다. 서브셸($()/백틱) 본문도 재귀 스캔.
 function scanLineDeleteTargets(line) {
   const targets = [];
-  for (const seg of splitSegments(line)) {
-    const { cmd, args } = commandOf(seg);
-    if (cmd === 'rm') {
-      let afterDD = false;
-      for (const a of args) {
-        if (a === '--') { afterDD = true; continue; }
-        if (!afterDD && a.startsWith('-')) continue;   // 플래그 스킵
-        targets.push(a);
-      }
-    } else if (cmd === 'find') {
-      const hasDelete = args.includes('-delete')
-        || args.some((a, i) => a === '-exec' && /(^|\/)rm$/.test(args[i + 1] || ''));
-      if (hasDelete) {
+  const chunks = [String(line || ''), ...collectSubshellBodies(line)];
+  for (const chunk of chunks) {
+    const segs = splitSegments(chunk).map((s) => commandOf(s));
+    const xargsRmInPipe = segs.some((s) => s.name === 'xargs' && (xargsInner(s.args) || {}).name === 'rm');
+    for (const { name, args } of segs) {
+      if (name === 'rm') {
+        let afterDD = false;
         for (const a of args) {
-          if (a.startsWith('-') || a === '(' || a === '!') break;  // predicate 시작 = 경로 끝
+          if (a === '--') { afterDD = true; continue; }
+          if (!afterDD && a.startsWith('-')) continue;
           targets.push(a);
+        }
+      } else if (name === 'xargs') {
+        const inner = xargsInner(args);
+        if (inner && inner.name === 'rm') for (const a of inner.args) if (!a.startsWith('-')) targets.push(a);
+      } else if (name === 'find') {
+        if (findDeletes(args) || xargsRmInPipe) {
+          for (const a of args) {
+            if (a.startsWith('-') || a === '(' || a === '!') break;  // predicate 시작 = 경로 끝
+            targets.push(a);
+          }
         }
       }
     }
@@ -436,16 +493,20 @@ function isRecursiveForceRm(args) {
   return recursive && force;
 }
 
-// 워크트리 cwd 격리로도 못 막는 파괴적 삭제(재귀-강제 rm · find -delete/-exec rm)를 정적 감지.
-// `rm -rf` 리터럴 순서만 잡던 정규식이 rm -fr/-r -f/-Rf/--recursive --force/find -delete 를
-// 전부 통과시키던 구멍(H5)을 닫는다. 헤드리스 worker-guard·인터랙티브 hook 공용 단일 소스.
+// 워크트리 cwd 격리로도 못 막는 파괴적 삭제(재귀-강제 rm · find -delete/-exec[dir] rm · xargs rm)를
+// 정적 감지. basename 정규화(/bin/rm·\rm)·서브셸($()/백틱)·파이프까지 커버(H5-2). 헤드리스
+// worker-guard·인터랙티브 hook 공용 단일 소스.
 function hasDestructiveDelete(command) {
-  for (const seg of splitSegments(String(command || ''))) {
-    const { cmd, args } = commandOf(seg);
-    if (cmd === 'rm' && isRecursiveForceRm(args)) return true;
-    if (cmd === 'find') {
-      if (args.includes('-delete')) return true;
-      if (args.some((a, i) => a === '-exec' && /(^|\/)rm$/.test(args[i + 1] || ''))) return true;
+  const chunks = [String(command || ''), ...collectSubshellBodies(command)];
+  for (const chunk of chunks) {
+    for (const seg of splitSegments(chunk)) {
+      const { name, args } = commandOf(seg);
+      if (name === 'rm' && isRecursiveForceRm(args)) return true;
+      if (name === 'find' && findDeletes(args)) return true;
+      if (name === 'xargs') {
+        const inner = xargsInner(args);
+        if (inner && inner.name === 'rm' && isRecursiveForceRm(inner.args)) return true;
+      }
     }
   }
   return false;

@@ -89,6 +89,62 @@ test('Bash — 워크트리 내 단순 rm(격리, diff 로 드러남)은 allow (
   assert.equal(r.allow, true);
 });
 
+// --- H5-2: 명령 이름 basename 정규화 + 확장 우회 (검증에서 confirmed) ---
+
+for (const cmd of [
+  '/bin/rm -rf ~/.ssh',
+  '/usr/bin/rm -fr ../OTHER-1',
+  '\\rm -rf ../OTHER-1',
+  './rm -rf x',                       // 상대경로 rm 실행파일은 아니지만 정적차단은 보수적으로
+]) {
+  test(`Bash — 경로/백슬래시 접두 rm 파괴삭제 deny: ${cmd}`, () => {
+    const r = guardToolUse('Bash', { command: cmd }, { workingDir: WD, allowedPaths: ['**'] });
+    assert.equal(r.allow, false, `"${cmd}" 는 basename 정규화로 차단돼야 함`);
+  });
+}
+
+test('Bash — /bin/rm 워크트리 밖 삭제도 boundary deny', () => {
+  const r = guardToolUse('Bash', { command: '/bin/rm ../OTHER-1/src/f.js' },
+    { workingDir: WD, allowedPaths: ['src/**'] });
+  assert.equal(r.allow, false);
+});
+
+test('Bash — find -execdir rm 파괴 삭제 deny', () => {
+  const r = guardToolUse('Bash', { command: 'find ../OTHER-1 -execdir rm -rf {} +' },
+    { workingDir: WD, allowedPaths: ['**'] });
+  assert.equal(r.allow, false);
+});
+
+test('Bash — find | xargs rm 파이프 파괴 삭제 deny', () => {
+  const r = guardToolUse('Bash', { command: 'find ../OTHER-1 -type f | xargs rm -rf' },
+    { workingDir: WD, allowedPaths: ['**'] });
+  assert.equal(r.allow, false);
+});
+
+test('Bash — 명령치환 $(rm -rf ...) 내부 파괴 삭제 deny', () => {
+  const r = guardToolUse('Bash', { command: 'echo $(rm -rf ../OTHER-1)' },
+    { workingDir: WD, allowedPaths: ['**'] });
+  assert.equal(r.allow, false);
+});
+
+test('Bash — 백틱 `rm -rf` 내부 파괴 삭제 deny', () => {
+  const r = guardToolUse('Bash', { command: 'echo `rm -rf ~/.ssh`' },
+    { workingDir: WD, allowedPaths: ['**'] });
+  assert.equal(r.allow, false);
+});
+
+test('Bash — git rm 은 파괴삭제 아님 (과차단 회귀 방지)', () => {
+  const r = guardToolUse('Bash', { command: 'git rm --cached src/foo.ts' },
+    { workingDir: WD, allowedPaths: ['src/**'] });
+  assert.equal(r.allow, true);
+});
+
+test('Bash — "rm" 이 인자 문자열이면 오탐 안 함', () => {
+  const r = guardToolUse('Bash', { command: 'echo "rm -rf is dangerous"' },
+    { workingDir: WD, allowedPaths: ['src/**'] });
+  assert.equal(r.allow, true);
+});
+
 test('allowed_paths 없으면 worktree 안의 쓰기는 allow', () => {
   const r = guardToolUse('Edit', { file_path: path.join(WD, 'anything.ts') }, { workingDir: WD });
   assert.equal(r.allow, true);
