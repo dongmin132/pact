@@ -55,11 +55,16 @@ function fromSettings(cwd) {
  * @param {object} [opts]
  * @param {string} [opts.stdin] — hook payload (있으면 우선)
  * @param {string} [opts.cwd]
+ * @param {boolean} [opts.ignoreState] — .pact/state.json 을 건너뛰고 settings 로 직행.
+ *   SessionStart 처럼 런타임 mode 를 아직 신뢰할 수 없는 시점에서, 직전 세션이 남긴
+ *   stale/오염 state.permission_mode 가 settings 폴백을 가리는 것을 방지(H1).
  * @returns {{is_yolo: boolean, mode: string, source: string}}
  */
 function detectYolo(opts = {}) {
   const cwd = opts.cwd || process.cwd();
-  const r = fromPayload(opts.stdin) || fromState(cwd) || fromSettings(cwd);
+  const r = fromPayload(opts.stdin)
+    || (opts.ignoreState ? null : fromState(cwd))
+    || fromSettings(cwd);
   if (!r) return { is_yolo: false, mode: 'unknown', source: 'none' };
   return {
     is_yolo: r.mode === 'bypassPermissions',
@@ -68,7 +73,7 @@ function detectYolo(opts = {}) {
   };
 }
 
-module.exports = { detectYolo };
+module.exports = { detectYolo, fromPayload, fromState, fromSettings };
 
 // CLI
 if (require.main === module) {

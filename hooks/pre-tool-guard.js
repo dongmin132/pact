@@ -595,6 +595,28 @@ function checkBashWrite(command, opts = {}) {
   return { allowed: true };
 }
 
+// PreToolUse 페이로드의 permission_mode 를 .pact/state.json 에 스탬프(H1). SessionStart 페이로드엔
+// 이 필드가 없어 런타임 yolo 가 감지 안 됐다 — PreToolUse 는 도구 컨텍스트라 실제로 값이 온다.
+// 메인 세션(cwd=repo 루트, .pact 존재)에서만 갱신하고, 워커 worktree cwd 나 비-pact 리포는 skip.
+// 값이 바뀔 때만 write(무의미 churn 방지). 실패해도 fail-open(가드 흐름 방해 금지).
+function stampPermissionMode(payload) {
+  const mode = payload.permission_mode
+    || payload.permissionMode
+    || (payload.metadata && payload.metadata.permission_mode);
+  if (!mode) return;
+  const cwd = payload.cwd || process.cwd();
+  const stateDir = path.join(cwd, '.pact');
+  if (!fs.existsSync(stateDir)) return;  // 비-pact 리포·워커 worktree → 무해 skip
+  const statePath = path.join(stateDir, 'state.json');
+  let state = {};
+  try { state = JSON.parse(fs.readFileSync(statePath, 'utf8')); } catch { /* 새로 생성 */ }
+  const isYolo = mode === 'bypassPermissions';
+  if (state.permission_mode === mode && state.is_yolo === isYolo) return;  // 변화 없음
+  state.permission_mode = mode;
+  state.is_yolo = isYolo;
+  try { fs.writeFileSync(statePath, JSON.stringify(state, null, 2) + '\n'); } catch { /* fail-open */ }
+}
+
 function main() {
   let payload;
   try {
@@ -602,6 +624,8 @@ function main() {
   } catch {
     process.exit(0);  // 페이로드 없음 → 통과
   }
+
+  try { stampPermissionMode(payload); } catch { /* fail-open */ }
 
   const tool = payload.tool_name;
 
