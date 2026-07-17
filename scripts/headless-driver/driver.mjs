@@ -426,7 +426,10 @@ async function runWorkerReal(task, opts = {}) {
   // ⚠️ 재투입은 자동이 아니다: budgetExhausted 는 ledger 플래그로 pool 의 신규 dispatch 를 정지시켜
   // 잔여 ready 큐가 escalated 로 캐스케이드되는 걸 막는다(H4-2). 남은 task 는 skipped 로 다음
   // 사이클(예약 해제·spent 확정 후)에 재평가된다.
-  const MIN_DISPATCH = 0.005;
+  // 대략 1턴 비용($0.02, sonnet 기준)을 못 채우면 doomed 스폰(즉시 소진→오분류)이라 bail. 단
+  // declared budget 을 침범하지 않게 capBudget 으로 clamp — --budget=0.01 같은 소액도 첫 워커는
+  // 잔여 전액으로 돌게 한다(0.005 던 이전엔 1턴 비용 미만 창을 못 막던 문제, 적대검증 지적).
+  const MIN_DISPATCH = Math.min(0.02, capBudget);
   if (remainingBudget < MIN_DISPATCH || !(workerBudgetUsd > 0)) {
     ledger.budgetExhausted = true;   // pool.shouldStop 신호 → 캐스케이드 정지
     return {

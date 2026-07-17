@@ -833,10 +833,16 @@ function main() {
     const { findLockForFile } = require(path.join(__dirname, '..', 'scripts', 'edit-lock.js'));
     const hit = findLockForFile(absFile, { cwd });
     if (hit) {
+      // 세션 UUID 폴백까지 claim/edit-lock 과 동일 순서로 계산 — UUID 부재 환경(구버전 CC·raw
+      // 터미널)에서 훅이 process.ppid(즉사 셸)를 쓰면 claim 의 조부모 라벨과 어긋나 자기 락아웃이
+      // 재발한다. 마지막 폴백을 sessionPid(조부모)로 통일해 라벨을 일치시킨다(H3 잔여).
+      let fallbackLabel;
+      try { fallbackLabel = `ppid-${require(path.join(__dirname, '..', 'scripts', 'lib', 'session-pid.js')).sessionPid()}`; }
+      catch { fallbackLabel = `ppid-${process.ppid}`; }
       const mySession = process.env.PACT_SESSION
         || payload.session_id
         || process.env.CLAUDE_CODE_SESSION_ID
-        || `ppid-${process.ppid}`;
+        || fallbackLabel;
       if (hit.session_label !== mySession) {
         const out = {
           hookSpecificOutput: {
