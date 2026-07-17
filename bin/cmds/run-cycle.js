@@ -37,6 +37,7 @@ const { generateAll: generateReports } = require(path.join(PLUGIN_ROOT, 'scripts
 const { planMerge, mergeAll, mergeWorktree, abortMerge } = require(path.join(PLUGIN_ROOT, 'scripts', 'merge-coordinator.js'));
 const { acquireCycleLock, releaseCycleLock, cleanStaleLocks, isAlive } = require(path.join(PLUGIN_ROOT, 'scripts', 'lock.js'));
 const { setTaskStatus } = require(path.join(PLUGIN_ROOT, 'scripts', 'task-sources.js'));
+const { detectYolo } = require(path.join(PLUGIN_ROOT, 'scripts', 'detect-yolo.js'));
 const { writeJsonAtomic } = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'atomic-write.js'));
 
 const CURRENT_BATCH_FILE = '.pact/current_batch.json';
@@ -208,12 +209,20 @@ function isTaskPrepared(cwd, id) {
 }
 
 /** batch0 task 와 admit task 가 공유하는 worker payload 구성(중복 구현 방지). */
-function buildTaskPayload(task, wt, baseBranch, parsed) {
+function buildTaskPayload(task, wt, baseBranch, parsed, cwd) {
+  // M3: yolo 세션(권한 자동승인)에서는 yolo_mode:true + forbidden_paths deny-all(명시 없으면)을
+  // 생산한다 — ADR-055 가드(spawn-worker validatePayload)가 이때 발화하고, 워커 프롬프트가
+  // allowed_paths 를 권고가 아닌 하드 경계로 렌더한다. 미-yolo 는 필드 생략(기존 동작 불변).
+  let yolo = false;
+  try { yolo = cwd ? detectYolo({ cwd }).is_yolo : false; } catch { yolo = false; }
+  const explicitForbidden = task.forbidden_paths || [];
+  const forbidden_paths = (yolo && explicitForbidden.length === 0) ? ['**/*'] : explicitForbidden;
   return {
     task_id: task.id,
     title: task.title || '',
     allowed_paths: task.allowed_paths || [],
-    forbidden_paths: task.forbidden_paths || [],
+    forbidden_paths,
+    ...(yolo ? { yolo_mode: true } : {}),
     done_criteria: task.done_criteria || [],
     verify_commands: task.verify_commands || [],
     contracts: task.contracts || {},
@@ -260,7 +269,7 @@ function prepareOneTask(task, baseBranch, parsed, cwd) {
   const wt = createWorktree(task.id, baseBranch, { cwd });
   if (!wt.ok) return { ok: false, stage: 'worktree', error: wt.error, worktreeCreated: false };
 
-  const payload = buildTaskPayload(task, wt, baseBranch, parsed);
+  const payload = buildTaskPayload(task, wt, baseBranch, parsed, cwd);
   const r = prepareWorkerSpawn(payload, { cwd, runsRoot: path.join(cwd, '.pact/runs') });
   if (!r.ok) {
     return { ok: false, stage: 'spawn-prepare', error: (r.errors || []).join('; '), worktreeCreated: true };

@@ -128,6 +128,33 @@ test('run-cycle prepare — happy path: task_prompts·worktree·payload 생성',
   } finally { cleanupProject(dir); }
 });
 
+test('run-cycle prepare — yolo 세션이면 payload 에 yolo_mode:true + forbidden_paths deny-all (M3)', () => {
+  const dir = makeProject();
+  try {
+    fs.writeFileSync(path.join(dir, '.gitignore'), '.pact/\n');
+    sh('git add .gitignore && git commit -m gitignore', { cwd: dir });
+    fs.mkdirSync(path.join(dir, '.pact'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.pact/state.json'), JSON.stringify({ permission_mode: 'bypassPermissions' }));
+    writeTasks(dir, [{ id: 'PROJ-001', allowed_paths: ['src/a.ts'] }]);
+    const r = runPact(['run-cycle', 'prepare'], dir);
+    assert.equal(r.status, 0, r.stderr);
+    const pl = JSON.parse(fs.readFileSync(path.join(dir, '.pact/runs/PROJ-001/payload.json'), 'utf8'));
+    assert.equal(pl.yolo_mode, true, 'yolo 세션이면 ADR-055 가드가 발화하도록 yolo_mode 생산');
+    assert.deepEqual(pl.forbidden_paths, ['**/*'], 'deny-all forbidden_paths');
+  } finally { cleanupProject(dir); }
+});
+
+test('run-cycle prepare — 비-yolo 세션이면 yolo_mode 필드 없음 (M3 회귀)', () => {
+  const dir = makeProject();
+  try {
+    writeTasks(dir, [{ id: 'PROJ-001', allowed_paths: ['src/a.ts'] }]);
+    const r = runPact(['run-cycle', 'prepare'], dir);
+    assert.equal(r.status, 0, r.stderr);
+    const pl = JSON.parse(fs.readFileSync(path.join(dir, '.pact/runs/PROJ-001/payload.json'), 'utf8'));
+    assert.equal(pl.yolo_mode, undefined, '비-yolo 는 필드 생략(기존 동작)');
+  } finally { cleanupProject(dir); }
+});
+
 test('run-cycle prepare — 3개 batch여도 coordinator_review_needed=false (P1-3: pre-spawn 검토 제거)', () => {
   const dir = makeProject();
   try {
