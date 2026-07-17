@@ -641,6 +641,14 @@ function reportOutcome(o) {
   console.log(`  ${icon} ${o.task_id}  [${o.status}]  시도 ${o.attempts || '?'}회  ${extra}`);
 }
 
+// H7: 헤드리스 사이클 종료 마커. verify-scope 가 경계('pact: cycle bookkeeping')를 찾아 docs-only
+// skip 최적화를 헤드리스에서도 쓸 수 있게 한다(인터랙티브 parallel.md 5.5 와 동형). 실제 머지가
+// 있었던 사이클에만 빈 커밋(노이즈 최소화)을 남겨 사이클 경계를 표시한다.
+function writeCycleBookkeeping() {
+  try { execSync('git commit --allow-empty -m "pact: cycle bookkeeping"', { cwd: process.cwd(), stdio: 'ignore' }); }
+  catch { /* best-effort */ }
+}
+
 // 배치 collect(레거시 배리어 + ready_to_collect resume 경로 공용). 'conflict'|'ok' 반환.
 function collectBatch() {
   // M8: collect 가 exit≠0(외부 MERGE_HEAD·cycle-busy)로 끝나면 execSync 가 throw 해 드라이버가
@@ -671,6 +679,8 @@ function collectBatch() {
   // 최종 tally·exit 에 반영한다. 파이프라인은 인라인 재라벨, 레거시는 최종보고의 정규화 패스가 처리.
   for (const r of rejected) ledger.mergeRejected.push({ task_id: r.task_id, reason: r.reason || '머지 게이트 거부' });
   if (cj.conflicted) { ledger.stoppedReason = '머지 충돌 — 자동해결 안 함, 사람 위임(/pact:resolve-conflict)'; return 'conflict'; }
+  // H7: 실제 머지가 있었으면 사이클 경계 마커(verify-scope docs-only 판정용).
+  if (((cj.merged || []).length + (cj.already_merged || []).length) > 0) writeCycleBookkeeping();
   return 'ok';
 }
 
@@ -914,6 +924,8 @@ for (let c = 1; c <= CYCLES; c++) {
       ledger.stoppedReason = pr.stoppedReason; break;
     }
     if (ledger.spentUsd >= BUDGET) { ledger.stoppedReason = `예산 초과 ($${ledger.spentUsd.toFixed(2)} ≥ $${BUDGET})`; break; }
+    // H7: 이 사이클에 실제 머지가 있었으면 경계 마커(verify-scope docs-only 판정용).
+    if (USE_PACT && (pr.merges || []).some((m) => m.result === 'merged' || m.result === 'already_merged')) writeCycleBookkeeping();
     continue;
   }
 
