@@ -134,6 +134,25 @@ test('window 안에서 이전 bookkeeping 경계를 못 찾으면 fail-safe code
   } finally { fs.rmSync(d, { recursive: true, force: true }); }
 });
 
+test('실제 --no-ff 머지(브랜치 커밋 뒤섞임)에서도 코드 변경 감지 — first-parent (도그푸드 회귀)', () => {
+  const d = repo();
+  try {
+    commit(d, { 'src/base.js': 'base\n' }, 'init');
+    // 워커 브랜치가 코드 파일 커밋 → main 에 --no-ff 머지 (첫 사이클, 이전 bookkeeping 없음)
+    git(d, 'checkout', '-q', '-b', 'pact/AUTH-1');
+    commit(d, { 'src/auth.js': 'auth\n' }, 'work AUTH-1');
+    git(d, 'checkout', '-q', 'main');
+    git(d, 'merge', '--no-ff', '-m', 'pact: merge pact/AUTH-1', 'pact/AUTH-1');
+    commit(d, { 'tasks/x.md': '## done\n' }, 'pact: cycle status updates');
+    git(d, 'commit', '-q', '--allow-empty', '-m', 'pact: cycle bookkeeping');
+
+    const r = cycleCodeChanges({ cwd: d });
+    // --first-parent 없으면 no-boundary 폴백이 브랜치 work 커밋을 base 로 잡아 src/auth.js 를 놓친다.
+    assert.equal(r.code_changed, true, `머지된 코드(src/auth.js)를 감지해야 함 — ${JSON.stringify(r)}`);
+    assert.ok(r.files.includes('src/auth.js'), JSON.stringify(r.files));
+  } finally { fs.rmSync(d, { recursive: true, force: true }); }
+});
+
 test('git 저장소 아니면 fail-safe 로 code_changed=true(false-skip 금지)', () => {
   const d = fs.mkdtempSync(path.join(os.tmpdir(), 'pact-vscope-nogit-'));
   try {

@@ -50,7 +50,11 @@ function cycleCodeChanges(opts = {}) {
   const cwd = opts.cwd || process.cwd();
   const window = opts.window || 80;
 
-  const log = git(cwd, ['log', '--format=%H%x09%s', '-n', String(window)]);
+  // --first-parent: 메인라인만 본다. pact 는 --no-ff 로 머지하므로, 이걸 빼면 머지된 브랜치의 내부
+  // 커밋이 로그에 뒤섞여 no-boundary 폴백의 '가장 오래된 커밋'이 사이클 base 가 아닌 브랜치 work
+  // 커밋으로 잘못 잡혀 코드 머지를 놓친다(도그푸드 실측). 경계(bookkeeping)·status 커밋은 모두
+  // 메인라인 커밋이라 --first-parent 로도 그대로 보인다.
+  const log = git(cwd, ['log', '--first-parent', '--format=%H%x09%s', '-n', String(window)]);
   if (log.status !== 0) {
     return { ok: false, error: (log.stderr || '').trim() || 'git log 실패 (git 저장소 아님?)', code_changed: true, files: [] };
   }
