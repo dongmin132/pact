@@ -3,7 +3,7 @@
 > Claude Code 위에 얹는 **계약 기반 AI 개발 운영 시스템**.
 > 문서·계약·검증·worktree 격리 병렬 에이전트로 통제하는 플러그인.
 
-[![tests](https://img.shields.io/badge/tests-779%2F779-brightgreen)](./test) [![version](https://img.shields.io/badge/version-0.12.1-blue)](./.claude-plugin/plugin.json) [![deps](https://img.shields.io/badge/deps-zero-success)](./package.json) [![license](https://img.shields.io/badge/license-MIT-blue)](#라이선스)
+[![tests](https://img.shields.io/badge/tests-779%2F779-brightgreen)](./test) [![version](https://img.shields.io/badge/version-0.13.0-blue)](./.claude-plugin/plugin.json) [![deps](https://img.shields.io/badge/deps-zero-success)](./package.json) [![license](https://img.shields.io/badge/license-MIT-blue)](#라이선스)
 
 ---
 
