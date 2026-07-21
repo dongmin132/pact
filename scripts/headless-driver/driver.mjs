@@ -69,6 +69,11 @@ const isMain = (() => {
 })();
 const PLUGIN_ROOT = join(__dirname, '..', '..');
 const PACT_BIN = join(PLUGIN_ROOT, 'bin', 'pact');
+// 워커(SDK 서브프로세스)가 상속하도록 CLAUDE_PLUGIN_ROOT 를 보장한다. 이게 비면 worker.md 의
+// `node ${CLAUDE_PLUGIN_ROOT}/bin/pact validate-status` 가 `/bin/pact` 로 깨져 워커가 pact 를
+// 찾느라 which/find 로 턴·토큰을 낭비한다(라이브 도그푸드 실측). 드라이버는 PLUGIN_ROOT 를 알므로
+// 직접 세팅 — 이미 있으면(플러그인 세션) 존중.
+if (!process.env.CLAUDE_PLUGIN_ROOT) process.env.CLAUDE_PLUGIN_ROOT = PLUGIN_ROOT;
 
 // ---- 인자 파싱 (결정적, 토큰 0) -------------------------------------------
 const args = process.argv.slice(2);

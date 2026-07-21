@@ -49,6 +49,11 @@ function hangingQuery() {
 
 const baseTask = () => ({ task_id: 'T-1', task_prompt: '원 task 지시', working_dir: '/tmp/pact-wt', allowed_paths: ['**'] });
 
+// ---- 라이브 도그푸드 발견: 드라이버가 워커용 CLAUDE_PLUGIN_ROOT 를 보장 ----
+test('driver import 시 CLAUDE_PLUGIN_ROOT 이 세팅됨 (워커가 pact 를 못 찾아 턴 낭비하던 문제)', () => {
+  assert.ok(process.env.CLAUDE_PLUGIN_ROOT, 'CLAUDE_PLUGIN_ROOT 이 비면 워커의 node ${CLAUDE_PLUGIN_ROOT}/bin/pact 가 /bin/pact 로 깨짐');
+});
+
 // ---- Bug1: error_max_turns / error_max_budget_usd → incomplete 분류 (resume 대상) ----
 
 test('runWorkerReal — error_max_turns 결과를 incomplete 로 분류(resume 대상, throw 아님)', async () => {
