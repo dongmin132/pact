@@ -7,6 +7,6 @@
     "pact": "./bin/pact"
   },
   "scripts": {
-    "test": "node --test test/"
+    "test": "node --test test/*.test.js test/*.test.mjs"
   }
 }
