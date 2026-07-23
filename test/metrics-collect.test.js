@@ -61,6 +61,29 @@ test('readTasks: tasks/*.md frontmatter 에서 allowed_paths 파싱', () => {
   assert.deepEqual(byId['FOO-1'].allowed_paths, ['src/foo/**']);
 });
 
+test('readTasks: tasks/ 없고 legacy TASKS.md 만 있으면 폴백 (M14)', () => {
+  const d = tmp();
+  const md = [
+    '## BAR-1  legacy task',
+    '',
+    '```yaml',
+    'priority: P0',
+    'status: todo',
+    'dependencies: []',
+    'allowed_paths:',
+    '  - src/bar/**',
+    'done_criteria:',
+    '  - 된다',
+    'tdd: false',
+    '```',
+    '',
+  ].join('\n');
+  write(path.join(d, 'TASKS.md'), md);
+  const { byId, tasks } = readTasks(d);
+  assert.ok(byId['BAR-1'], `TASKS.md 폴백으로 BAR-1 파싱돼야 함 — ${tasks.length} tasks`);
+  assert.deepEqual(byId['BAR-1'].allowed_paths, ['src/bar/**']);
+});
+
 // ── readDriverEvents (IMP-1) ────────────────────────────────────
 test('readDriverEvents: JSONL 파싱 · 깨진/빈 줄 무시 · 부재 → []', () => {
   const d = tmp();

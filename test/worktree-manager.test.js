@@ -71,6 +71,38 @@ test('checkEnvironment — uncommitted changes 거부', () => {
   } finally { cleanup(repo); }
 });
 
+// H6: 모노리포 서브디렉토리에서 실행하면 산출물이 리포 루트로 조용히 머지되던 결함 — 루트가 아니면 거부.
+test('checkEnvironment — 리포 서브디렉토리에서 실행 시 거부 (H6 루트 가드)', () => {
+  const repo = makeRepo();
+  try {
+    const sub = path.join(repo, 'packages', 'app');
+    fs.mkdirSync(sub, { recursive: true });
+    const r = checkEnvironment({ cwd: sub });
+    assert.equal(r.ok, false, '서브디렉토리 실행은 거부돼야 함');
+    assert.ok(r.errors.some(e => /루트|root|서브디렉/i.test(e)), JSON.stringify(r.errors));
+  } finally { cleanup(repo); }
+});
+
+test('checkEnvironment — git init 직후(첫 커밋 전)는 "첫 커밋 필요"로 안내 (M24)', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pact-nocommit-'));
+  try {
+    execSync('git init -b main', { cwd: dir, stdio: 'ignore' });
+    const r = checkEnvironment({ cwd: dir });
+    assert.equal(r.ok, false);
+    assert.ok(r.errors.some(e => /커밋/.test(e)), `첫 커밋 안내여야 함 — ${JSON.stringify(r.errors)}`);
+    assert.ok(!r.errors.some(e => /브랜치가 없습니다/.test(e)), '브랜치 없음 오진 문구는 없어야 함');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('checkEnvironment — 리포 루트에서는 통과 (H6 회귀 방지)', () => {
+  const repo = makeRepo();
+  try {
+    fs.mkdirSync(path.join(repo, 'packages'), { recursive: true });
+    const r = checkEnvironment({ cwd: repo });
+    assert.equal(r.ok, true, JSON.stringify(r));
+  } finally { cleanup(repo); }
+});
+
 test('createWorktree — 경로·branch 생성', () => {
   const repo = makeRepo();
   try {
@@ -172,6 +204,15 @@ test('createWorktree — opts.linkNodeModules: false 시 skip', () => {
       fs.existsSync(path.join(repo, r.working_dir, 'node_modules')),
       false,
     );
+  } finally { cleanup(repo); }
+});
+
+test('removeWorktree — 이미 없는 worktree 는 ok:true 멱등 (거짓 실패 엔트리 방지)', () => {
+  const repo = makeRepo();
+  try {
+    const r = removeWorktree('GONE-001', { cwd: repo });
+    assert.equal(r.ok, true, '없는 worktree 정리는 성공으로 간주해야 함');
+    assert.equal(r.removed, false);
   } finally { cleanup(repo); }
 });
 

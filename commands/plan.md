@@ -129,11 +129,12 @@ TBD 마커: <개수>개 (architect가 /pact:contracts에서 해소)
 
 - ❌ 자동 plan-review 호출 — 사용자가 직접 `/pact:plan-*-review` 호출 (PACT-016)
 - ❌ 자동 cross-review (Codex) — PACT-034 (P2.5)
-- ❌ 인자가 .md/.docx/.pdf 같은 파일 경로면 거부:
+- ❌ **`--from` 없는** 맨 파일 경로(자연어 설명 위치에 경로만): 자연어로 취급하거나 `--from` 사용 안내. `.docx`/`.pdf` 는 미지원 — `.md` 로 변환 후 `--from` 사용:
   ```
-  PRD 파일 입력은 v1.0 후반(PACT-038)에서 지원됩니다.
-  지금은 한 줄 자연어 설명으로만 사용해주세요.
+  PRD 파일은 --from 으로 넘겨주세요: /pact:plan --from docs/PRD.md
+  .docx/.pdf 는 .md 로 변환 후 사용 (v1.0).
   ```
+  (※ 모드 3 `--from <path>` 자체는 지원됨 — 위 '모드 3' 참고. 이 항목은 `--from` 없이 경로만 준 경우의 처리다.)
 
 ## 의문 시
 

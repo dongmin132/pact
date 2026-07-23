@@ -147,3 +147,17 @@ test('중복 키는 throw (버그 B — silent last-wins 방지)', () => {
   // 정상(중복 없음)은 영향 없어야 함
   assert.deepEqual(load('a: 1\nb: 2'), { a: 1, b: 2 });
 });
+
+test('M13 — 리스트 항목의 콜론+비공백(URL·포트·시각)은 스칼라, 콜론+공백은 매핑', () => {
+  const r = load([
+    'done_criteria:',
+    '  - http://localhost:3000 응답',
+    '  - 마감 12:30 까지',
+    'ctx:',
+    '  - key: value',
+    '  - docs/x.md',
+  ].join('\n'));
+  assert.deepEqual(r.done_criteria, ['http://localhost:3000 응답', '마감 12:30 까지'], JSON.stringify(r.done_criteria));
+  assert.deepEqual(r.ctx[0], { key: 'value' });
+  assert.equal(r.ctx[1], 'docs/x.md');
+});

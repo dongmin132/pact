@@ -173,17 +173,21 @@ function acquireLock(taskId, opts = {}) {
     return { ok: false, error: `run dir 없음: ${runDir} (pact run-cycle prepare 먼저)` };
   }
 
+  const myLabel = opts.sessionLabel || null;
   let action = 'fresh';
   let stalePath = null;
   if (fs.existsSync(file)) {
     const holder = readLock(file);
-    if (holder && isHeld(holder)) {
+    // H3-2: 자기 세션(session_label 일치) 재획득은 멱등 허용 — owner pid 가 살아있게 된 뒤, 같은
+    // 세션의 크래시 후 재claim/재시도가 24h TTL 까지 거부되던 회귀 방지(acquireEditLock 과 대칭).
+    const heldByOther = (h) => isHeld(h) && !(myLabel && h.session_label === myLabel);
+    if (holder && heldByOther(holder)) {
       return { ok: false, error: `이미 점유 중 (pid=${holder.pid}${holder.session_label ? `, session=${holder.session_label}` : ''})`, holder };
     }
-    // stale(죽은 PID·재부팅·TTL) — 옆으로 치우되 rename 후 재검증(P1-#1). 판정~rename 사이 fresh
-    // live 락이 공개됐으면 복원 + 점유 실패(둘 다 획득 방지). 죽은/stale 확인 시에만 재공개 진행.
-    action = 'takeover';
-    const rec = reclaimStale(file, pid);
+    // 자기 세션 재획득 또는 stale(죽은 PID·재부팅·TTL) — 옆으로 치우되 rename 후 재검증(P1-#1).
+    // 판정~rename 사이 타 세션 fresh live 락이 공개됐으면 복원 + 점유 실패(둘 다 획득 방지).
+    action = holder && myLabel && holder.session_label === myLabel ? 're-acquire' : 'takeover';
+    const rec = reclaimStale(file, pid, { heldFn: heldByOther });
     if (!rec.ok) {
       const h = rec.holder;
       return { ok: false, error: `이미 점유 중 (pid=${h.pid}${h.session_label ? `, session=${h.session_label}` : ''})`, holder: h };
@@ -282,6 +286,7 @@ function cleanStaleLocks(opts = {}) {
   // 한 번의 정리 사이클 내 판정 일관성을 위해 현재 부팅/시각을 한 번만 샘플.
   const judgeOpts = { bootEpoch: currentBootEpoch(), now: Date.now() };
 
+  const pid = opts.pid || process.pid;
   const categorize = (label, reason) => {
     cleaned.push(label);
     if (reason === 'reclaimedByReboot') reclaimedByReboot.push(label);
@@ -289,17 +294,23 @@ function cleanStaleLocks(opts = {}) {
     else deadPid.push(label);
   };
 
+  // M5: 직접 unlink 대신 reclaimStale(rename-후-재검증)로 회수 — 판정~삭제 사이 타 세션이 takeover
+  // 로 게시한 fresh live 락을 삭제하지 않는다(P1-#1 을 정리 경로에도 적용). heldFn 은 같은 정리
+  // 사이클의 judgeOpts 로 판정 일관성 유지. rec.ok=true(회수 확정)일 때만 stalePath 삭제·categorize.
+  const heldFn = (h) => isHeld(h, judgeOpts);
+  const reclaim = (file, label, reason) => {
+    const rec = reclaimStale(file, pid, { heldFn });
+    if (!rec.ok) return; // 재검증에서 live 락 발견 → 복원됨, 회수 취소
+    if (rec.stalePath) { try { fs.unlinkSync(rec.stalePath); } catch { /* ignore */ } }
+    categorize(label, reason);
+  };
+
   if (fs.existsSync(runsDir)) {
     for (const taskId of fs.readdirSync(runsDir)) {
       const file = lockPath(cwd, taskId);
       if (!fs.existsSync(file)) continue;
       const reason = staleReason(readLock(file), judgeOpts);
-      if (reason) {
-        try {
-          fs.unlinkSync(file);
-          categorize(taskId, reason);
-        } catch { /* ignore */ }
-      }
+      if (reason) reclaim(file, taskId, reason);
     }
   }
 
@@ -307,12 +318,7 @@ function cleanStaleLocks(opts = {}) {
   const cycleFile = cycleLockPath(cwd);
   if (fs.existsSync(cycleFile)) {
     const reason = staleReason(readLock(cycleFile), judgeOpts);
-    if (reason) {
-      try {
-        fs.unlinkSync(cycleFile);
-        categorize('__cycle__', reason);
-      } catch { /* ignore */ }
-    }
+    if (reason) reclaim(cycleFile, '__cycle__', reason);
   }
 
   return { cleaned, reclaimedByReboot, reclaimedByTTL, deadPid };

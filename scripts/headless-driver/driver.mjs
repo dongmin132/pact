@@ -69,6 +69,11 @@ const isMain = (() => {
 })();
 const PLUGIN_ROOT = join(__dirname, '..', '..');
 const PACT_BIN = join(PLUGIN_ROOT, 'bin', 'pact');
+// 워커(SDK 서브프로세스)가 상속하도록 CLAUDE_PLUGIN_ROOT 를 보장한다. 이게 비면 worker.md 의
+// `node ${CLAUDE_PLUGIN_ROOT}/bin/pact validate-status` 가 `/bin/pact` 로 깨져 워커가 pact 를
+// 찾느라 which/find 로 턴·토큰을 낭비한다(라이브 도그푸드 실측). 드라이버는 PLUGIN_ROOT 를 알므로
+// 직접 세팅 — 이미 있으면(플러그인 세션) 존중.
+if (!process.env.CLAUDE_PLUGIN_ROOT) process.env.CLAUDE_PLUGIN_ROOT = PLUGIN_ROOT;
 
 // ---- 인자 파싱 (결정적, 토큰 0) -------------------------------------------
 const args = process.argv.slice(2);
@@ -114,7 +119,7 @@ const loopState = new Map(LOOP);            // 가변 남은 카운트
 // 트랙2 잔여: finally 는 예약 해제(reservedUsd)와 실지출 가산(spentUsd)을 한 동기 블록으로 원자 처리해
 // '예약 제거'가 '지출 가산' 없이 관측되는 순간을 없앤다 — 그 간극의 재투입 워커가 잔여 예산을 과대평가해
 // 예산을 초과 지출하던 경로 차단. 상위 호출자는 spentAccounted 마커를 보고 중복 가산을 스킵한다.
-const ledger = { orchestratorTokens: 0, spentUsd: 0, reservedUsd: 0, attempts: [], escalations: [], mergeRejected: [], skipped: [], stoppedReason: null, live: { done: 0, escalated: 0, rejected: 0 } };
+const ledger = { orchestratorTokens: 0, spentUsd: 0, reservedUsd: 0, budgetExhausted: false, attempts: [], escalations: [], mergeRejected: [], held: [], skipped: [], stoppedReason: null, live: { done: 0, escalated: 0, rejected: 0 } };
 // DRV-3: 현재 in-flight 워커 수(pool onEvent 로 갱신). runWorkerReal 이 per-worker 예산 cap 을
 // '남은예산/동시수' 로 나누는 분모 — 동시 K 워커가 각자 예산 전액을 받아 K×BUDGET 로 폭주하는 것 방지.
 let liveInFlight = 0;
@@ -336,7 +341,7 @@ function getTasksPact() {
   // JSON 은 stdout 에 emit 돼 있다. makeAdmit/mergeOnePact 와 동형으로 e.stdout 에서 JSON 을 살려
   // 읽어, 'Command failed' 셸 덤프 대신 stage + message + actionable fix 를 리포트에 노출한다.
   let out;
-  try { out = execSync(`node ${PACT_BIN} run-cycle prepare --max=${MAX} --graph --owner-pid=${process.pid} --session=drive`, { encoding: 'utf8' }); }
+  try { out = execSync(`node "${PACT_BIN}" run-cycle prepare --max=${MAX} --graph --owner-pid=${process.pid} --session=drive`, { encoding: 'utf8' }); }
   catch (e) { out = (e.stdout || '').toString(); }
   let j;
   try { j = JSON.parse(out); }
@@ -417,6 +422,28 @@ async function runWorkerReal(task, opts = {}) {
   // clamp — remaining 이 floor 보다 작으면(예: --budget=0.1) remaining 이 상한이라 declared 예산 초과 X.
   const BUDGET_FLOOR = 0.5;
   const workerBudgetUsd = Math.min(remainingBudget, Math.max(BUDGET_FLOOR, remainingBudget / Math.max(1, activeWorkers)));
+  // H4/H4-2: 잔여 예산이 in-flight 예약으로 소진되면 cap 이 0(이하) 또는 극소 양수(FP 잔재·1턴 비용
+  // 미만)가 된다. SDK 는 undefined 만 거르고 0 을 --max-budget-usd 0 으로 CLI 에 넘겨 CLI 가
+  // "must be a positive number greater than 0" 로 즉사시키고, 극소 양수는 스폰돼도 즉시 예산 소진 →
+  // incomplete 오분류·resume 헛돌기. 둘 다 스폰하지 않고 budgetExhausted 신호를 반환한다(예약도
+  // 안 잡음 → 팬텀 예약 방지). MIN_DISPATCH 는 declared budget(예: --budget=0.1)을 침범하지 않는
+  // 절대 하한 — 잔여가 그보다 작을 때만 발동(=예약 소진/FP 잔재).
+  // ⚠️ 재투입은 자동이 아니다: budgetExhausted 는 ledger 플래그로 pool 의 신규 dispatch 를 정지시켜
+  // 잔여 ready 큐가 escalated 로 캐스케이드되는 걸 막는다(H4-2). 남은 task 는 skipped 로 다음
+  // 사이클(예약 해제·spent 확정 후)에 재평가된다.
+  // 대략 1턴 비용($0.02, sonnet 기준)을 못 채우면 doomed 스폰(즉시 소진→오분류)이라 bail. 단
+  // declared budget 을 침범하지 않게 capBudget 으로 clamp — --budget=0.01 같은 소액도 첫 워커는
+  // 잔여 전액으로 돌게 한다(0.005 던 이전엔 1턴 비용 미만 창을 못 막던 문제, 적대검증 지적).
+  const MIN_DISPATCH = Math.min(0.02, capBudget);
+  if (remainingBudget < MIN_DISPATCH || !(workerBudgetUsd > 0)) {
+    ledger.budgetExhausted = true;   // pool.shouldStop 신호 → 캐스케이드 정지
+    return {
+      ok: false,
+      budgetExhausted: true,
+      reason: `예산 소진 — 남은 예산 $${remainingBudget.toFixed(4)} < 최소치 $${MIN_DISPATCH} (spent $${ledger.spentUsd.toFixed(2)} + reserved $${ledger.reservedUsd.toFixed(2)} ≈ cap $${capBudget}). --budget 상향 필요`,
+      cost: 0, usage: null, turns: 0, via: 'real',
+    };
+  }
   // 예약 회계: 배정한 cap 을 예약액에 즉시 더한다(finally 에서 해제). 다음 워커의 남은 예산 계산에 반영돼
   // 슬롯 재충전 시 in-flight 워커의 미사용 상한까지 차감된다 → 전체 잠재 지출 ≤ capBudget 불변식 보장.
   ledger.reservedUsd += workerBudgetUsd;
@@ -528,6 +555,9 @@ async function attemptTask(task, opts = {}) {
       if (!r.spentAccounted) ledger.spentUsd += r.cost || 0;
       if (r.ok) return { ...r, status: 'done' };
       if (r.denied) return { ...r, status: 'denied' };          // 가드 deny — 재시도 무의미
+      // H4: 예산 소진으로 스폰조차 못 함 → 재시도·resume 무의미(예산은 안 늘어남). 부분작업도 없어
+      // salvage 대상 아님. 예산 상향/다음 사이클 안내 사유와 함께 즉시 위임(거짓 3회실패 오보 제거).
+      if (r.budgetExhausted) return { ...r, status: 'escalated', salvageable: false };
       // budget/시간 소진(incomplete) → 재시도해도 또 소진 + 부분작업 손실 위험 → 즉시 위임(보존).
       if (r.incomplete) return { ...r, status: 'escalated', salvageable: true };
       last = r;                                                  // 일시 error subtype → 재시도
@@ -547,8 +577,13 @@ async function runResumableTask(task, opts = {}) {
   let cur = task;
   for (let resume = 0; ; resume++) {
     const r = await attemptTask(cur, opts);
-    // 미완(턴/예산 소진)이 아니면 그대로 (done/denied/일반 escalate) — 기존 동작 불변
-    if (!(r.status === 'escalated' && r.incomplete)) return { ...r, resumes: resume };
+    // 미완(턴/예산 소진)이 아니면 그대로 (done/denied/일반 escalate) — 기존 동작 불변.
+    // H4-2: budgetExhausted 로 스폰 못 했어도 이전 세대(resume>0)가 worktree 에 부분작업을 남겼으면
+    // salvageable(=takeover 대상). 첫 시도(resume=0) 부터 소진이면 산출물 없음 → salvageable:false 유지.
+    if (!(r.status === 'escalated' && r.incomplete)) {
+      const salvageable = r.budgetExhausted ? resume > 0 : r.salvageable;
+      return { ...r, salvageable, resumes: resume };
+    }
     if (ledger.spentUsd >= BUDGET)
       return { ...r, status: 'escalated', salvageable: true, resumes: resume, reason: `${r.reason || '미완'} — 예산 소진으로 resume 중단` };
     if (!shouldResume(r, resume, MAX_RESUME))
@@ -572,6 +607,8 @@ async function runLoopTask(task) {
     if (ledger.spentUsd >= BUDGET) return { task_id: task.task_id, status: 'escalated', reason: `budget 소진 ($${ledger.spentUsd.toFixed(2)} ≥ $${BUDGET})`, salvageable: true, attempts: iter, usage: lastUsage };
     let r;
     try { r = await runWorker(task, ++iter); } catch (e) { r = { ok: false, reason: (e && e.message) || String(e), cost: 0, usage: null }; }
+    // H4-2: loop task 도 예산 소진으로 스폰조차 못 했으면 '정체' 로 오라벨하지 말고 예산 사유로 위임.
+    if (r.budgetExhausted) return { task_id: task.task_id, status: 'escalated', reason: r.reason || '예산 소진 — 스폰 불가', salvageable: iter > 1, attempts: iter - 1, usage: lastUsage };
     // 트랙2 잔여: real 워커는 runWorkerReal.finally 가 예약 해제와 원자적으로 spent 가산(마커) → 스킵.
     if (!r.spentAccounted) ledger.spentUsd += (r.cost || 0);
     if (r.usage) lastUsage = r.usage;
@@ -603,16 +640,38 @@ async function mergeOneMock(id) {
 // 워커 산출 1건 콘솔 보고(파이프라인/레거시 공용).
 function reportOutcome(o) {
   // DRV-2: rejected = 워커는 done 이나 머지 게이트에서 거부돼 base 에 미반영(done 아님) → ⛔.
-  const icon = { done: '✓', failed: '✗', denied: '⛔', escalated: '🚨', rejected: '⛔' }[o.status] || '?';
+  const icon = { done: '✓', failed: '✗', denied: '⛔', escalated: '🚨', rejected: '⛔', held: '⏸' }[o.status] || '?';
   const tok = o.usage ? (tokOf(o.usage) / 1e6).toFixed(2) + 'M' : '—';
   const extra = o.status === 'done' ? `${o.turns}턴 ${tok}` : (o.reason || '');
   console.log(`  ${icon} ${o.task_id}  [${o.status}]  시도 ${o.attempts || '?'}회  ${extra}`);
 }
 
+// H7: 헤드리스 사이클 종료 마커. verify-scope 가 경계('pact: cycle bookkeeping')를 찾아 docs-only
+// skip 최적화를 헤드리스에서도 쓸 수 있게 한다(인터랙티브 parallel.md 5.5 와 동형). 실제 머지가
+// 있었던 사이클에만 빈 커밋(노이즈 최소화)을 남겨 사이클 경계를 표시한다.
+function writeCycleBookkeeping() {
+  try { execSync('git commit --allow-empty -m "pact: cycle bookkeeping"', { cwd: process.cwd(), stdio: 'ignore' }); }
+  catch { /* best-effort */ }
+}
+
 // 배치 collect(레거시 배리어 + ready_to_collect resume 경로 공용). 'conflict'|'ok' 반환.
 function collectBatch() {
-  const out = execSync(`node ${PACT_BIN} run-cycle collect --commit-status`, { encoding: 'utf8' });
-  const cj = JSON.parse(out);
+  // M8: collect 가 exit≠0(외부 MERGE_HEAD·cycle-busy)로 끝나면 execSync 가 throw 해 드라이버가
+  // 스택트레이스로 통째 크래시하고 driver-state 가 collecting 고착·최종보고 스킵됐다. stdout 에 JSON 이
+  // 실려 오면(admit/collect-one 규약과 동일) 그것으로 진행하고, 아니면 정지 신호로 우아하게 종료.
+  let out;
+  try {
+    out = execSync(`node "${PACT_BIN}" run-cycle collect --commit-status`, { encoding: 'utf8' });
+  } catch (e) {
+    out = (e.stdout || '').toString();
+    if (!out.trim()) {
+      ledger.stoppedReason = `collect 실패 (exit≠0): ${(e.stderr || e.message || '').toString().trim().slice(0, 200)}`;
+      return 'conflict'; // 신규 dispatch 중단 + 정지(루프가 break)
+    }
+  }
+  let cj;
+  try { cj = JSON.parse(out); }
+  catch { ledger.stoppedReason = 'collect 출력 파싱 실패 (비 JSON)'; return 'conflict'; }
   const committed = cj.status_commit && cj.status_commit.committed ? 'committed' : 'no-commit';
   const rejected = cj.rejected || [];
   console.log(`  collect: merged=${(cj.merged || []).length} conflicted=${cj.conflicted ? 'YES' : 'no'} rejected=${rejected.length} failures=${(cj.failures || []).length} status=${committed}`);
@@ -625,6 +684,8 @@ function collectBatch() {
   // 최종 tally·exit 에 반영한다. 파이프라인은 인라인 재라벨, 레거시는 최종보고의 정규화 패스가 처리.
   for (const r of rejected) ledger.mergeRejected.push({ task_id: r.task_id, reason: r.reason || '머지 게이트 거부' });
   if (cj.conflicted) { ledger.stoppedReason = '머지 충돌 — 자동해결 안 함, 사람 위임(/pact:resolve-conflict)'; return 'conflict'; }
+  // H7: 실제 머지가 있었으면 사이클 경계 마커(verify-scope docs-only 판정용).
+  if (((cj.merged || []).length + (cj.already_merged || []).length) > 0) writeCycleBookkeeping();
   return 'ok';
 }
 
@@ -636,7 +697,7 @@ function makeAdmit(cachedPayloads) {
     const flags = inFlightIds && inFlightIds.length ? ` --in-flight=${inFlightIds.join(',')}` : '';
     let out;
     // STAB-1: admit 도 드라이버 owner-pid 를 유지해 사이클 소유권이 끊기지 않게 한다.
-    try { out = execSync(`node ${PACT_BIN} run-cycle admit ${id}${flags} --owner-pid=${process.pid} --session=drive`, { encoding: 'utf8' }); }
+    try { out = execSync(`node "${PACT_BIN}" run-cycle admit ${id}${flags} --owner-pid=${process.pid} --session=drive`, { encoding: 'utf8' }); }
     catch (e) { out = (e.stdout || '').toString(); } // admit hard-fail 은 exit≠0 이나 stdout 에 JSON 존재
     let j;
     try { j = JSON.parse(out); } catch { return { ok: false, reason: 'admit 응답 파싱 실패' }; }
@@ -652,14 +713,19 @@ function makeAdmit(cachedPayloads) {
 // PACT 단건 머지 — 워커 완료 즉시 그 task 만 게이트(planMerge) 경유. 충돌은 자동해결 X(정지 신호).
 async function mergeOnePact(id) {
   let out;
-  try { out = execSync(`node ${PACT_BIN} run-cycle collect-one ${id} --commit-status`, { encoding: 'utf8' }); }
+  try { out = execSync(`node "${PACT_BIN}" run-cycle collect-one ${id} --commit-status`, { encoding: 'utf8' }); }
   catch (e) { out = (e.stdout || '').toString(); }
   let j;
-  try { j = JSON.parse(out); } catch { return { result: 'rejected', detail: { task_id: id, error: 'collect-one 응답 파싱 실패' } }; }
+  try { j = JSON.parse(out); } catch { return { result: 'held', detail: { task_id: id, stage: 'parse-failure', reason: 'collect-one 응답 파싱 실패' } }; }
   if (j.conflicted) return { result: 'conflicted', detail: j.conflicted };
   if ((j.merged || []).includes(id)) return { result: 'merged', detail: { verification: j.verification_summary } };
   if ((j.already_merged || []).includes(id)) return { result: 'already_merged', detail: {} };
-  return { result: 'rejected', detail: (j.rejected && j.rejected[0]) || { task_id: id } };
+  const rej = (j.rejected || []).find((r) => r && r.task_id === id);
+  if (rej) return { result: 'rejected', detail: rej };   // 실제 planMerge 게이트 거부(terminal)
+  // M6: merged/already/rejected 어디에도 없음 = 게이트 이전 stage 실패(cycle-busy 락 경쟁·
+  // merge-in-progress 의 dangling MERGE_HEAD). 완료된 task 를 거짓 rejected(terminal)로 만들지 말고
+  // held(보류·재시도 대상 — worktree 보존)로 분류한다. 다음 사이클/충돌해결 후 재머지된다.
+  return { result: 'held', detail: { task_id: id, stage: j.stage || j.reason || 'stage-failure' } };
 }
 
 // 한 라운드: batch0 ∪ graph 를 K-슬롯 풀로 드레인. 완료 즉시 단건 머지가 다른 워커 실행과 겹친다.
@@ -707,7 +773,13 @@ async function runCyclePipeline(c, tasks, graph) {
       if (evt.type === 'dispatch' || evt.type === 'settle' || evt.type === 'downshift') appendDriverEvent(driverEventLine(evt));
       if (evt.in_flight) { liveInFlight = evt.in_flight.length; writeDriverState({ phase: 'spawning', cycle: c, active_workers: evt.in_flight }); } // liveInFlight: DRV-3 예산 분할 분모
     },
-    shouldStop: () => (ledger.spentUsd >= BUDGET ? `예산 초과 ($${ledger.spentUsd.toFixed(2)} ≥ $${BUDGET})` : null),
+    shouldStop: () => {
+      if (ledger.spentUsd >= BUDGET) return `예산 초과 ($${ledger.spentUsd.toFixed(2)} ≥ $${BUDGET})`;
+      // H4-2: 워커가 예산 소진(remaining < MIN_DISPATCH)으로 스폰 못 하면 신규 dispatch 정지 —
+      // 잔여 ready 큐가 전부 bail→escalated 로 캐스케이드되는 걸 막고 skipped 로 남긴다.
+      if (ledger.budgetExhausted) return `예산 예약 소진 — 신규 dispatch 정지(잔여 task 는 skipped, 다음 사이클 재평가)`;
+      return null;
+    },
   });
 }
 
@@ -787,6 +859,9 @@ let allOutcomes = [];
 for (let c = 1; c <= CYCLES; c++) {
   // (4) 예산 회로차단기 — 사이클 시작 전 점검
   if (ledger.spentUsd >= BUDGET) { ledger.stoppedReason = `예산 초과 ($${ledger.spentUsd.toFixed(2)} ≥ $${BUDGET})`; break; }
+  // H4-2: budgetExhausted 는 사이클 내 캐스케이드 정지용 — 새 사이클은 예약 해제·spent 확정 후라
+  // 재평가한다. 진짜 소진은 위 spentUsd>=BUDGET 가이드가 잡는다.
+  ledger.budgetExhausted = false;
 
   let tasks, readyToCollect, graph;
   try { ({ tasks, readyToCollect, graph } = getTasks()); }
@@ -824,6 +899,12 @@ for (let c = 1; c <= CYCLES; c++) {
         o.status = 'rejected';
         o.reason = o.reason || (mg.detail && (mg.detail.reason || mg.detail.error)) || `머지 ${mg.result}`;
         ledger.mergeRejected.push({ task_id: o.task_id, reason: o.reason });
+      } else if (o.status === 'done' && mg && mg.result === 'held') {
+        // M6: transient stage 실패(cycle-busy·merge-in-progress) — 거짓 rejected 아님. 워커 산출은
+        // 보존되고 재시도 대상. done 오보(미머지)도 아니게 held 로 재라벨 + 원장(비성공, 비-rejected).
+        o.status = 'held';
+        o.reason = o.reason || (mg.detail && mg.detail.stage) || 'merge 보류(stage 실패)';
+        ledger.held.push({ task_id: o.task_id, reason: o.reason });
       }
       allOutcomes.push(o);
       if (o.status === 'escalated') ledger.escalations.push(o);
@@ -837,8 +918,19 @@ for (let c = 1; c <= CYCLES; c++) {
 
     // 머지 충돌 = 판단 에러 → 자동해결 X, 정지+위임. (그 외 정지사유=예산 등도 루프 중단)
     if (pr.conflicted) { ledger.stoppedReason = pr.stoppedReason || '머지 충돌 — 자동해결 안 함, 사람 위임(/pact:resolve-conflict)'; break; }
-    if (pr.stoppedReason) { ledger.stoppedReason = pr.stoppedReason; break; }
+    if (pr.stoppedReason) {
+      // H4-2/R3: 예약 소진(budgetExhausted)으로 인한 this-cycle 정지는 run 종료가 아니다 — in-flight
+      // 는 이미 drain 됐고, 잔여 실예산이 있고 사이클이 남았으면 다음 사이클이 예약 해제·spent 확정
+      // 후 skipped task 를 재평가한다(상단에서 budgetExhausted 리셋). 진짜 예산 초과만 run 종료.
+      if (ledger.budgetExhausted && ledger.spentUsd < BUDGET && c < CYCLES) {
+        console.log(`  ⏸  이번 사이클 예약 소진 → 다음 사이클 재평가 (spent $${ledger.spentUsd.toFixed(2)}/$${BUDGET}, skipped ${pr.skipped.length})`);
+        continue;
+      }
+      ledger.stoppedReason = pr.stoppedReason; break;
+    }
     if (ledger.spentUsd >= BUDGET) { ledger.stoppedReason = `예산 초과 ($${ledger.spentUsd.toFixed(2)} ≥ $${BUDGET})`; break; }
+    // H7: 이 사이클에 실제 머지가 있었으면 경계 마커(verify-scope docs-only 판정용).
+    if (USE_PACT && (pr.merges || []).some((m) => m.result === 'merged' || m.result === 'already_merged')) writeCycleBookkeeping();
     continue;
   }
 
@@ -890,7 +982,7 @@ if (USE_PACT) {
     const shown = leftover.slice(0, 8).join(', ') + (leftover.length > 8 ? ' …' : '');
     console.log(`\n⚠️ 잔여 미완 task ${leftover.length}건: ${shown} (이 실행에서 완료되지 않음)`);
     if (!ledger.stoppedReason && ledger.escalations.length === 0
-        && ledger.mergeRejected.length === 0 && ledger.skipped.length === 0) {
+        && ledger.mergeRejected.length === 0 && ledger.held.length === 0 && ledger.skipped.length === 0) {
       ledger.stoppedReason = `잔여 미완 task ${leftover.length}건 — 완료로 오보 방지(재개: pact drive / /pact:parallel)`;
     }
   }
@@ -937,7 +1029,7 @@ if (!REAL) console.log('[MOCK] 실제 spawn: cd scripts/headless-driver && npm i
 
 // 위임/미머지/미투입/정지 중 하나라도 있으면 비정상 종료코드(자동화 파이프라인이 성공 오보 안 하도록).
 // DRV-2: mergeRejected(base 미반영) + skipped(미투입) 를 exit 판정에 포함 — 워커 done ≠ 사이클 완료.
-const incomplete = ledger.escalations.length || ledger.mergeRejected.length || ledger.skipped.length || ledger.stoppedReason;
+const incomplete = ledger.escalations.length || ledger.mergeRejected.length || ledger.held.length || ledger.skipped.length || ledger.stoppedReason;
 process.exit(incomplete ? 3 : 0);
 }
 

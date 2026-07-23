@@ -120,11 +120,15 @@ function createCodexAdapter(opts = {}) {
       try {
         const r = runner(args, { timeout_ms });
         if (!r || r.status !== 0) {
-          return [{
-            file: '(adapter)',
-            severity: 'warn',
-            message: `codex 호출 실패 또는 timeout: ${r && r.stderr ? r.stderr.trim().slice(0, 200) : 'unknown'}`,
-          }];
+          // M26: spawnSync 는 실행 자체 실패를 throw 대신 r.error(ENOENT=미설치·ETIMEDOUT=타임아웃)로
+          // 준다 — 이를 버리고 'unknown' 으로 보고하면 인프라 오류가 리뷰 발견으로 위장된다. 원인을
+          // 정확히 분류하고 kind:'infra' 로 표시(리뷰 결함 아님).
+          const err = r && r.error;
+          let message;
+          if (err && err.code === 'ENOENT') message = 'codex CLI 미설치 (PATH 에 codex 없음) — cross-review 건너뜀. 설치: npm i -g @openai/codex 또는 codex 문서 참고';
+          else if ((err && err.code === 'ETIMEDOUT') || (r && r.signal === 'SIGTERM')) message = `codex 타임아웃 (${timeout_ms}ms 초과) — cross-review 건너뜀`;
+          else message = `codex 호출 실패: ${(r && r.stderr && r.stderr.trim().slice(0, 200)) || (err && err.message) || `exit ${r && r.status}`}`;
+          return [{ file: '(adapter)', severity: 'warn', kind: 'infra', message }];
         }
         // 1차(결정적): 최종 메시지 파일이 있으면 그것만 신뢰.
         if (lastMsgFile) {

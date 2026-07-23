@@ -42,6 +42,30 @@ test('Read — 허용 문서(tasks/x.md)면 allow', () => {
   assert.equal(r.allow, true);
 });
 
+// M9: 헤드리스 Read 가드가 worktree-상대만 검사해 repo-절대경로 SOT 통독을 놓치던 문제.
+test('Read — repo 절대경로 SOT(/repo/ARCHITECTURE.md) 통독도 deny (M9 parity)', () => {
+  const r = guardToolUse('Read', { file_path: '/repo/ARCHITECTURE.md' }, { workingDir: WD });
+  assert.equal(r.allow, false, 'repo-상대 SOT 도 차단돼야 함');
+  assert.match(r.reason, /SOT/);
+});
+
+// M21: Bash cat 로 긴 SOT 통째 읽기 우회.
+test('Bash — cat 으로 긴 SOT(TASKS.md) 통독 시 deny (M21)', () => {
+  const r = guardToolUse('Bash', { command: 'cat TASKS.md' }, { workingDir: WD, allowedPaths: ['src/**'] });
+  assert.equal(r.allow, false, 'cat TASKS.md 통독은 차단돼야 함');
+  assert.match(r.reason, /SOT|섹션|rg/);
+});
+
+test('Bash — rg 로 SOT 섹션 추출은 allow (M21 — 섹션 도구는 허용)', () => {
+  const r = guardToolUse('Bash', { command: 'rg "^## §9" ARCHITECTURE.md' }, { workingDir: WD, allowedPaths: ['src/**'] });
+  assert.equal(r.allow, true, 'rg 섹션 추출은 허용돼야 함(권장 우회)');
+});
+
+test('Bash — cat 으로 자기 소스 파일 읽기는 allow (M21 오탐 방지)', () => {
+  const r = guardToolUse('Bash', { command: 'cat src/foo.ts' }, { workingDir: WD, allowedPaths: ['src/**'] });
+  assert.equal(r.allow, true);
+});
+
 test('Bash — 파괴적 명령(rm -rf)이면 deny', () => {
   const r = guardToolUse('Bash', { command: 'rm -rf /' }, { workingDir: WD });
   assert.equal(r.allow, false);
@@ -49,6 +73,124 @@ test('Bash — 파괴적 명령(rm -rf)이면 deny', () => {
 
 test('Bash — 일반 명령이면 allow', () => {
   const r = guardToolUse('Bash', { command: 'npm test' }, { workingDir: WD });
+  assert.equal(r.allow, true);
+});
+
+// --- H5: rm -rf 동등 변형이 정적 차단을 우회하던 구멍 봉쇄 (플래그 순서·철자 무관) ---
+
+for (const cmd of [
+  'rm -fr /tmp/x',
+  'rm -r -f build',
+  'rm -Rf dist',
+  'rm --recursive --force node_modules',
+  'rm -rf ../sibling',
+  'find . -delete',
+  "find . -name '*.log' -exec rm {} \\;",
+  'sudo rm -fr /',
+]) {
+  test(`Bash — 파괴 삭제 변형 deny: ${cmd}`, () => {
+    const r = guardToolUse('Bash', { command: cmd }, { workingDir: WD, allowedPaths: ['**'] });
+    assert.equal(r.allow, false, `"${cmd}" 는 차단돼야 함`);
+  });
+}
+
+test('Bash — 워크트리 밖(형제 WT) 단순 rm 삭제도 boundary 로 deny', () => {
+  const r = guardToolUse('Bash', { command: 'rm ../OTHER-1/src/f.js' },
+    { workingDir: WD, allowedPaths: ['src/**'] });
+  assert.equal(r.allow, false);
+  assert.match(r.reason, /worktree|삭제|밖/);
+});
+
+test('Bash — 홈 디렉토리 파일 rm 삭제도 deny', () => {
+  const r = guardToolUse('Bash', { command: 'rm ~/.ssh/id_rsa' },
+    { workingDir: WD, allowedPaths: ['src/**'] });
+  assert.equal(r.allow, false);
+});
+
+test('Bash — 워크트리 내 단순 rm(격리, diff 로 드러남)은 allow (회귀 방지)', () => {
+  const r = guardToolUse('Bash', { command: 'rm src/foo.ts' },
+    { workingDir: WD, allowedPaths: ['src/**'] });
+  assert.equal(r.allow, true);
+});
+
+// --- H5-2: 명령 이름 basename 정규화 + 확장 우회 (검증에서 confirmed) ---
+
+for (const cmd of [
+  '/bin/rm -rf ~/.ssh',
+  '/usr/bin/rm -fr ../OTHER-1',
+  '\\rm -rf ../OTHER-1',
+  './rm -rf x',                       // 상대경로 rm 실행파일은 아니지만 정적차단은 보수적으로
+]) {
+  test(`Bash — 경로/백슬래시 접두 rm 파괴삭제 deny: ${cmd}`, () => {
+    const r = guardToolUse('Bash', { command: cmd }, { workingDir: WD, allowedPaths: ['**'] });
+    assert.equal(r.allow, false, `"${cmd}" 는 basename 정규화로 차단돼야 함`);
+  });
+}
+
+test('Bash — /bin/rm 워크트리 밖 삭제도 boundary deny', () => {
+  const r = guardToolUse('Bash', { command: '/bin/rm ../OTHER-1/src/f.js' },
+    { workingDir: WD, allowedPaths: ['src/**'] });
+  assert.equal(r.allow, false);
+});
+
+test('Bash — find -execdir rm 파괴 삭제 deny', () => {
+  const r = guardToolUse('Bash', { command: 'find ../OTHER-1 -execdir rm -rf {} +' },
+    { workingDir: WD, allowedPaths: ['**'] });
+  assert.equal(r.allow, false);
+});
+
+test('Bash — find | xargs rm 파이프 파괴 삭제 deny', () => {
+  const r = guardToolUse('Bash', { command: 'find ../OTHER-1 -type f | xargs rm -rf' },
+    { workingDir: WD, allowedPaths: ['**'] });
+  assert.equal(r.allow, false);
+});
+
+test('Bash — 명령치환 $(rm -rf ...) 내부 파괴 삭제 deny', () => {
+  const r = guardToolUse('Bash', { command: 'echo $(rm -rf ../OTHER-1)' },
+    { workingDir: WD, allowedPaths: ['**'] });
+  assert.equal(r.allow, false);
+});
+
+test('Bash — 백틱 `rm -rf` 내부 파괴 삭제 deny', () => {
+  const r = guardToolUse('Bash', { command: 'echo `rm -rf ~/.ssh`' },
+    { workingDir: WD, allowedPaths: ['**'] });
+  assert.equal(r.allow, false);
+});
+
+test('Bash — 개행(\\n)으로 분리된 rm 파괴삭제 deny (R3 개행 우회)', () => {
+  const r = guardToolUse('Bash', { command: 'printf done\nrm -rf ~/important' },
+    { workingDir: WD, allowedPaths: [] });
+  assert.equal(r.allow, false, '개행 뒤 rm -rf 가 첫 줄 인자로 병합돼 우회되면 안 됨');
+});
+
+test('Bash — 개행 분리 rm 의 워크트리 밖 삭제 boundary deny (R3)', () => {
+  const r = guardToolUse('Bash', { command: 'echo x\nrm ../OTHER-1/f.js' },
+    { workingDir: WD, allowedPaths: ['src/**'] });
+  assert.equal(r.allow, false);
+});
+
+test('Bash — 깊게 중첩된 $(...) 도 스택오버플로 없이 처리(fail-open 방지, R3)', () => {
+  const deep = 'echo ' + '$('.repeat(300) + 'rm -rf x' + ')'.repeat(300);
+  // 크래시(RangeError)로 fail-open 되지 않고 결정을 내려야 한다(여기선 안전하게 deny 또는 allow, 크래시 X).
+  assert.doesNotThrow(() => guardToolUse('Bash', { command: deep }, { workingDir: WD, allowedPaths: ['**'] }));
+});
+
+test('Bash — 무관한 밖 find + 별개 xargs rm 이 한 줄이어도 find 경로를 오차단 안 함 (R3 회귀)', () => {
+  // 세미콜론으로 분리된 별개 명령: 밖 읽기 find 와 워크트리 내 xargs rm — find 경로를 삭제타겟 오승격 금지.
+  const r = guardToolUse('Bash', { command: 'find ../.. -type d ; git ls-files | xargs rm src/build.js' },
+    { workingDir: WD, allowedPaths: ['src/**'] });
+  assert.equal(r.allow, true, '무관한 밖 find 경로를 xargs rm 파이프와 결합해 거짓 deny 하면 안 됨');
+});
+
+test('Bash — git rm 은 파괴삭제 아님 (과차단 회귀 방지)', () => {
+  const r = guardToolUse('Bash', { command: 'git rm --cached src/foo.ts' },
+    { workingDir: WD, allowedPaths: ['src/**'] });
+  assert.equal(r.allow, true);
+});
+
+test('Bash — "rm" 이 인자 문자열이면 오탐 안 함', () => {
+  const r = guardToolUse('Bash', { command: 'echo "rm -rf is dangerous"' },
+    { workingDir: WD, allowedPaths: ['src/**'] });
   assert.equal(r.allow, true);
 });
 

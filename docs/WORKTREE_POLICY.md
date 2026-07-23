@@ -78,5 +78,6 @@
 ## 알려진 한계
 
 - monorepo 거대 프로젝트: worktree 1개당 수GB 가능 → 동시 워커 수 제한 권장
+- **monorepo 서브디렉토리 실행 금지 (H6)**: pact 는 **리포 루트**에서만 실행. 서브패키지(`packages/app` 등)에서 실행하면 산출물이 리포 루트로 조용히 머지되므로, `checkEnvironment`(prepare·init)가 `--show-toplevel` 검사로 거부한다. 서브패키지 단위 지원은 v1.1.
 - submodule 있는 repo: worktree 동작 미묘 → v1.0은 simple repo만 검증
 - 사용자가 직접 worktree 만진 경우: 외부 변경 감지 어려움 → `/pact:worktree-status`로 점검 권장

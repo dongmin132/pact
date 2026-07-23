@@ -1,5 +1,38 @@
 # Changelog
 
+## 0.13.0 — 2026-07-21
+
+> 전면 리뷰 릴리스 — 93-에이전트 감사(HIGH 8 + MEDIUM 28 확정)를 TDD로 전량 수리. HIGH는 적대검증 **3라운드**로 1차 수리가 만든 회귀(자기 락아웃)와 2차가 만든 우회(zero-commit 게이트)까지 폐쇄. **688→779 그린.** 지배 결함 패턴 = "가드는 있는데 배선이 끊긴" 클래스 + 0.10.0 파이프라인 개편이 못 미친 주변부. 핵심 교훈: `process.ppid`는 Claude Code Bash 도구에서 세션이 아니라 **호출별 즉사 셸**(세션 정체성은 `CLAUDE_CODE_SESSION_ID`).
+
+### Fixed (HIGH — 배선 끊김·전제 오류)
+- **yolo 자동감지 체인 사망(H1)** — SessionStart 페이로드엔 `permission_mode`가 없는데(도구 컨텍스트 이벤트 전용) session-start가 이를 읽어 항상 `default`를 state에 박아 detect-yolo의 settings 폴백까지 가렸다. PreToolUse에서 런타임 mode를 원자적 스탬프(worktree skip·손상시 skip·typeof 가드) + settings 기반 startup 경고 + `detectYolo(ignoreState)`. compact만 런타임 보존, resume/startup은 리셋.
+- **claim/edit-lock 멀티세션 상호배제 no-op(H3)** — 단명 CLI `process.pid`(및 즉사 셸 `process.ppid`)를 락 holder로 기록해 명령 반환 즉시 dead-pid stale이 돼 전량 no-op(실측 재현). **세션 UUID(`CLAUDE_CODE_SESSION_ID` = 훅 `payload.session_id`)를 정체성**으로, 조부모(세션 프로세스) pid를 liveness로 재설계. 훅 `mySession`을 UUID로 통일해 자기 락아웃 회귀 봉쇄, acquireLock 자기 재획득 멱등, owner-pid 오버플로 바운드.
+- **rm -rf 동등 변형 정적차단 우회(H5)** — `rm -rf` 리터럴 순서만 잡아 `rm -fr`·`rm -Rf`·`rm --recursive --force`·`/bin/rm`·`\rm`·개행 분리·`xargs rm`·`find -delete/-execdir`·`$()`·백틱이 전부 통과했고, rm은 삭제 경계 검사 밖이었다. 순서·철자·경로(basename 정규화)·서브셸·파이프까지 봉쇄 + worktree 밖 삭제를 경계 분류로 차단(헤드리스·인터랙티브 공용).
+- **예산 0 워커가 CLI를 즉사시킴(H4)** — 잔여 예산이 예약으로 소진되면 `--max-budget-usd 0`으로 스폰돼 CLI가 거부(즉사→incomplete 오분류→resume 헛돌기→거짓 3회실패). cap이 1턴 비용(`min(0.02, capBudget)`) 미만이면 스폰 금지 + `budgetExhausted` 플래그로 캐스케이드 정지 + 다음 사이클 재평가.
+- **verify docs-only 오판으로 Code 축 영구 skip(H7)** — `git diff HEAD~1`이 사이클 끝의 bookkeeping 커밋에 항상 가려 lint/typecheck/test/build가 skip됐다. 결정적 CLI **`pact verify-scope`**로 교체(경계=`pact: cycle bookkeeping` 단독, 인터랙티브 중간 status 커밋 오경계 방지, fail-safe). 헤드리스 드라이버도 사이클 종료에 bookkeeping 마커를 남겨 경계 복원.
+- **충돌 수동해결 후 사이클 벽돌화(H8)** — collect-one이 수동 머지된 branch를 `already_merged`가 아니라 rejected/conflicted로 오분류해 status 미스탬프·worktree 잔존·재spawn. `isMergedViaCommit`(2nd-parent 정밀판별로 zero-commit 거짓done 우회 차단)로 already_merged 인식 → done 스탬프 + worktree 정리(collect-one·collect·standalone merge 전 경로). resume.md·resolve-conflict.md 현행화.
+- **모노리포 서브디렉토리 오머지(H6)** — repo-root 검사가 없어 서브패키지에서 init하면 산출물이 리포 루트로 조용히 머지(e2e 실증). `checkEnvironment`가 `--show-toplevel`로 루트가 아니면 fail-loud 거부(서브패키지 단위 지원은 v1.1).
+
+### Fixed (MEDIUM — 죽은 가드·보안·정확성)
+- **죽은 워커 검증 훅(M0)** — SubagentStop이 존재하지 않는 `subagent_type`을 읽어 워커 종료 검증(status.json 누락·scope·red_observed·commits 0)이 전부 죽은 코드. 실제 필드 `agent_type`(스코프 `pact:worker` 포함)으로 부활.
+- **죽은 yolo_mode 가드(M3)** — payload 어디서도 `yolo_mode`를 생산하지 않아 ADR-055 가드가 미발화. yolo 세션이면 `yolo_mode:true` + `forbidden_paths:["**/*"]` 생산.
+- **propose-only 가드 침묵 무력화(M14)** — metrics/collect의 readTasks가 `tasks/`만 스캔하고 legacy TASKS.md 폴백이 없어 sizecheck·scopecheck·testguard·prelude·metrics가 0 task로 무력화. `discoverTaskFiles` 위임.
+- **락 정리 TOCTOU(M5)** — cleanStaleLocks/cleanStaleEditLocks가 직접 unlink해 판정~삭제 사이 타 세션 takeover의 fresh live 락을 삭제. `reclaimStale`(rename-후-재검증) 적용.
+- **collect 크래시·SOT 삭제(M8·M7)** — collectBatch execSync try/catch(외부 MERGE_HEAD·cycle-busy에 통째 크래시 방지), doCollect가 미해소(충돌·skipped) 남아도 current_batch를 무조건 삭제하던 것을 전부 해소된 경우에만 정리.
+- **머지 stage 오분류(M6)** — mergeOnePact가 transient stage 실패(cycle-busy·merge-in-progress)를 거짓 rejected(terminal)로 만들던 것을 `held`(보류·재시도, worktree 보존)로 분류.
+- **워커 SOT read 우회(M9·M21)** — 헤드리스 Read 가드가 worktree-상대만 봐 repo-절대경로 SOT 통독을 놓쳤고, `cat TASKS.md` Bash 우회가 뚫려 있었다. checkWorkerRead 위임 + cat/less 통독 차단(rg/sed 섹션추출은 허용).
+- **PACT_BIN 미인용·drift false-clean·yaml·CLI(M18·M17·M13·M16)** — driver execSync PACT_BIN 인용(경로 공백), drift를 merge-result `head_sha` 토폴로지 판정으로(커밋 날짜 함정 제거), yaml 리스트 항목 콜론+공백만 매핑(URL·포트·시각), slice 인자 누락 raw TypeError→actionable + bin/pact 종료코드 정정.
+
+### Fixed (MEDIUM — false-positive·문서·UX)
+- **false-positive 차단(M10·M11·M12·M15)** — pytest `test_*.py` catch-22, ownership이 메인 세션 PROGRESS.md 편집을 막던 /pact:wrap 충돌, stop-verify가 CLAUDE.md로 판별해 비-pact 리포 소음, slice-prd가 무번호 헤더(Appendix)에서 섹션 안 끝남.
+- **알림 훅 무음(M1)** — post-edit-doc-sync·stop-verify·teammate-idle이 `async:true`라 systemMessage 넛지가 사장되던 것을 sync로.
+- **codex 에러 위장(M26)** — ENOENT(미설치)·ETIMEDOUT를 'unknown' 리뷰 발견으로 위장하던 것을 인프라 원인 명시(kind:infra).
+- **문서·버전 드리프트(M4·M19·M20·M2·M22·M23·M24·M25·M27)** — marketplace.json 버전 3자 일치(회귀 테스트), README 뱃지·CLI·훅표, plan.md --from 모순, init CLAUDE.md 오진, git-init 첫 커밋 안내, multi-session PATH·경로, abort의 current_batch 정리.
+
+### Added
+- **`pact verify-scope`** — 이번 사이클 코드 변경 여부 결정 판정 CLI(H7).
+- **모노리포 루트 가드**(H6), **머지 held 상태**(M6), **merge-result `head_sha`**(M17 drift 토폴로지 기준점).
+
 ## 0.12.1 — 2026-07-14
 
 > 라이브 dogfood 릴리스 — 신규 프로젝트(linkcheck)에서 init→plan→drive(실워커)→merge→wrap 전 여정을 실제로 밟아 발견한 14건 중 11건 수리. 최종 검증: 3/3 task 머지·산출 CLI 실동작·salvage 0%·오케스트레이터 0토큰.

@@ -16,14 +16,24 @@ const path = require('path');
 
 function parseArgs(args) {
   const opts = { status: null, priority: null, ids: null, tbd: false, headers: false, file: null };
+  // M16: 옵션 값 누락 시 args[++i] 가 undefined 라 .split 에서 raw TypeError 로 죽던 문제 — actionable
+  // 에러로 대체. 값이 없거나 다음 토큰이 또 옵션(--)이면 사용법 오류(exit 2).
+  const need = (i, flag) => {
+    const v = args[i + 1];
+    if (v === undefined || v.startsWith('--')) {
+      console.error(`pact slice: ${flag} 에 값이 필요합니다 (예: ${flag} todo)`);
+      process.exit(2);
+    }
+    return v;
+  };
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
-    if (a === '--status') opts.status = args[++i].split(',');
-    else if (a === '--priority') opts.priority = args[++i].split(',');
-    else if (a === '--ids') opts.ids = args[++i].split(',');
+    if (a === '--status') { opts.status = need(i, a).split(','); i++; }
+    else if (a === '--priority') { opts.priority = need(i, a).split(','); i++; }
+    else if (a === '--ids') { opts.ids = need(i, a).split(','); i++; }
     else if (a === '--tbd') opts.tbd = true;
     else if (a === '--headers') opts.headers = true;
-    else if (a === '--file') opts.file = args[++i];
+    else if (a === '--file') { opts.file = need(i, a); i++; }
   }
   return opts;
 }

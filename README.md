@@ -3,7 +3,7 @@
 > Claude Code 위에 얹는 **계약 기반 AI 개발 운영 시스템**.
 > 문서·계약·검증·worktree 격리 병렬 에이전트로 통제하는 플러그인.
 
-[![tests](https://img.shields.io/badge/tests-582%2F582-brightgreen)](./test) [![version](https://img.shields.io/badge/version-0.10.0-blue)](./.claude-plugin/plugin.json) [![deps](https://img.shields.io/badge/deps-zero-success)](./package.json) [![license](https://img.shields.io/badge/license-MIT-blue)](#라이선스)
+[![tests](https://img.shields.io/badge/tests-781%2F781-brightgreen)](./test) [![version](https://img.shields.io/badge/version-0.13.0-blue)](./.claude-plugin/plugin.json) [![deps](https://img.shields.io/badge/deps-zero-success)](./package.json) [![license](https://img.shields.io/badge/license-MIT-blue)](#라이선스)
 
 ---
 
@@ -239,7 +239,7 @@ opt-out은 마크다운/설정/마이그레이션 task에서만: `tdd: false` fr
 | `/pact:wrap` | `pact drive` 후 merge-result.json만 읽어 PROGRESS/DECISIONS 1턴 갱신 (propose-only) |
 | `/pact:takeover` | escalation task를 사람이 worktree에서 인터랙티브 인계 |
 
-## CLI (`pact` 바이너리, 23개)
+## CLI (`pact` 바이너리, 25개)
 
 결정적 작업 전용 — LLM이 부르지만 LLM이 추론하지 않는다.
 
@@ -276,6 +276,8 @@ opt-out은 마크다운/설정/마이그레이션 task에서만: `tdd: false` fr
 | `pact scopecheck` | `done_criteria ⊄ allowed_paths` 계약모순 검출 |
 | `pact testguard` | test-as-law — 자기검증 테스트 수정 가능 task 플래그 |
 | `pact metrics [--cycle <prefix>]` | 사이클 계측기 (read-only 스코어카드) |
+| `pact drift [--project <path>]` | 마지막 머지 이후 드리프트·실패 결정적 산출 — clean 이면 `/pact:reflect` 가 LLM 생략 |
+| `pact verify-scope [--json]` | 이번 사이클 코드 변경 여부 결정 판정 — `/pact:verify` 의 docs-only skip 결정 |
 
 ### `/pact:parallel` 흐름 (v0.4.1 run-cycle)
 
@@ -298,7 +300,7 @@ opt-out은 마크다운/설정/마이그레이션 task에서만: `tdd: false` fr
 
 | Hook | 트리거 | 책임 |
 |---|---|---|
-| `pre-tool-guard` | PreToolUse (Read/Write/Edit/MultiEdit) | MODULE_OWNERSHIP 위반 + 워커 worktree 경계 + 7개 긴 SOT 통째 read 차단 → `rg`/`sed`/`pact slice` 안내 |
+| `pre-tool-guard` | PreToolUse (Read/Write/Edit/MultiEdit/Bash) | MODULE_OWNERSHIP 위반 + 워커 worktree 경계 + 긴 SOT 통째 read + Bash 쓰기·파괴 삭제 우회 차단 + PreToolUse permission_mode 스탬프 |
 | `tdd-guard` | PreToolUse (Write) | `tdd: true` task에서 테스트 없는 코드 파일 작성 차단 |
 | `post-edit-doc-sync` | PostToolUse (async) | 문서 갱신 알림 (텔레메트리, 차단 X) |
 | `stop-verify` | Stop | uncommitted 코드 변경 알림 |
@@ -364,7 +366,7 @@ pact/
 ├── .claude-plugin/plugin.json    # 플러그인 매니페스트 + hook 등록
 ├── agents/                       # 8 서브에이전트 (planner, architect, coordinator,
 │                                 # reviewer-code/task/arch/ui, worker)
-├── commands/                     # 18 슬래시 명령
+├── commands/                     # 20 슬래시 명령
 ├── hooks/                        # 8 hook 스크립트
 ├── scripts/                      # CLI helper (worktree, merge, parse, validate, ...)
 ├── schemas/                      # JSON schemas (worker-status, task)
@@ -373,7 +375,7 @@ pact/
 ├── skills/init/                  # /pact:init 스킬 정의
 ├── bin/                          # pact CLI 진입점 + bin/cmds/*.js
 ├── docs/                         # CLAUDE_CODE_SPEC, WORKTREE_POLICY, context-map
-├── test/                         # node:test 단위 테스트 (39 파일, 532 통과)
+├── test/                         # node:test 단위 테스트 (49 파일, 779 통과)
 ├── ARCHITECTURE.md               # 18 ADR 매트릭스 + 매니저 명세
 ├── DECISIONS.md                  # ADR 누적 로그
 ├── TASKS.md                      # 빌드 task (v1.0 완료)
@@ -387,7 +389,7 @@ pact/
 - **다국어**: 한국어 사용자 향. v1.1+
 - **Codex 외 어댑터**: 인터페이스만 열려 있고 v1.1+에서 Gemini/Cursor 추가
 - **PRD 자동 변환**: `.docx`/`.pdf` 미지원 — `.md`로 변환 후 사용
-- **monorepo 디스크 부담**: worktree 1개당 GB 가능. 동시 워커 수 기본 5, 최대 5 (prepare·drive 상한)
+- **monorepo**: 반드시 **리포 루트**에서 실행(서브디렉토리 실행은 거부 — 산출물 오머지 방지, H6). worktree 1개당 GB 가능·동시 워커 수 기본 5, 최대 5 (prepare·drive 상한). 서브패키지 단위 지원은 v1.1
 - **OpenAPI 자동 검증**: v1.1+
 
 ## v1.0 out-of-scope (영구)

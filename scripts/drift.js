@@ -48,9 +48,20 @@ function computeDrift(opts = {}) {
   // standalone `pact merge` 경로엔 요약 필드가 없다 → planner 가 status.json 폴백(reflect 단계 1.6 규약)
   const standaloneMerge = !('failures' in mr) && !('verification_summary' in mr) && !('decisions_to_record' in mr);
 
-  // 마지막 머지 이후 커밋된 변경 파일 (git log — 읽기 전용)
+  // 마지막 머지 이후 변경 파일 (읽기 전용). M17: head_sha(머지 시점 HEAD)가 있으면 토폴로지
+  // (head_sha..HEAD)로 판정 — 커밋 날짜(--since)는 오래된 날짜의 새 커밋(옛 브랜치 수동 머지 등)을
+  // 놓쳐 clean:true 오판을 냈다. 구 merge-result(head_sha 없음)는 --since 폴백(하위호환).
+  const headSha = typeof mr.head_sha === 'string' ? mr.head_sha : null;
   let changed = [];
-  if (ts) {
+  if (headSha) {
+    const r = spawnSync('git', ['diff', '--name-only', headSha, 'HEAD'], { cwd, encoding: 'utf8' });
+    if (r.status === 0) {
+      changed = [...new Set(r.stdout.split('\n').map((s) => s.trim()).filter(Boolean))];
+    } else if (ts) {
+      const rf = spawnSync('git', ['log', `--since=${ts}`, '--name-only', '--pretty=format:'], { cwd, encoding: 'utf8' });
+      if (rf.status === 0) changed = [...new Set(rf.stdout.split('\n').map((s) => s.trim()).filter(Boolean))];
+    }
+  } else if (ts) {
     const r = spawnSync('git', ['log', `--since=${ts}`, '--name-only', '--pretty=format:'], { cwd, encoding: 'utf8' });
     if (r.status === 0) {
       changed = [...new Set(r.stdout.split('\n').map((s) => s.trim()).filter(Boolean))];

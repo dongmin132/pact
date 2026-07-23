@@ -5,34 +5,40 @@
 // session_label 우선순위: --session > $PACT_SESSION > ppid.
 
 const { acquireEditLock } = require('../../scripts/edit-lock.js');
-const { resolveSessionLabel } = require('./claim.js');
+const { resolveSessionLabel, resolveOwnerPid } = require('./claim.js');
 
 function parseArgs(args) {
   let target = null;
   let explicit = null;
+  let ownerPid = null;
   let kind = null;
   let json = false;
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (a === '--session' || a === '--label') explicit = args[++i];
     else if (a === '--kind') kind = args[++i];
+    else if (a === '--owner-pid') ownerPid = args[++i];
+    else if (a.startsWith('--owner-pid=')) ownerPid = a.slice('--owner-pid='.length);
     else if (a === '--json') json = true;
     else if (!target && !a.startsWith('-')) target = a;
   }
-  return { target, explicit, kind, json };
+  return { target, explicit, ownerPid, kind, json };
 }
 
 module.exports = function editLockCli(args) {
-  const { target, explicit, kind, json } = parseArgs(args);
+  const { target, explicit, ownerPid: explicitPid, kind, json } = parseArgs(args);
   if (!target) {
-    console.error('Usage: pact edit-lock <target> [--kind module|file] [--session <label>] [--json]');
+    console.error('Usage: pact edit-lock <target> [--kind module|file] [--session <label>] [--owner-pid <pid>] [--json]');
     console.error('  target: 모듈 이름(auth) 또는 파일 경로(PROGRESS.md)');
     process.exit(2);
   }
 
   const cwd = process.cwd();
   const sessionLabel = resolveSessionLabel(explicit);
-  const r = acquireEditLock(target, { cwd, sessionLabel, kind });
+  // H3: edit-lock holder 도 세션 수명 pid(부모 셸)로 기록 — 단명 CLI pid 면 acquireEditLock
+  // 의 isAlive 판정이 즉시 false 가 돼 findLockForFile 이 skip → pre-tool-guard deny 도달 불가.
+  const ownerPid = resolveOwnerPid(explicitPid);
+  const r = acquireEditLock(target, { cwd, sessionLabel, kind, pid: ownerPid });
 
   if (json) {
     process.stdout.write(JSON.stringify({ ...r, session_label: sessionLabel }, null, 2) + '\n');

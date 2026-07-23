@@ -111,17 +111,25 @@ test('post-edit-doc-sync — Write/Edit 아닌 도구는 무출력', () => {
 });
 
 // ─── subagent-stop-review.js ────────────────────────────────────────
+// ※ 실제 SubagentStop 페이로드 필드는 agent_type(플러그인 스코프면 'pact:worker'). M0 수리 회귀.
 test('subagent-stop-review — worker 아닌 서브에이전트는 무출력', () => {
-  const r = runHook('subagent-stop-review.js', { subagent_type: 'reviewer', cwd: os.tmpdir() });
+  const r = runHook('subagent-stop-review.js', { agent_type: 'reviewer', cwd: os.tmpdir() });
   assertNoOutput(r);
 });
 
-test('subagent-stop-review — worker 가 status.json 없이 종료하면 경고', () => {
+test('subagent-stop-review — agent_type=worker 가 status.json 없이 종료하면 경고 (M0)', () => {
   const dir = tmp('pact-ssr-nostatus-');
   try {
     fs.mkdirSync(path.join(dir, '.pact', 'runs', 'TASK-1'), { recursive: true });
-    const payload = { subagent_type: 'worker', cwd: dir };
-    assertSystemMessage(runHook('subagent-stop-review.js', payload), /status\.json 없이|blocked/);
+    assertSystemMessage(runHook('subagent-stop-review.js', { agent_type: 'worker', cwd: dir }), /status\.json 없이|blocked/);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('subagent-stop-review — 플러그인 스코프 agent_type=pact:worker 도 매치 (M0)', () => {
+  const dir = tmp('pact-ssr-scoped-');
+  try {
+    fs.mkdirSync(path.join(dir, '.pact', 'runs', 'TASK-1'), { recursive: true });
+    assertSystemMessage(runHook('subagent-stop-review.js', { agent_type: 'pact:worker', cwd: dir }), /status\.json 없이|blocked/);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
@@ -130,13 +138,12 @@ test('subagent-stop-review — 정상 status.json 이면 무출력(회귀)', () 
   try {
     const taskDir = path.join(dir, '.pact', 'runs', 'TASK-1');
     fs.mkdirSync(taskDir, { recursive: true });
-    // 스키마 통과 + 의심신호 없는 done 상태(commits_made>0, outside-scope 없음).
     const status = {
       task_id: 'TASK-1', status: 'done', summary: 'ok',
       files_changed: ['src/a.js'], commits_made: 1,
       files_attempted_outside_scope: [],
     };
     fs.writeFileSync(path.join(taskDir, 'status.json'), JSON.stringify(status));
-    assertNoOutput(runHook('subagent-stop-review.js', { subagent_type: 'worker', cwd: dir }));
+    assertNoOutput(runHook('subagent-stop-review.js', { agent_type: 'worker', cwd: dir }));
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });

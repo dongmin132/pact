@@ -30,6 +30,27 @@ function branchExists(name, opts) {
   return git(['show-ref', '--verify', '--quiet', `refs/heads/${name}`], opts).status === 0;
 }
 
+// branch 가 실제로 base(HEAD)에 --no-ff 로 머지됐는가 (H8-2 / R3 정밀화).
+// = branch tip 이 HEAD 도달가능 merge 커밋의 '머지된 부모'(2nd+ parent)인가.
+// 단순 조상(is-ancestor)만 보면 zero-commit 브랜치(tip=base=항상 조상·머지 첫부모)가
+// 거짓 done 보고만으로 already_merged 로 통과해 ADR-012 게이트를 우회한다(적대검증 확인).
+// 2nd+ parent 는 실제로 그 브랜치가 머지됐을 때만 참이라 zero-commit 을 배제한다.
+function isMergedViaCommit(branchName, opts) {
+  const tipR = git(['rev-parse', '--verify', '-q', branchName], opts);
+  if (tipR.status !== 0) return false;
+  const tip = (tipR.stdout || '').trim();
+  if (!tip) return false;
+  const r = git(['rev-list', '--merges', '--parents', 'HEAD'], opts);
+  if (r.status !== 0) return false;
+  for (const line of (r.stdout || '').trim().split('\n')) {
+    if (!line) continue;
+    const parts = line.trim().split(/\s+/);
+    // parts[0]=머지커밋, parts[1]=mainline(첫)부모, parts[2..]=머지된 부모.
+    if (parts.slice(2).includes(tip)) return true;
+  }
+  return false;
+}
+
 /**
  * 단일 worktree branch를 현재 branch(보통 main)로 머지.
  * 충돌 시 abort 안 함 — 호출자가 결정.
@@ -42,6 +63,13 @@ function mergeWorktree(taskId, opts = {}) {
     // 따라서 collect 재진입에서 branch 없음 = "이전 cycle 에 이미 머지+정리됨" 신호.
     // branch_missing 플래그로 구분 (호출부 mergeAll 이 충돌이 아닌 already_merged 로 처리).
     return { ok: false, branch_missing: true, branch_name: branchName, error: `branch not found: ${branchName}` };
+  }
+
+  // H8-2: branch 가 남아있지만 이미 base 에 머지됨(수동 충돌해결 후) → already_merged.
+  // git merge --no-ff 는 "Already up to date" no-op 이나, 그 전에 이 신호로 분류해 상위(doCollectOne)가
+  // status=done 스탬프·worktree 정리하게 한다(planMerge 빈-diff 거부·재spawn·prepare 블록 방지).
+  if (isMergedViaCommit(branchName, opts)) {
+    return { ok: false, already_merged: true, branch_name: branchName };
   }
 
   const r = git(['merge', '--no-ff', '-m', `pact: merge ${branchName}`, branchName], opts);
@@ -77,8 +105,9 @@ function mergeAll(taskIds, opts = {}) {
     const r = mergeWorktree(id, opts);
     if (r.ok) {
       merged.push(id);
-    } else if (r.branch_missing) {
-      // 이전 cycle 에 이미 머지+정리됨 — 충돌 아님, 멈추지 않고 계속.
+    } else if (r.branch_missing || r.already_merged) {
+      // 이전 cycle 에 이미 머지+정리됨(branch_missing) 또는 수동 해결 후 머지됨(already_merged, H8-2)
+      // — 충돌 아님, 멈추지 않고 계속.
       alreadyMerged.push(id);
     } else {
       conflicted = {
@@ -205,6 +234,14 @@ function planMerge(opts = {}) {
     const diff = actualDiff(baseBranch, branchName, { cwd });
     if (diff === null) {
       rejected.push({ task_id: taskId, reason: `git diff 실패 (${baseBranch}...${branchName})` });
+      continue;
+    }
+
+    // H8-2: 이미 base 에 머지된 branch(수동 충돌해결 후)는 3-dot diff 가 비어 files_changed 대조가
+    // 거짓 거부를 낸다. 머지 완료 = 검증은 충돌 전 이미 통과 → eligible 로 통과시키고 merge 단계의
+    // already_merged 가 status=done 스탬프·정리한다. (정상 미머지 branch 는 diff 가 비지 않아 무영향.)
+    if (diff.length === 0 && isMergedViaCommit(branchName, { cwd })) {
+      eligible.push(taskId);
       continue;
     }
 

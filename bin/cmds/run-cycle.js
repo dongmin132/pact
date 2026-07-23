@@ -37,6 +37,7 @@ const { generateAll: generateReports } = require(path.join(PLUGIN_ROOT, 'scripts
 const { planMerge, mergeAll, mergeWorktree, abortMerge } = require(path.join(PLUGIN_ROOT, 'scripts', 'merge-coordinator.js'));
 const { acquireCycleLock, releaseCycleLock, cleanStaleLocks, isAlive } = require(path.join(PLUGIN_ROOT, 'scripts', 'lock.js'));
 const { setTaskStatus } = require(path.join(PLUGIN_ROOT, 'scripts', 'task-sources.js'));
+const { detectYolo } = require(path.join(PLUGIN_ROOT, 'scripts', 'detect-yolo.js'));
 const { writeJsonAtomic } = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'atomic-write.js'));
 
 const CURRENT_BATCH_FILE = '.pact/current_batch.json';
@@ -208,12 +209,20 @@ function isTaskPrepared(cwd, id) {
 }
 
 /** batch0 task 와 admit task 가 공유하는 worker payload 구성(중복 구현 방지). */
-function buildTaskPayload(task, wt, baseBranch, parsed) {
+function buildTaskPayload(task, wt, baseBranch, parsed, cwd) {
+  // M3: yolo 세션(권한 자동승인)에서는 yolo_mode:true + forbidden_paths deny-all(명시 없으면)을
+  // 생산한다 — ADR-055 가드(spawn-worker validatePayload)가 이때 발화하고, 워커 프롬프트가
+  // allowed_paths 를 권고가 아닌 하드 경계로 렌더한다. 미-yolo 는 필드 생략(기존 동작 불변).
+  let yolo = false;
+  try { yolo = cwd ? detectYolo({ cwd }).is_yolo : false; } catch { yolo = false; }
+  const explicitForbidden = task.forbidden_paths || [];
+  const forbidden_paths = (yolo && explicitForbidden.length === 0) ? ['**/*'] : explicitForbidden;
   return {
     task_id: task.id,
     title: task.title || '',
     allowed_paths: task.allowed_paths || [],
-    forbidden_paths: task.forbidden_paths || [],
+    forbidden_paths,
+    ...(yolo ? { yolo_mode: true } : {}),
     done_criteria: task.done_criteria || [],
     verify_commands: task.verify_commands || [],
     contracts: task.contracts || {},
@@ -260,7 +269,7 @@ function prepareOneTask(task, baseBranch, parsed, cwd) {
   const wt = createWorktree(task.id, baseBranch, { cwd });
   if (!wt.ok) return { ok: false, stage: 'worktree', error: wt.error, worktreeCreated: false };
 
-  const payload = buildTaskPayload(task, wt, baseBranch, parsed);
+  const payload = buildTaskPayload(task, wt, baseBranch, parsed, cwd);
   const r = prepareWorkerSpawn(payload, { cwd, runsRoot: path.join(cwd, '.pact/runs') });
   if (!r.ok) {
     return { ok: false, stage: 'spawn-prepare', error: (r.errors || []).join('; '), worktreeCreated: true };
@@ -734,6 +743,15 @@ function dedupByTaskId(items) {
   });
 }
 
+// M17: 현재 HEAD SHA — merge-result 에 기록해 drift 가 커밋 날짜(--since, 오래된 날짜의 새 커밋 놓침)
+// 대신 토폴로지(head_sha..HEAD)로 판정하게 한다.
+function currentHeadSha(cwd) {
+  try {
+    const r = spawnSync('git', ['rev-parse', 'HEAD'], { cwd, encoding: 'utf8' });
+    return r.status === 0 ? r.stdout.trim() : null;
+  } catch { return null; }
+}
+
 function appendMergeResult(cwd, patch, cycleId = null) {
   const p = path.join(cwd, '.pact/merge-result.json');
   let cur = {};
@@ -743,6 +761,7 @@ function appendMergeResult(cwd, patch, cycleId = null) {
   const arr = (k) => (Array.isArray(base[k]) ? base[k] : []);
   const out = {
     timestamp: new Date().toISOString(),
+    head_sha: currentHeadSha(cwd), // M17: drift 토폴로지 판정 기준점
     ...(cycleId != null ? { cycle_id: cycleId } : {}),
     single_merge: true, // 마커: collect-one append 로 조립된 사이클 결과(batch collect 와 구분).
     eligible: (base.eligible || 0) + (patch.eligible || 0),
@@ -863,11 +882,15 @@ function doCollectOne(args, opts, cwd, taskId) {
       statusUpdates.push({ task_id: taskId, ok: su.ok, action: su.action, file: su.file, error: su.error });
       const rm = removeWorktree(taskId, { cwd });
       cleanup.push({ task_id: taskId, ok: rm.ok, error: rm.error });
-    } else if (r.branch_missing) {
-      // 이미 머지+정리됨(재진입) — 충돌 아님. status done 멱등 보장.
+    } else if (r.branch_missing || r.already_merged) {
+      // 이미 머지됨 — branch_missing(이전 cycle 정리) 또는 already_merged(수동 충돌해결 후, H8-2).
+      // 충돌 아님. status done 멱등 보장 + worktree 정리(수동해결 케이스는 worktree 가 남아있어
+      // 다음 prepare 가 stage:worktree 로 막히므로 반드시 정리).
       alreadyMerged.push(taskId);
       const su = setTaskStatus(taskId, 'done', { cwd });
       statusUpdates.push({ task_id: taskId, ok: su.ok, action: su.action, file: su.file, error: su.error });
+      const rm = removeWorktree(taskId, { cwd });
+      cleanup.push({ task_id: taskId, ok: rm.ok, error: rm.error });
     } else {
       // 실제 충돌 — abort 안 함(merge-coordinator 규약). 드라이버가 conflicted 로 정지·escalate.
       conflicted = { task_id: taskId, branch_name: r.branch_name, files: r.conflicted_files || [], error: r.error };
@@ -994,7 +1017,10 @@ function doCollect(args, opts, cwd, cbPath) {
   }
 
   const cleanup = [];
-  for (const id of result.merged) {
+  // merged + already_merged 둘 다 worktree 정리(H8-2). 수동 충돌해결 후 already_merged 가 된 task 의
+  // 보존 worktree 가 남으면 다음 prepare 가 stage:worktree 로 막힌다. branch_missing 재진입 케이스는
+  // 이미 worktree 가 없어 removeWorktree 가 안전한 no-op.
+  for (const id of [...result.merged, ...alreadyMerged]) {
     const r = removeWorktree(id, { cwd });
     cleanup.push({ task_id: id, ok: r.ok, error: r.error });
   }
@@ -1027,6 +1053,7 @@ function doCollect(args, opts, cwd, cbPath) {
   // 한 번에 기록 → drive 후 /pact:wrap 가 LLM 없이 이 파일만 읽어 PROGRESS/DECISIONS 서사 갱신 가능.
   writeJsonAtomic(path.join(cwd, '.pact/merge-result.json'), {
     timestamp: new Date().toISOString(),
+    head_sha: currentHeadSha(cwd), // M17: drift 토폴로지 판정 기준점
     // ORCH-1/CI-1: collect-one 과 동일 사이클 마커. batch collect 는 통째 overwrite 라 이미
     // fresh-per-cycle 이지만, 마커를 남겨 두 writer 의 SOT 사이클 규약을 일치시킨다.
     ...(currentBatch.prepared_at ? { cycle_id: currentBatch.prepared_at } : {}),
@@ -1050,7 +1077,11 @@ function doCollect(args, opts, cwd, cbPath) {
     : undefined;
 
   try { fs.unlinkSync(journalPath); } catch {}
-  try { fs.unlinkSync(cbPath); } catch {}
+  // M7: 미해소(충돌 또는 미머지 skipped)가 남았으면 current_batch(사이클 SOT)를 삭제하지 않는다 —
+  // 삭제하면 남은 task 를 잃고 resume 이 already_collected no-op 이 된다. 전부 해소된 경우에만 정리.
+  // (doCollect 는 cycle lock 하에 실행되므로 동시 collect 는 차단됨.)
+  const fullyResolved = !result.conflicted && (result.skipped || []).length === 0;
+  if (fullyResolved) { try { fs.unlinkSync(cbPath); } catch {} }
 
   emit({
     ok: true,

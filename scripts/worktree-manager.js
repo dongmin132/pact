@@ -33,6 +33,19 @@ function isGitRepo(opts) {
   return git(['rev-parse', '--git-dir'], opts).status === 0;
 }
 
+// cwd 가 리포 루트인가 (H6). git worktree add 는 전체 리포를 체크아웃하고 WORKTREE_BASE 는 cwd
+// 상대라, 모노리포 서브디렉토리(packages/app 등)에서 실행하면 산출물이 리포 루트로 조용히 머지된다
+// (e2e 실증). --show-toplevel 과 cwd 를 realpath 비교해 루트가 아니면 checkEnvironment 가 거부한다.
+// (서브패키지 단위 지원은 v1.1 — 여기선 '조용한 오머지'만 fail-loud 로 막는다.)
+function repoRootCheck(opts = {}) {
+  const cwd = opts.cwd || process.cwd();
+  const r = git(['rev-parse', '--show-toplevel'], opts);
+  if (r.status !== 0) return { ok: false, top: null };
+  const canon = (p) => { try { return fs.realpathSync(p); } catch { return path.resolve(p); } };
+  const top = canon((r.stdout || '').trim());
+  return { ok: top === canon(cwd), top };
+}
+
 function hasBranch(name, opts) {
   return git(['show-ref', '--verify', '--quiet', `refs/heads/${name}`], opts).status === 0;
 }
@@ -80,8 +93,22 @@ function checkEnvironment(opts = {}) {
     return { ok: false, errors };
   }
 
+  // H6: 리포 루트가 아니면(모노리포 서브디렉토리 등) 거부 — 산출물이 리포 루트로 조용히 머지되는
+  // 오작동 방지. 루트에서 재실행하도록 안내(서브패키지 단위 지원은 v1.1).
+  const rootChk = repoRootCheck(opts);
+  if (!rootChk.ok && rootChk.top) {
+    errors.push(`리포 루트가 아닙니다 (서브디렉토리 실행). pact 는 리포 루트에서 실행해야 합니다: cd ${rootChk.top} 후 재실행. (모노리포 서브패키지 단위 지원은 v1.1)`);
+    return { ok: false, errors };
+  }
+
   if (!hasBranch('main', opts) && !hasBranch('master', opts)) {
-    errors.push('main 또는 master 브랜치가 없습니다');
+    // M24: git init 직후 첫 커밋 전이면 브랜치 자체가 없다 — "브랜치 없음"이 아니라 "첫 커밋 필요"로 안내.
+    const hasCommit = git(['rev-parse', '--verify', '-q', 'HEAD'], opts).status === 0;
+    if (!hasCommit) {
+      errors.push('아직 커밋이 없습니다 — 첫 커밋 후 재실행: git add -A && git commit -m "init" (worktree 는 커밋된 base 가 필요)');
+    } else {
+      errors.push('main 또는 master 브랜치가 없습니다 (현재 브랜치명을 main/master 로 변경 권장)');
+    }
   }
 
   if (!isClean(opts)) {
@@ -133,6 +160,15 @@ function removeWorktree(taskId, opts = {}) {
   const cwd = opts.cwd || process.cwd();
   const wtPath = path.join(WORKTREE_BASE, taskId);
   const absPath = path.join(cwd, wtPath);
+
+  // 이미 없는 worktree 는 정리 성공(멱등) — branch_missing/already_merged 재진입에서 removeWorktree
+  // 가 'not a working tree' 실패를 내 merge-result cleanup SOT 에 거짓 실패 엔트리를 쌓던 문제 방지.
+  // git 등록만 남았을 수 있어 prune + branch -D 는 best-effort.
+  if (!fs.existsSync(absPath)) {
+    git(['worktree', 'prune'], opts);
+    git(['branch', '-D', `pact/${taskId}`], opts);
+    return { ok: true, removed: false };
+  }
 
   // 우리가 만든 node_modules symlink는 git worktree remove 전에 unlink (untracked 거부 회피)
   const dstNm = path.join(absPath, 'node_modules');

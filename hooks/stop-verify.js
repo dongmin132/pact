@@ -55,7 +55,9 @@ function main() {
   }
 
   const cwd = payload.cwd || process.cwd();
-  if (!fs.existsSync(path.join(cwd, 'CLAUDE.md'))) process.exit(0);
+  // M12: pact 프로젝트 판별을 CLAUDE.md(비-pact 리포에도 흔함) 대신 .pact/ 디렉토리(확정 마커, init 이
+  // 생성)로 — 비-pact 리포에서 매 응답마다 pact 명령 권장 메시지가 발화하던 소음 제거.
+  if (!fs.existsSync(path.join(cwd, '.pact'))) process.exit(0);
 
   const r = spawnSync('git', ['status', '--porcelain'], { cwd, encoding: 'utf8' });
   if (r.status !== 0 || !r.stdout.trim()) process.exit(0);

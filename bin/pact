@@ -33,9 +33,13 @@ const commands = {
   sizecheck: () => require('./cmds/sizecheck.js')(args),
   testguard: () => require('./cmds/testguard.js')(args),
   scopecheck: () => require('./cmds/scopecheck.js')(args),
+  'verify-scope': () => require('../scripts/verify-scope.js').runCli(args),
 };
 
-if (!cmd || !commands[cmd]) {
+// M16: help/no-args 는 정상(exit 0), 알 수 없는 명령만 오류(exit 1) — 과거 역전(--help=1, 무인자=0).
+const helpRequested = !cmd || cmd === '--help' || cmd === '-h' || cmd === 'help';
+if (helpRequested || !commands[cmd]) {
+  if (!helpRequested) console.error(`알 수 없는 명령: ${cmd}\n`);
   console.error('Usage: pact <command>\n');
   console.error('Commands:');
   console.error('  batch       TASKS.md → .pact/batch.json (배치 계획 생성)');
@@ -62,7 +66,8 @@ if (!cmd || !commands[cmd]) {
   console.error('  sizecheck [--project <path>] [--max-files=N] [--json]  턴소진 위험 task 사이징 (propose-only)');
   console.error('  testguard [--project <path>] [--json]  test-as-law — 자기검증 테스트 수정 가능 task 플래그 (propose-only)');
   console.error('  scopecheck [--project <path>] [--json]  done_criteria ⊄ allowed_paths 계약모순 검출 (propose-only)');
-  process.exit(cmd ? 1 : 0);
+  console.error('  verify-scope [--project <path>] [--json]  이번 사이클 코드 변경 여부 판정 — /pact:verify docs-only skip 결정 (read-only)');
+  process.exit(helpRequested ? 0 : 1);
 }
 
 (async () => {

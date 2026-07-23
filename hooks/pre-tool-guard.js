@@ -195,6 +195,36 @@ function checkWorkerRead(filePath, cwd) {
   return { allowed: true };
 }
 
+// 긴 SOT 를 통째로 읽는 Bash 뷰어(cat/less/more/bat) 차단(M21). rg/grep/sed/head/tail 은 섹션
+// 추출 도구라 허용(deny 메시지가 권장하는 우회 경로) — 통독 뷰어만 막는다. worktree·repo 상대 둘 다 검사.
+const WHOLE_FILE_VIEWERS = new Set(['cat', 'less', 'more', 'bat', 'batcat', 'view']);
+function checkBashSotRead(command, cwd) {
+  const wt = detectWorktreeContext(cwd);
+  if (!wt) return { allowed: true };
+  const idx = cwd.indexOf(`.pact/worktrees/${wt.task_id}`);
+  const repoRoot = cwd.slice(0, idx);
+  for (const line of String(command || '').split('\n')) {
+    for (const seg of splitSegments(line)) {
+      const { name, args } = commandOf(seg);
+      if (!WHOLE_FILE_VIEWERS.has(name)) continue;
+      for (const a of args) {
+        if (a.startsWith('-')) continue;
+        const abs = path.isAbsolute(a) ? a : path.resolve(cwd, a);
+        const relToWt = normalizeRel(path.relative(wt.worktreeRoot, abs));
+        const relToRepo = normalizeRel(path.relative(repoRoot, abs));
+        if (isBlockedLongSotRel(relToWt) || isBlockedLongSotRel(relToRepo)) {
+          return {
+            allowed: false,
+            reason: `pact: 워커 ${wt.task_id}가 Bash(${name})로 긴 SOT 원문 ${normalizeRel(a)} 통째 읽기 시도. ` +
+              `rg/sed 로 섹션만 추출하세요 (예: rg "^## §9" ARCHITECTURE.md 또는 sed -n '/^## ADR-005/,/^## ADR-006/p' DECISIONS.md).`,
+          };
+        }
+      }
+    }
+  }
+  return { allowed: true };
+}
+
 // 한 줄에서 "파일을 새로 쓰는" 타겟(> >> tee touch)을 휴리스틱 추출. 따옴표 안 > 무시.
 function scanLineWriteTargets(line) {
   const targets = [];
@@ -366,23 +396,177 @@ function collectDd(args, targets) {
   }
 }
 
+// 명령 이름 앞에 올 수 있는 래퍼/환경 접두 — 실제 명령 이름을 찾을 때 건너뛴다.
+const PREFIX_CMDS = new Set(['sudo', 'env', 'command', 'nohup', 'time', 'exec']);
+
+// 명령 토큰을 basename 정규화(H5-2): '/bin/rm'→'rm', '\rm'(alias 우회)→'rm', './rm'→'rm'.
+// 정확일치(cmd==='rm')만 보던 정적차단·삭제경계 추출이 경로/백슬래시 접두 rm 을 통째로
+// 우회하던 구멍을 닫는다. find 의 -exec 판정과 동일한 basename 정규화 원칙.
+function normalizeCmdName(tok) {
+  if (!tok) return tok;
+  const stripped = String(tok).replace(/^\\+/, '');   // alias 우회 백슬래시 제거
+  const base = stripped.split('/').pop();
+  return base || stripped;
+}
+
+// $(...) 및 백틱 명령치환 본문을 재귀 수집 — 서브셸 안의 rm 도 스캔 대상에 넣는다(H5-2).
+// 깊이 상한(R3): 병적으로 깊은 중첩에서 스택오버플로→가드 fail-open 을 막는다.
+const SUBSHELL_MAX_DEPTH = 40;
+function collectSubshellBodies(str, depth = 0) {
+  if (depth >= SUBSHELL_MAX_DEPTH) return [];
+  const bodies = [];
+  const s = String(str || '');
+  for (let i = 0; i < s.length; i++) {
+    if (s[i] === '$' && s[i + 1] === '(') {
+      let d = 1; let j = i + 2; const start = j;
+      for (; j < s.length && d > 0; j++) {
+        if (s[j] === '(') d++;
+        else if (s[j] === ')') { d--; if (d === 0) break; }
+      }
+      const body = s.slice(start, j);
+      bodies.push(body, ...collectSubshellBodies(body, depth + 1));
+      i = j;
+    }
+  }
+  const bt = s.split('`');
+  for (let k = 1; k < bt.length; k += 2) bodies.push(bt[k], ...collectSubshellBodies(bt[k], depth + 1));
+  return bodies;
+}
+
+// 라인을 statement(;/&&/||/&)로 분리 — 파이프(|)는 statement 내부에 유지(따옴표 존중). R3:
+// xargs rm 파이프 연결을 statement 범위로 국한해, 별개 명령(;)의 무관한 find 경로를 삭제 타겟으로
+// 오승격하던 거짓 deny 회귀를 막는다.
+function splitStatements(line) {
+  const stmts = [];
+  const n = line.length; let i = 0, start = 0, q = null;
+  while (i < n) {
+    const c = line[i];
+    if (q) { if (c === q) q = null; i++; continue; }
+    if (c === '"' || c === "'") { q = c; i++; continue; }
+    if (c === ';') { stmts.push(line.slice(start, i)); i++; while (i < n && line[i] === ';') i++; start = i; continue; }
+    if (c === '&') { stmts.push(line.slice(start, i)); i++; while (i < n && line[i] === '&') i++; start = i; continue; }
+    if (c === '|' && line[i + 1] === '|') { stmts.push(line.slice(start, i)); i += 2; start = i; continue; }
+    i++;
+  }
+  stmts.push(line.slice(start));
+  return stmts;
+}
+
+// 세그먼트에서 (env 대입/래퍼 접두 제거 후) 실제 명령 이름과 인자를 분리. name = basename 정규화.
+function commandOf(seg) {
+  const toks = tokenizeSegment(seg);
+  if (!toks.length) return { cmd: null, name: null, args: [] };
+  let k = 0;
+  while (k < toks.length && (/^[A-Za-z_][A-Za-z0-9_]*=/.test(toks[k]) || PREFIX_CMDS.has(normalizeCmdName(toks[k])))) k++;
+  const cmd = toks[k];
+  return { cmd, name: normalizeCmdName(cmd), args: toks.slice(k + 1) };
+}
+
+// xargs 인자에서 실제 실행 명령(name, args)을 추출 — `find | xargs rm` 우회 차단용.
+function xargsInner(args) {
+  const valFlags = new Set(['-n', '-P', '-I', '-L', '-s', '-d', '-a', '-E',
+    '--max-args', '--max-procs', '--replace', '--max-lines', '--delimiter', '--arg-file', '--eof']);
+  let k = 0;
+  while (k < args.length && args[k].startsWith('-')) {
+    // 부착형 값 플래그(-I{}, -n1)는 다음 토큰 안 먹음; 분리형(-I {}, -n 1)만 스킵.
+    k += (valFlags.has(args[k]) ? 2 : 1);
+  }
+  if (k >= args.length) return null;
+  return { name: normalizeCmdName(args[k]), args: args.slice(k + 1) };
+}
+
+// find 가 파일을 삭제하는가: -delete 또는 -exec/-execdir rm.
+function findDeletes(args) {
+  if (args.includes('-delete')) return true;
+  return args.some((a, i) => (a === '-exec' || a === '-execdir')
+    && /(^|\/)rm$/.test(String(args[i + 1] || '').replace(/^\\+/, '')));
+}
+
 // 리다이렉션이 아닌 "인자로 파일을 쓰는" 명령(cp/mv/install/sed -i/dd/ln)의 목적지를 추출.
 // 세그먼트 단위로 나눠 각 명령의 실제 이름을 보고 분기 → `npm install`·`git mv` 같은 서브커맨드 오탐 회피.
 function scanLineCommandWriteTargets(line) {
   const targets = [];
-  const PREFIX = new Set(['sudo', 'env', 'command', 'nohup']);
   for (const seg of splitSegments(line)) {
-    const toks = tokenizeSegment(seg);
-    if (!toks.length) continue;
-    let k = 0;
-    while (k < toks.length && (/^[A-Za-z_][A-Za-z0-9_]*=/.test(toks[k]) || PREFIX.has(toks[k]))) k++;
-    const cmd = toks[k];
-    const args = toks.slice(k + 1);
-    if (cmd === 'cp' || cmd === 'mv' || cmd === 'install' || cmd === 'ln') collectDestArg(args, targets);
-    else if (cmd === 'sed') collectSedInPlace(args, targets);
-    else if (cmd === 'dd') collectDd(args, targets);
+    const { name, args } = commandOf(seg);
+    if (!name) continue;
+    if (name === 'cp' || name === 'mv' || name === 'install' || name === 'ln') collectDestArg(args, targets);
+    else if (name === 'sed') collectSedInPlace(args, targets);
+    else if (name === 'dd') collectDd(args, targets);
   }
   return targets;
+}
+
+// rm/find/xargs 의 삭제 대상 경로를 추출(H5). 경계 분류(자기 worktree 밖 삭제 차단)용.
+// name 은 basename 정규화라 /bin/rm·\rm 도 잡힌다. `find … | xargs rm` 파이프는 find 의 경로
+// 피연산자를 삭제 타겟으로 본다. 서브셸($()/백틱) 본문도 재귀 스캔.
+function scanLineDeleteTargets(line) {
+  const targets = [];
+  const chunks = [String(line || ''), ...collectSubshellBodies(line)];
+  for (const chunk of chunks) {
+    for (const stmt of splitStatements(chunk)) {   // statement 범위(파이프만 내부) — 무관한 ; 명령 격리
+      const segs = splitSegments(stmt).map((s) => commandOf(s));
+      // xargs rm 파이프는 같은 statement 안에서만 find 경로를 삭제타겟으로 승격(R3 거짓 deny 방지).
+      const xargsRmInPipe = segs.some((s) => s.name === 'xargs' && (xargsInner(s.args) || {}).name === 'rm');
+      for (const { name, args } of segs) {
+        if (name === 'rm') {
+          let afterDD = false;
+          for (const a of args) {
+            if (a === '--') { afterDD = true; continue; }
+            if (!afterDD && a.startsWith('-')) continue;
+            targets.push(a);
+          }
+        } else if (name === 'xargs') {
+          const inner = xargsInner(args);
+          if (inner && inner.name === 'rm') for (const a of inner.args) if (!a.startsWith('-')) targets.push(a);
+        } else if (name === 'find') {
+          if (findDeletes(args) || xargsRmInPipe) {
+            for (const a of args) {
+              if (a.startsWith('-') || a === '(' || a === '!') break;  // predicate 시작 = 경로 끝
+              targets.push(a);
+            }
+          }
+        }
+      }
+    }
+  }
+  return targets;
+}
+
+// rm 인자가 재귀(-r/-R/--recursive)+강제(-f/--force) 조합인지 — 플래그 순서·철자·클러스터 무관.
+function isRecursiveForceRm(args) {
+  let recursive = false;
+  let force = false;
+  for (const a of args) {
+    if (a === '--') break;
+    if (a === '--recursive') recursive = true;
+    else if (a === '--force') force = true;
+    else if (/^-[A-Za-z]+$/.test(a)) {   // short 클러스터 (-rf, -fr, -Rf, -r ...)
+      if (/[rR]/.test(a)) recursive = true;
+      if (/f/.test(a)) force = true;
+    }
+  }
+  return recursive && force;
+}
+
+// 워크트리 cwd 격리로도 못 막는 파괴적 삭제(재귀-강제 rm · find -delete/-exec[dir] rm · xargs rm)를
+// 정적 감지. basename 정규화(/bin/rm·\rm)·서브셸($()/백틱)·파이프까지 커버(H5-2). 헤드리스
+// worker-guard·인터랙티브 hook 공용 단일 소스.
+function hasDestructiveDelete(command) {
+  const chunks = [String(command || ''), ...collectSubshellBodies(command)];
+  for (const chunk of chunks) {
+    for (const line of chunk.split('\n')) {   // R3: splitSegments 는 개행을 안 뜯음 — 줄 단위로 먼저 분리
+      for (const seg of splitSegments(line)) {
+        const { name, args } = commandOf(seg);
+        if (name === 'rm' && isRecursiveForceRm(args)) return true;
+        if (name === 'find' && findDeletes(args)) return true;
+        if (name === 'xargs') {
+          const inner = xargsInner(args);
+          if (inner && inner.name === 'rm' && isRecursiveForceRm(inner.args)) return true;
+        }
+      }
+    }
+  }
+  return false;
 }
 
 // heredoc 오프너( <<EOF, <<-EOF, << EOF, <<'EOF', <<"END" )를 인식해 델리미터명 캡처.
@@ -409,6 +593,28 @@ function extractWriteTargets(cmd) {
     }
     for (const t of scanLineWriteTargets(raw)) targets.push(t);
     for (const t of scanLineCommandWriteTargets(raw)) targets.push(t);
+    let m;
+    HEREDOC_OPENER.lastIndex = 0;
+    while ((m = HEREDOC_OPENER.exec(raw))) {
+      pending.push({ delim: m[2] || m[3], stripTabs: raw[m.index + 2] === '-' });
+    }
+  }
+  return targets.filter((t) => t && !t.startsWith('/dev/'));
+}
+
+// 삭제 타겟을 heredoc-aware 로 추출(H5). extractWriteTargets 와 같은 본문 스킵 규율.
+function extractDeleteTargets(cmd) {
+  const lines = String(cmd || '').split('\n');
+  const targets = [];
+  const pending = [];
+  for (const raw of lines) {
+    if (pending.length) {
+      const cur = pending[0];
+      const probe = cur.stripTabs ? raw.replace(/^\t+/, '') : raw;
+      if (probe === cur.delim) pending.shift();
+      continue;
+    }
+    for (const t of scanLineDeleteTargets(raw)) targets.push(t);
     let m;
     HEREDOC_OPENER.lastIndex = 0;
     while ((m = HEREDOC_OPENER.exec(raw))) {
@@ -494,7 +700,50 @@ function checkBashWrite(command, opts = {}) {
       return { allowed: false, rel: normalizeRel(abs), reason: cls.reason };
     }
   }
+  // 삭제 타겟(H5): 워크트리 내 삭제는 격리돼 diff 로 드러나므로 allowed_paths 강제 없이 허용하되,
+  // 워크트리 밖(형제 WT·본체 트리·홈) 삭제는 경계 분류로 차단 — rm 이 checkBashWrite 밖이던 구멍.
+  for (const tgt of extractDeleteTargets(command)) {
+    const abs = resolveWriteTarget(tgt, base);
+    if (isInsideWorktree(abs, root)) continue;
+    const cls = classifyOutsideTarget(abs, bnd);
+    if (cls.deny) {
+      return { allowed: false, rel: normalizeRel(abs), reason: cls.reason.replace('쓰기', '삭제') };
+    }
+  }
   return { allowed: true };
+}
+
+// PreToolUse 페이로드의 permission_mode 를 .pact/state.json 에 스탬프(H1). SessionStart 페이로드엔
+// 이 필드가 없어 런타임 yolo 가 감지 안 됐다 — PreToolUse 는 도구 컨텍스트라 실제로 값이 온다.
+// 메인 세션(cwd=repo 루트)에서만 갱신하고, 워커 worktree cwd 나 비-pact 리포는 skip.
+// H1-2: (a) 워커 worktree cwd 명시 skip(메인 state 오염 방지), (b) 손상/torn state 를 만나면
+// 덮어쓰지 않고 skip(다른 필드 wipe 방지), (c) 원자적 쓰기(writeJsonAtomic — torn read 창 제거).
+// 값이 바뀔 때만 write(무의미 churn 방지). 실패해도 fail-open(가드 흐름 방해 금지).
+function stampPermissionMode(payload) {
+  const mode = payload.permission_mode
+    || payload.permissionMode
+    || (payload.metadata && payload.metadata.permission_mode);
+  if (!mode) return;
+  const cwd = payload.cwd || process.cwd();
+  if (detectWorktreeContext(cwd)) return;   // 워커 worktree → 메인 state 오염 금지
+  const stateDir = path.join(cwd, '.pact');
+  if (!fs.existsSync(stateDir)) return;      // 비-pact 리포 → 무해 skip
+  const statePath = path.join(stateDir, 'state.json');
+  let state;
+  if (fs.existsSync(statePath)) {
+    try { state = JSON.parse(fs.readFileSync(statePath, 'utf8')); }
+    catch { return; }   // 손상/torn read — 덮어써서 다른 필드 wipe 하지 말고 skip
+  }
+  if (state == null) state = {};
+  if (typeof state !== 'object' || Array.isArray(state)) return;
+  const isYolo = mode === 'bypassPermissions';
+  if (state.permission_mode === mode && state.is_yolo === isYolo) return;  // 변화 없음
+  state.permission_mode = mode;
+  state.is_yolo = isYolo;
+  try {
+    const { writeJsonAtomic } = require('../scripts/lib/atomic-write.js');
+    writeJsonAtomic(statePath, state);
+  } catch { /* fail-open */ }
 }
 
 function main() {
@@ -505,6 +754,8 @@ function main() {
     process.exit(0);  // 페이로드 없음 → 통과
   }
 
+  try { stampPermissionMode(payload); } catch { /* fail-open */ }
+
   const tool = payload.tool_name;
 
   // Bash: allowed_paths 밖(워크트리 내) 쓰기 리다이렉션 차단 — 워커 worktree 컨텍스트에서만.
@@ -514,6 +765,14 @@ function main() {
     const command = (payload.tool_input || {}).command || '';
     const wt = detectWorktreeContext(cwdB);
     if (wt) {
+      // M21: cat/less 등으로 긴 SOT 통째 읽기 우회 차단(Read 가드와 대칭). rg/sed 섹션추출은 허용.
+      const sot = checkBashSotRead(command, cwdB);
+      if (!sot.allowed) {
+        process.stdout.write(JSON.stringify({
+          hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: sot.reason },
+        }));
+        process.exit(0);
+      }
       const idx = cwdB.indexOf(`.pact/worktrees/${wt.task_id}`);
       const repoRoot = cwdB.slice(0, idx);
       const payloadPath = path.join(repoRoot, '.pact', 'runs', wt.task_id, 'payload.json');
@@ -567,12 +826,23 @@ function main() {
   const absFile = path.isAbsolute(filePath) ? filePath : path.join(cwd, filePath);
 
   // 0) edit-lock 검사 (v0.7.0) — 다른 세션이 이 파일을 잡고 있나
-  // 환경변수 또는 ppid로 자기 session_label 추정. 정확히 일치 안 하면 차단.
+  // 자기 session_label = 세션 UUID(payload.session_id, CLI 의 CLAUDE_CODE_SESSION_ID 와 동일 값).
+  // H3-2: 과거 ppid-${process.ppid} 로만 추정해 CLI 가 건 자기 락(session UUID)과 불일치 → 소유
+  // 세션 자신의 Edit 를 deny 하던 자기 락아웃 회귀를 봉쇄. UUID 부재 시에만 ppid 폴백.
   try {
     const { findLockForFile } = require(path.join(__dirname, '..', 'scripts', 'edit-lock.js'));
     const hit = findLockForFile(absFile, { cwd });
     if (hit) {
-      const mySession = process.env.PACT_SESSION || `ppid-${process.ppid}`;
+      // 세션 UUID 폴백까지 claim/edit-lock 과 동일 순서로 계산 — UUID 부재 환경(구버전 CC·raw
+      // 터미널)에서 훅이 process.ppid(즉사 셸)를 쓰면 claim 의 조부모 라벨과 어긋나 자기 락아웃이
+      // 재발한다. 마지막 폴백을 sessionPid(조부모)로 통일해 라벨을 일치시킨다(H3 잔여).
+      let fallbackLabel;
+      try { fallbackLabel = `ppid-${require(path.join(__dirname, '..', 'scripts', 'lib', 'session-pid.js')).sessionPid()}`; }
+      catch { fallbackLabel = `ppid-${process.ppid}`; }
+      const mySession = process.env.PACT_SESSION
+        || payload.session_id
+        || process.env.CLAUDE_CODE_SESSION_ID
+        || fallbackLabel;
       if (hit.session_label !== mySession) {
         const out = {
           hookSpecificOutput: {
@@ -655,6 +925,15 @@ function main() {
     process.exit(0);  // allow 유지
   }
 
+  // M11: pact 관리 문서(루트 *.md·tasks/·contracts/·docs/·.pact/)는 모듈 '코드'가 아니라 ownership
+  // 검사 대상이 아니다 — ownership 이 정의되면 메인 세션의 PROGRESS.md·DECISIONS.md 편집이 일괄
+  // deny 돼 /pact:wrap 단계 1(PROGRESS.md 갱신)과 정면 충돌하던 문제 해소.
+  const relN = normalizeRel(rel).replace(/^\.\//, '');
+  const isPactDoc = /^[^/]+\.md$/.test(relN)
+    || relN.startsWith('.pact/') || relN.startsWith('tasks/')
+    || relN.startsWith('contracts/') || relN.startsWith('docs/');
+  if (isPactDoc) process.exit(0);
+
   const r = checkPath(rel, owners);
   if (r.allowed) process.exit(0);
 
@@ -675,7 +954,8 @@ module.exports = {
   matchesGlob, checkPath, readOwnership, countOwnershipParseErrors, globToRegex,
   detectWorktreeContext, isInsideWorktree,
   isBlockedLongSotRel, isAllowedReadRel, checkWorkerRead,
-  extractWriteTargets, checkBashWrite,
+  extractWriteTargets, extractDeleteTargets, checkBashWrite,
+  hasDestructiveDelete, isRecursiveForceRm, checkBashSotRead,
 };
 
 if (require.main === module) main();
